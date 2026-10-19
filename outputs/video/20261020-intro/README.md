@@ -1,0 +1,11 @@
+# 20261020-intro video: how it was made
+- Engine: HyperFrames 0.8.168 (HTML to MP4), Node 22, FFmpeg 6.1; rendered 1080x1920, 30 fps, quality "looks".
+- Skill path: video-skills/magnm-video (fork of /brag) with the HyperFrames composition contract.
+- Voice: Kokoro-82M via `hyperframes tts`, voice am_adam, one file per sentence, mixed with ffmpeg. Local model, no API key.
+- Captions: burned in; phrase timings are proportional to character counts inside each sentence (sentence boundaries are exact; phrase boundaries are approximate). captions.srt has the same timings. No word-level transcription was available (whisper not installed).
+- Visuals: typography, the Magnm logo (generated in Canva for this project), a terminal frame showing only a prompt and cursor (no output shown), and a wireframe diagram marked "Illustration" for LazyLayout. No product footage, no numbers, no invented output.
+- Audio assets: voice generated locally; three UI sound files (four cues) from Kenney (CC0). No music.
+- Fonts: Inter and JetBrains Mono (OFL), bundled locally. GSAP 3.14.2 bundled locally.
+- Claims source: outputs/posts/20261020-intro/draft_v3.md, approved in reviews/review_20261020-intro_v3.md.
+- Not done: no real Cero terminal recording and no real LazyLayout screen recording were available; replace scenes 2 and 3 with real footage when you have it.
+- Licences and credits: CREDITS.md

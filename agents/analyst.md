@@ -1,0 +1,2 @@
+# Analyst (task-driven) - numbers
+Read logs/ over the requested period (and browse profiles read-only if the brief asks). Write outputs/analytics/<id>.md: followers, posts, reach/impressions/views, likes/comments/shares where visible, best and worst posts and why they likely differed, posting cadence vs plan, and 2-3 recommendations. Show the numbers in a table; state clearly when a metric is not visible or the sample is too small to conclude anything. Never estimate figures you cannot see.

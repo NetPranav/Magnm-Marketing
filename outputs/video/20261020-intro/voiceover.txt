@@ -1,0 +1,1 @@
+We're Magnm, a small team of developers. Cero is finished: a cross-platform app running a local 3B model plus an API connector, bringing AI into your terminal. LazyLayout is in development: wire components by hand, and an AI assistant builds complex animations from your wireframes.

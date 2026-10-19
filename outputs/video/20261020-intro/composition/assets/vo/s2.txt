@@ -1,0 +1,1 @@
+Cero is finished: a cross-platform app running a local 3B model plus an API connector, bringing AI into your terminal.

@@ -1,0 +1,56 @@
+1
+00:00:00,350 --> 00:00:01,250
+We're Magnm,
+
+2
+00:00:01,250 --> 00:00:01,930
+a small team
+
+3
+00:00:01,930 --> 00:00:02,720
+of developers.
+
+4
+00:00:03,100 --> 00:00:04,460
+Cero is finished:
+
+5
+00:00:04,460 --> 00:00:05,750
+a cross-platform app
+
+6
+00:00:05,750 --> 00:00:07,290
+running a local 3B model
+
+7
+00:00:07,290 --> 00:00:08,970
+plus an API connector,
+
+8
+00:00:08,970 --> 00:00:10,000
+bringing AI into
+
+9
+00:00:10,000 --> 00:00:10,910
+your terminal.
+
+10
+00:00:11,400 --> 00:00:13,510
+LazyLayout is in development:
+
+11
+00:00:13,510 --> 00:00:15,300
+wire components by hand,
+
+12
+00:00:15,300 --> 00:00:16,970
+and an AI assistant builds
+
+13
+00:00:16,970 --> 00:00:18,120
+complex animations
+
+14
+00:00:18,120 --> 00:00:19,460
+from your wireframes.
+

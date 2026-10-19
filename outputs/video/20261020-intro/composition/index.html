@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en" data-resolution="portrait">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=1920" />
+    <title>Magnm intro</title>
+    <script src="assets/gsap.min.js"></script>
+    <style>
+      @font-face { font-family: "Inter"; font-weight: 500; src: url("assets/fonts/inter-latin-500-normal.woff2") format("woff2"); }
+      @font-face { font-family: "Inter"; font-weight: 700; src: url("assets/fonts/inter-latin-700-normal.woff2") format("woff2"); }
+      @font-face { font-family: "Inter"; font-weight: 800; src: url("assets/fonts/inter-latin-800-normal.woff2") format("woff2"); }
+      @font-face { font-family: "JetBrains Mono"; font-weight: 500; src: url("assets/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2"); }
+      :root { --navy:#0B1020; --cyan:#22D3EE; --violet:#8B5CF6; --text:#F5F7FF; --muted:#9AA4BF; }
+      * { margin:0; padding:0; box-sizing:border-box; }
+      html, body { width:1080px; height:1920px; overflow:hidden; background:var(--navy); }
+      #root { position:relative; width:100%; height:100%; overflow:hidden; font-family:"Inter", system-ui, sans-serif; color:var(--text); background:var(--navy); }
+      #grid { position:absolute; inset:0; opacity:.9;
+        background-image: linear-gradient(rgba(139,92,246,.08) 2px, transparent 2px), linear-gradient(90deg, rgba(34,211,238,.07) 2px, transparent 2px);
+        background-size: 90px 90px; }
+      #glowA { position:absolute; left:-260px; top:-200px; width:900px; height:900px; border-radius:50%; background: radial-gradient(circle, rgba(34,211,238,.28), rgba(34,211,238,0) 65%); }
+      #glowB { position:absolute; right:-300px; bottom:-120px; width:1000px; height:1000px; border-radius:50%; background: radial-gradient(circle, rgba(139,92,246,.32), rgba(139,92,246,0) 65%); }
+      .clip { position:absolute; left:0; top:0; width:1080px; height:1920px; }
+      .wrap { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; }
+      .grad { background: linear-gradient(90deg, var(--cyan), var(--violet)); -webkit-background-clip:text; background-clip:text; color:transparent; }
+      .chip { margin-top:290px; padding:14px 34px; border-radius:999px; font-weight:700; font-size:34px; letter-spacing:.14em; border:2px solid var(--cyan); color:var(--cyan); background:rgba(34,211,238,.08); }
+      .chip.v { border-color:var(--violet); color:#C4B5FD; background:rgba(139,92,246,.12); }
+      .title { margin-top:26px; font-weight:800; font-size:196px; line-height:1; letter-spacing:-.04em; }
+      .title.sm { font-size:150px; }
+      .sub { margin-top:14px; font-size:56px; font-weight:500; color:var(--muted); }
+      /* scene 1 */
+      #s1-wrap { justify-content:center; padding-bottom:260px; }
+      #s1-logo { width:300px; height:300px; border-radius:72px; box-shadow:0 0 120px rgba(34,211,238,.35), 0 0 80px rgba(139,92,246,.35); }
+      #s1-name { margin-top:56px; font-weight:800; font-size:170px; letter-spacing:-.04em; line-height:1; }
+      #s1-tag { margin-top:26px; font-size:58px; font-weight:500; color:var(--muted); }
+      /* scene 2 */
+      #term { margin-top:56px; width:880px; height:330px; border-radius:28px; background:#0E1530; border:2px solid rgba(255,255,255,.12); box-shadow:0 30px 90px rgba(0,0,0,.45); overflow:hidden; }
+      #term-bar { height:70px; display:flex; align-items:center; padding:0 28px; gap:14px; border-bottom:2px solid rgba(255,255,255,.08); }
+      .dot { width:20px; height:20px; border-radius:50%; }
+      #term-title { margin-left:auto; margin-right:auto; font-family:"JetBrains Mono", monospace; font-size:26px; color:var(--muted); transform:translateX(-46px); }
+      #term-body { padding:44px 48px; font-family:"JetBrains Mono", monospace; font-size:64px; color:var(--text); }
+      #term-body .p { color:var(--cyan); }
+      #cursor { color:var(--violet); }
+      #pills { margin-top:36px; width:880px; display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+      .pill { height:84px; border-radius:22px; display:flex; align-items:center; justify-content:center; gap:14px; font-weight:700; font-size:34px; background:rgba(255,255,255,.06); border:2px solid rgba(34,211,238,.45); }
+      .pill i { width:14px; height:14px; border-radius:50%; background:var(--cyan); display:block; }
+      /* scene 3 */
+      #card { margin-top:34px; position:relative; width:900px; height:720px; }
+      #card svg { position:absolute; inset:0; overflow:visible; }
+      #illus { position:absolute; right:10px; bottom:4px; font-family:"JetBrains Mono", monospace; font-size:24px; color:var(--muted); }
+      .wf { fill:rgba(255,255,255,.035); stroke:rgba(154,164,191,.6); stroke-width:3; stroke-dasharray:12 9; }
+      .bar { fill:rgba(154,164,191,.28); }
+      .wire { fill:none; stroke:var(--cyan); stroke-width:5; stroke-linecap:round; }
+      /* scene 4 */
+      #s4-wrap { justify-content:center; padding-bottom:300px; }
+      #s4-logo { width:230px; height:230px; border-radius:56px; box-shadow:0 0 100px rgba(34,211,238,.3), 0 0 70px rgba(139,92,246,.3); }
+      #s4-name { margin-top:44px; font-weight:800; font-size:130px; letter-spacing:-.04em; line-height:1; }
+      #s4-url { margin-top:30px; font-size:56px; font-weight:700; color:var(--cyan); }
+      #s4-h { margin-top:22px; font-family:"JetBrains Mono", monospace; font-size:38px; color:var(--muted); }
+      /* captions (safe zone: above bottom 350px and below top 250px) */
+      .clip.cap { left:0; top:1330px; width:1080px; height:200px; display:flex; justify-content:center; align-items:flex-start; }
+      .cap span { display:inline-block; max-width:960px; padding:20px 38px; border-radius:26px; text-align:center; font-weight:800; font-size:66px; line-height:1.12; color:#fff; background:rgba(11,16,32,.78); border:2px solid rgba(34,211,238,.35); }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="22" data-width="1080" data-height="1920">
+      <div id="grid"></div>
+      <div id="glowA"></div>
+      <div id="glowB"></div>
+
+      <!-- Scene 1: who we are -->
+      <section id="sc1" class="clip" data-start="0" data-duration="3.0" data-track-index="1">
+        <div id="s1-wrap" class="wrap">
+          <img id="s1-logo" src="assets/magnm-logo.jpg" alt="Magnm logo" />
+          <div id="s1-name" class="grad">Magnm</div>
+          <div id="s1-tag">Small team. Two products.</div>
+        </div>
+      </section>
+
+      <!-- Scene 2: Cero -->
+      <section id="sc2" class="clip" data-start="3.0" data-duration="8.2" data-track-index="1">
+        <div id="s2-wrap" class="wrap">
+          <div id="s2-chip" class="chip">FINISHED</div>
+          <div id="s2-title" class="title grad">Cero</div>
+          <div id="s2-sub" class="sub">AI in your terminal</div>
+          <div id="term">
+            <div id="term-bar">
+              <div class="dot" style="background:#ff5f57"></div><div class="dot" style="background:#febc2e"></div><div class="dot" style="background:#28c840"></div>
+              <div id="term-title">terminal</div>
+            </div>
+            <div id="term-body"><span class="p">$</span> <span id="cursor">&#9608;</span></div>
+          </div>
+          <div id="pills">
+            <div id="pill1" class="pill"><i></i>Cross-platform</div>
+            <div id="pill2" class="pill"><i></i>Local 3B model</div>
+            <div id="pill3" class="pill"><i></i>API connector</div>
+            <div id="pill4" class="pill"><i></i>AI in your terminal</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Scene 3: LazyLayout (illustration, not product UI) -->
+      <section id="sc3" class="clip" data-start="11.2" data-duration="8.4" data-track-index="1">
+        <div id="s3-wrap" class="wrap">
+          <div id="s3-chip" class="chip v">IN DEVELOPMENT</div>
+          <div id="s3-title" class="title sm grad">LazyLayout</div>
+          <div id="card">
+            <svg viewBox="0 0 900 720" width="900" height="720">
+              <defs>
+                <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22D3EE"/><stop offset="1" stop-color="#8B5CF6"/></linearGradient>
+              </defs>
+              <g id="boxes">
+                <rect id="bx-h" class="wf" x="40" y="30" width="820" height="80" rx="18"/>
+                <rect class="bar" x="70" y="58" width="220" height="24" rx="12"/>
+                <rect id="bx-a" class="wf" x="40" y="160" width="390" height="270" rx="18"/>
+                <rect class="bar" x="70" y="190" width="330" height="130" rx="14"/>
+                <rect class="bar" x="70" y="340" width="260" height="22" rx="11"/>
+                <rect class="bar" x="70" y="380" width="180" height="22" rx="11"/>
+                <rect id="bx-b" class="wf" x="470" y="160" width="390" height="270" rx="18"/>
+                <rect class="bar" x="500" y="190" width="330" height="130" rx="14"/>
+                <rect class="bar" x="500" y="340" width="260" height="22" rx="11"/>
+                <rect class="bar" x="500" y="380" width="180" height="22" rx="11"/>
+                <rect id="bx-d" class="wf" x="280" y="500" width="340" height="80" rx="40"/>
+              </g>
+              <g id="wires">
+                <path id="w1" class="wire" pathLength="1" d="M 235,110 L 235,160"/>
+                <path id="w2" class="wire" pathLength="1" d="M 665,110 L 665,160"/>
+                <path id="w3" class="wire" pathLength="1" d="M 235,430 C 235,475 330,455 330,500"/>
+                <path id="w4" class="wire" pathLength="1" d="M 665,430 C 665,475 570,455 570,500"/>
+                <circle class="nd" cx="235" cy="110" r="9" fill="#22D3EE"/><circle class="nd" cx="235" cy="160" r="9" fill="#22D3EE"/>
+                <circle class="nd" cx="665" cy="110" r="9" fill="#22D3EE"/><circle class="nd" cx="665" cy="160" r="9" fill="#22D3EE"/>
+                <circle class="nd" cx="235" cy="430" r="9" fill="#22D3EE"/><circle class="nd" cx="330" cy="500" r="9" fill="#22D3EE"/>
+                <circle class="nd" cx="665" cy="430" r="9" fill="#22D3EE"/><circle class="nd" cx="570" cy="500" r="9" fill="#22D3EE"/>
+              </g>
+              <g id="ai">
+                <line x1="450" y1="295" x2="300" y2="295" stroke="#8B5CF6" stroke-width="4" stroke-dasharray="8 8"/>
+                <line x1="450" y1="295" x2="600" y2="295" stroke="#8B5CF6" stroke-width="4" stroke-dasharray="8 8"/>
+                <circle cx="450" cy="295" r="54" fill="#0B1020" stroke="url(#g1)" stroke-width="6"/>
+                <text x="450" y="312" text-anchor="middle" font-family="Inter, sans-serif" font-weight="800" font-size="46" fill="#F5F7FF">AI</text>
+              </g>
+              <path id="trail" pathLength="1" d="M 90,640 C 260,360 640,800 810,420" fill="none" stroke="url(#g1)" stroke-width="7" stroke-linecap="round" stroke-dasharray="1" stroke-dashoffset="1"/>
+              <circle id="dot" cx="90" cy="640" r="20" fill="#22D3EE" opacity="0"/>
+            </svg>
+            <div id="illus">Illustration</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Scene 4: end card -->
+      <section id="sc4" class="clip" data-start="19.6" data-duration="2.4" data-track-index="1">
+        <div id="s4-wrap" class="wrap">
+          <img id="s4-logo" src="assets/magnm-logo.jpg" alt="Magnm logo" />
+          <div id="s4-name" class="grad">Magnm</div>
+          <div id="s4-url">magnm-org.vercel.app</div>
+          <div id="s4-h">@magnm.studios &middot; @Magnm_Studios</div>
+        </div>
+      </section>
+
+      <!-- Captions -->
+<div id="cap0" class="clip cap" data-start="0.35" data-duration="0.90" data-track-index="5"><span>We&#x27;re Magnm,</span></div>
+<div id="cap1" class="clip cap" data-start="1.25" data-duration="0.68" data-track-index="5"><span>a small team</span></div>
+<div id="cap2" class="clip cap" data-start="1.93" data-duration="0.79" data-track-index="5"><span>of developers.</span></div>
+<div id="cap3" class="clip cap" data-start="3.10" data-duration="1.36" data-track-index="5"><span>Cero is finished:</span></div>
+<div id="cap4" class="clip cap" data-start="4.46" data-duration="1.29" data-track-index="5"><span>a cross-platform app</span></div>
+<div id="cap5" class="clip cap" data-start="5.75" data-duration="1.55" data-track-index="5"><span>running a local 3B model</span></div>
+<div id="cap6" class="clip cap" data-start="7.29" data-duration="1.68" data-track-index="5"><span>plus an API connector,</span></div>
+<div id="cap7" class="clip cap" data-start="8.97" data-duration="1.03" data-track-index="5"><span>bringing AI into</span></div>
+<div id="cap8" class="clip cap" data-start="10.00" data-duration="0.90" data-track-index="5"><span>your terminal.</span></div>
+<div id="cap9" class="clip cap" data-start="11.40" data-duration="2.11" data-track-index="5"><span>LazyLayout is in development:</span></div>
+<div id="cap10" class="clip cap" data-start="13.51" data-duration="1.79" data-track-index="5"><span>wire components by hand,</span></div>
+<div id="cap11" class="clip cap" data-start="15.30" data-duration="1.66" data-track-index="5"><span>and an AI assistant builds</span></div>
+<div id="cap12" class="clip cap" data-start="16.97" data-duration="1.15" data-track-index="5"><span>complex animations</span></div>
+<div id="cap13" class="clip cap" data-start="18.12" data-duration="1.34" data-track-index="5"><span>from your wireframes.</span></div>
+
+      <!-- Audio: AI voice (Kokoro) + soft CC0 UI sounds. No music. -->
+      <audio id="vo" src="assets/narration.wav" data-start="0" data-duration="22" data-track-index="10" data-volume="1"></audio>
+      <audio id="sfx1" src="assets/sfx/click1.ogg" data-start="0.30" data-duration="0.09" data-track-index="11" data-volume="0.3"></audio>
+      <audio id="sfx2" src="assets/sfx/switch10.ogg" data-start="3.05" data-duration="0.37" data-track-index="12" data-volume="0.3"></audio>
+      <audio id="sfx3" src="assets/sfx/rollover2.ogg" data-start="11.25" data-duration="0.06" data-track-index="13" data-volume="0.3"></audio>
+      <audio id="sfx4" src="assets/sfx/click1.ogg" data-start="19.65" data-duration="0.09" data-track-index="14" data-volume="0.3"></audio>
+    </div>
+
+    <script>
+      const tl = gsap.timeline({ paused: true });
+      // background drift
+      tl.fromTo("#glowA", { x: 0, y: 0 }, { x: 80, y: 60, duration: 22, ease: "sine.inOut" }, 0);
+      tl.fromTo("#glowB", { x: 0, y: 0 }, { x: -80, y: -60, duration: 22, ease: "sine.inOut" }, 0);
+
+      // Scene 1
+      tl.fromTo("#s1-logo", { scale: 0.6, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.7, ease: "back.out(1.6)" }, 0.25);
+      tl.fromTo("#s1-name", { y: 40, opacity: 0 }, { y: 0, opacity: 1, duration: 0.6, ease: "power3.out" }, 0.55);
+      tl.fromTo("#s1-tag", { y: 30, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5, ease: "power3.out" }, 0.95);
+      tl.to("#s1-wrap", { opacity: 0, duration: 0.3, ease: "power1.in" }, 2.68);
+
+      // Scene 2 (Cero)
+      tl.fromTo("#s2-chip", { y: 30, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5, ease: "power3.out" }, 3.15);
+      tl.fromTo("#s2-title", { y: 50, opacity: 0, scale: 0.92 }, { y: 0, opacity: 1, scale: 1, duration: 0.6, ease: "power3.out" }, 3.3);
+      tl.fromTo("#s2-sub", { y: 30, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5, ease: "power3.out" }, 3.6);
+      tl.fromTo("#term", { y: 70, opacity: 0 }, { y: 0, opacity: 1, duration: 0.6, ease: "power3.out" }, 3.75);
+      tl.fromTo("#cursor", { opacity: 1 }, { opacity: 0, duration: 0.01, repeat: 14, repeatDelay: 0.5, yoyo: true }, 4.2);
+      tl.fromTo("#pill1", { y: 30, opacity: 0, scale: 0.9 }, { y: 0, opacity: 1, scale: 1, duration: 0.4, ease: "back.out(1.7)" }, 4.46);
+      tl.fromTo("#pill2", { y: 30, opacity: 0, scale: 0.9 }, { y: 0, opacity: 1, scale: 1, duration: 0.4, ease: "back.out(1.7)" }, 5.75);
+      tl.fromTo("#pill3", { y: 30, opacity: 0, scale: 0.9 }, { y: 0, opacity: 1, scale: 1, duration: 0.4, ease: "back.out(1.7)" }, 7.29);
+      tl.fromTo("#pill4", { y: 30, opacity: 0, scale: 0.9 }, { y: 0, opacity: 1, scale: 1, duration: 0.4, ease: "back.out(1.7)" }, 8.97);
+      tl.to("#s2-wrap", { opacity: 0, duration: 0.3, ease: "power1.in" }, 10.88);
+
+      // Scene 3 (LazyLayout)
+      tl.fromTo("#s3-chip", { y: 30, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5, ease: "power3.out" }, 11.3);
+      tl.fromTo("#s3-title", { y: 50, opacity: 0, scale: 0.92 }, { y: 0, opacity: 1, scale: 1, duration: 0.6, ease: "power3.out" }, 11.45);
+      tl.fromTo("#boxes", { opacity: 0, y: 40 }, { opacity: 1, y: 0, duration: 0.7, ease: "power3.out" }, 11.8);
+      tl.fromTo("#illus", { opacity: 0 }, { opacity: 1, duration: 0.4 }, 12.2);
+      tl.fromTo(".nd", { opacity: 0, scale: 0 }, { opacity: 1, scale: 1, duration: 0.25, stagger: 0.07, transformOrigin: "50% 50%", ease: "back.out(2)" }, 13.51);
+      ["#w1", "#w2", "#w3", "#w4"].forEach(function (id, i) {
+        tl.fromTo(id, { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.7, ease: "power2.inOut" }, 13.51 + 0.15 + i * 0.25);
+      });
+      tl.fromTo("#ai", { opacity: 0, scale: 0.4, transformOrigin: "450px 295px" }, { opacity: 1, scale: 1, duration: 0.6, ease: "back.out(1.8)", transformOrigin: "450px 295px" }, 15.30);
+tl.fromTo("#dot",{attr:{cx:90.0,cy:640.0},opacity:0},{opacity:1,duration:0.2},16.97);
+tl.to("#dot",{attr:{cx:120.2,cy:599.7},duration:0.133,ease:"none"},17.168);
+tl.to("#dot",{attr:{cx:153.9,cy:571.2},duration:0.133,ease:"none"},17.301);
+tl.to("#dot",{attr:{cx:190.6,cy:552.9},duration:0.133,ease:"none"},17.435);
+tl.to("#dot",{attr:{cx:229.8,cy:543.1},duration:0.133,ease:"none"},17.568);
+tl.to("#dot",{attr:{cx:271.3,cy:540.3},duration:0.133,ease:"none"},17.701);
+tl.to("#dot",{attr:{cx:314.4,cy:543.0},duration:0.133,ease:"none"},17.835);
+tl.to("#dot",{attr:{cx:358.9,cy:549.4},duration:0.133,ease:"none"},17.968);
+tl.to("#dot",{attr:{cx:404.2,cy:558.1},duration:0.133,ease:"none"},18.101);
+tl.to("#dot",{attr:{cx:450.0,cy:567.5},duration:0.133,ease:"none"},18.235);
+tl.to("#dot",{attr:{cx:495.8,cy:575.9},duration:0.133,ease:"none"},18.368);
+tl.to("#dot",{attr:{cx:541.1,cy:581.9},duration:0.133,ease:"none"},18.501);
+tl.to("#dot",{attr:{cx:585.6,cy:583.7},duration:0.133,ease:"none"},18.635);
+tl.to("#dot",{attr:{cx:628.7,cy:579.9},duration:0.133,ease:"none"},18.768);
+tl.to("#dot",{attr:{cx:670.2,cy:568.8},duration:0.133,ease:"none"},18.901);
+tl.to("#dot",{attr:{cx:709.4,cy:548.8},duration:0.133,ease:"none"},19.035);
+tl.to("#dot",{attr:{cx:746.1,cy:518.4},duration:0.133,ease:"none"},19.168);
+tl.to("#dot",{attr:{cx:779.8,cy:476.0},duration:0.133,ease:"none"},19.301);
+tl.to("#dot",{attr:{cx:810.0,cy:420.0},duration:0.133,ease:"none"},19.435);
+
+      tl.fromTo("#trail", { strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 2.4, ease: "none" }, 16.97 + 0.2);
+      tl.to(".wf", { stroke: "#22D3EE", strokeDasharray: "0 0", duration: 0.6, ease: "power1.inOut" }, 18.12);
+      tl.to("#s3-wrap", { opacity: 0, duration: 0.3, ease: "power1.in" }, 19.28);
+
+      // Scene 4
+      tl.fromTo("#s4-logo", { scale: 0.7, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.6, ease: "back.out(1.6)" }, 19.7);
+      tl.fromTo("#s4-name", { y: 30, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5, ease: "power3.out" }, 19.85);
+      tl.fromTo("#s4-url", { y: 30, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5, ease: "power3.out" }, 20.1);
+      tl.fromTo("#s4-h", { y: 30, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5, ease: "power3.out" }, 20.35);
+
+      // Captions
+tl.fromTo("#cap0 span",{y:22,opacity:0},{y:0,opacity:1,duration:0.16,ease:"power2.out"},0.35);
+tl.fromTo("#cap1 span",{y:22,opacity:0},{y:0,opacity:1,duration:0.16,ease:"power2.out"},1.25);
+tl.fromTo("#cap2 span",{y:22,opacity:0},{y:0,opacity:1,duration:0.16,ease:"power2.out"},1.93);
+tl.fromTo("#cap3 span",{y:22,opacity:0},{y:0,opacity:1,duration:0.16,ease:"power2.out"},3.10);
+tl.fromTo("#cap4 span",{y:22,opacity:0},{y:0,opacity:1,duration:0.16,ease:"power2.out"},4.46);
+tl.fromTo("#cap5 span",{y:22,opacity:0},{y:0,opacity:1,duration:0.16,ease:"power2.out"},5.75);
+tl.fromTo("#cap6 span",{y:22,opacity:0},{y:0,opacity:1,duration:0.16,ease:"power2.out"},7.29);
+tl.fromTo("#cap7 span",{y:22,opacity:0},{y:0,opacity:1,duration:0.16,ease:"power2.out"},8.97);
+tl.fromTo("#cap8 span",{y:22,opacity:0},{y:0,opacity:1,duration:0.16,ease:"power2.out"},10.00);
+tl.fromTo("#cap9 span",{y:22,opacity:0},{y:0,opacity:1,duration:0.16,ease:"power2.out"},11.40);
+tl.fromTo("#cap10 span",{y:22,opacity:0},{y:0,opacity:1,duration:0.16,ease:"power2.out"},13.51);
+tl.fromTo("#cap11 span",{y:22,opacity:0},{y:0,opacity:1,duration:0.16,ease:"power2.out"},15.30);
+tl.fromTo("#cap12 span",{y:22,opacity:0},{y:0,opacity:1,duration:0.16,ease:"power2.out"},16.97);
+tl.fromTo("#cap13 span",{y:22,opacity:0},{y:0,opacity:1,duration:0.16,ease:"power2.out"},18.12);
+
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>

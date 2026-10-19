@@ -1,0 +1,32 @@
+1
+00:00:00,400 --> 00:00:02,811
+We're Magnm. A small team of developers.
+
+2
+00:00:03,200 --> 00:00:07,168
+Cero is finished. A terminal that takes requests in plain language.
+
+3
+00:00:07,500 --> 00:00:13,879
+Ask in your own words. Cero shows any command that changes something, runs it, and answers from the real output.
+
+4
+00:00:14,200 --> 00:00:16,845
+It can use a model that runs on your own computer.
+
+5
+00:00:17,200 --> 00:00:22,213
+Write a setup once, as a .flow file. It runs on macOS, Linux and Windows.
+
+6
+00:00:22,550 --> 00:00:27,713
+LazyLayout is in development. A motion design studio, with an AI co-pilot.
+
+7
+00:00:28,000 --> 00:00:31,264
+It compiles to clean code you can drop into any project.
+
+8
+00:00:31,600 --> 00:00:32,539
+That's Magnm.
+

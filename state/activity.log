@@ -1,0 +1,25 @@
+2026-10-17T14:56:30Z | CMO -> Writer | 20261020-intro | briefs/BRIEF-20261020-intro_writer.md
+2026-10-17T14:57:07Z | Writer -> CMO | 20261020-intro | outputs/posts/20261020-intro/draft_v1.md
+2026-10-17T14:57:19Z | CMO -> Reviewer | 20261020-intro | briefs/BRIEF-20261020-intro_reviewer-v1.md
+2026-10-17T14:57:54Z | Reviewer -> CMO | 20261020-intro | reviews/review_20261020-intro_v1.md
+2026-10-17T14:58:12Z | CMO -> Writer | 20261020-intro | briefs/BRIEF-20261020-intro_writer-r2.md (revision round 2)
+2026-10-17T14:59:06Z | Writer -> CMO | 20261020-intro | outputs/posts/20261020-intro/draft_v2.md
+2026-10-17T14:59:27Z | CMO -> Writer | 20261020-intro | briefs/BRIEF-20261020-intro_writer-r3.md (revision round 3)
+2026-10-17T14:59:41Z | Writer -> CMO | 20261020-intro | outputs/posts/20261020-intro/draft_v3.md
+2026-10-17T14:59:52Z | CMO -> Reviewer | 20261020-intro | briefs/BRIEF-20261020-intro_reviewer-v3.md
+2026-10-17T15:00:17Z | Reviewer -> CMO | 20261020-intro | reviews/review_20261020-intro_v3.md
+2026-10-17T15:06:22Z | CMO -> Video Producer | 20261020-intro | (CMO session acted as Video Producer: outputs/video/20261020-intro/)
+2026-10-17T15:06:22Z | Video Producer -> CMO | 20261020-intro | outputs/video/20261020-intro/final_ig.mp4
+2026-10-17T15:06:22Z | CMO -> Reviewer | 20261020-intro | briefs/BRIEF-20261020-intro_reviewer-final.md
+2026-10-17T15:07:21Z | Reviewer -> CMO | 20261020-intro | reviews/review_20261020-intro_final.md
+2026-10-17T16:03:26Z researcher -> cmo: outputs/research/20261024-film.md done
+2026-10-17T16:05:58Z strategist -> cmo: outputs/strategy/20261024-film.md done
+2026-10-17T16:14:17Z writer -> cmo: outputs/scripts/20261024-film_script_v1.md done
+2026-10-17T16:23:10Z reviewer -> cmo: reviews/review_20261024-film_v1.md REJECT
+2026-10-17T16:25:01Z writer -> cmo: outputs/scripts/20261024-film_script_v2.md done (9 review fixes + CMO notes)
+2026-10-17T16:26:16Z reviewer -> cmo: reviews/review_20261024-film_v2.md APPROVE
+2026-10-17T16:52:54Z reviewer -> cmo: reviews/review_20261024-film_render.md REJECT
+2026-10-17T17:45:23Z video-producer -> cmo: outputs/video/20261024-film/ final both ratios + POSTING-KIT.md; plan slot Tue 2026-10-20 -> AWAITING USER
+2026-10-18T04:17:06Z | CMO -> Growth Lead | 20261018-bounty | briefs/BRIEF-20261018-bounty_growth.md
+2026-10-18T04:17:06Z | Growth Lead -> CMO | 20261018-bounty | outputs/growth/20261018-bounty-plan.md (AWAITING CEO)
+2026-10-18T04:17:06Z | CEO | rules added: weekly growth ideas, bounty gate, palette v3 rotation, card.py

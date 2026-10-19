@@ -1,0 +1,7 @@
+# Operating system & cloud drive artifacts
+.DS_Store
+.tmp.drivedownload/
+.tmp.driveupload/
+
+# Temporary / scratch directory
+_to_delete/
