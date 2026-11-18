@@ -62,6 +62,16 @@ def _is_pid_alive(pid):
     return True
 
 
+def _detach_stdio():
+    """Point stdout/stderr at devnull (used when the parent app is gone)."""
+    try:
+        devnull = open(os.devnull, "w")
+        sys.stdout = devnull
+        sys.stderr = devnull
+    except OSError:
+        pass
+
+
 def _safe_log(message):
     """Write a line to stderr, ignoring closed or broken pipes (parent app gone)."""
     try:
@@ -144,6 +154,9 @@ def main(argv=None):
             def _watchdog():
                 while not stop_event.wait(2.0):
                     if not _is_pid_alive(parent_pid):
+                        # Nobody reads our stdout/stderr any more: detach them first so
+                        # no later write (or the interpreter's final flush) hits a dead pipe.
+                        _detach_stdio()
                         request_shutdown(f"parent pid {parent_pid} exited")
                         break
 

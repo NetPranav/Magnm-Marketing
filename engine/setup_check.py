@@ -15,6 +15,7 @@ if _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
 
 import ai_gateway
+import key_pool
 import model_registry
 import paths
 
@@ -221,7 +222,7 @@ def _call_get_catalog(api_key, base_url):
 
 def _check_nvidia_key():
     cfg = ai_gateway.get_config()
-    api_key = (cfg.get("NVIDIA_NIM_API_KEY") or "").strip()
+    api_key = (key_pool.get_pool().peek_healthy_key() or cfg.get("NVIDIA_NIM_API_KEY") or "").strip()
     if not api_key:
         return _make_check(
             "nvidia_key",

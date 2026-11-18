@@ -359,6 +359,23 @@ fn generate_token() -> Result<String, String> {
     Ok(token)
 }
 
+#[cfg(debug_assertions)]
+fn resolve_dev_python_program(repo_root: &std::path::Path) -> String {
+    let clean_root = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    let venv_python = if cfg!(windows) {
+        clean_root.join(".venv").join("Scripts").join("python.exe")
+    } else {
+        clean_root.join(".venv").join("bin").join("python")
+    };
+    if venv_python.is_file() {
+        venv_python.to_string_lossy().into_owned()
+    } else {
+        "python3".to_string()
+    }
+}
+
 fn resolve_engine_command() -> Result<EngineCommandSpec, String> {
     #[cfg(debug_assertions)]
     {
@@ -393,7 +410,7 @@ fn resolve_engine_command() -> Result<EngineCommandSpec, String> {
         }
 
         Ok(EngineCommandSpec {
-            program: "python3".to_string(),
+            program: resolve_dev_python_program(&repo_root),
             args: vec![main_py.to_string_lossy().into_owned()],
         })
     }
@@ -487,5 +504,35 @@ mod tests {
             parse_ready_line(r#"MAGNM_ENGINE_READY {"port": 0, "pid": 1, "data_root": "/tmp"}"#)
                 .is_err()
         );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn resolve_dev_python_prefers_venv_when_present() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let tmp_root = std::env::temp_dir().join(format!("magnm_engine_rs_{nanos}"));
+        fs::create_dir_all(&tmp_root).unwrap();
+
+        assert_eq!(resolve_dev_python_program(&tmp_root), "python3");
+
+        let venv_py = if cfg!(windows) {
+            tmp_root.join(".venv").join("Scripts").join("python.exe")
+        } else {
+            tmp_root.join(".venv").join("bin").join("python")
+        };
+        fs::create_dir_all(venv_py.parent().unwrap()).unwrap();
+        fs::write(&venv_py, b"").unwrap();
+
+        let resolved = resolve_dev_python_program(&tmp_root);
+        assert!(
+            resolved.ends_with(if cfg!(windows) { "python.exe" } else { "python" })
+                && resolved.contains(".venv"),
+            "expected .venv python path, got {resolved}"
+        );
+
+        let _ = fs::remove_dir_all(&tmp_root);
     }
 }

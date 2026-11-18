@@ -8,6 +8,16 @@ pub const SERVICE_NAME: &str = "magnm-studio";
 /// Allow-list of environment variable names managed in the OS keychain.
 pub const KNOWN_SECRET_KEYS: &[&str] = &[
     "NVIDIA_NIM_API_KEY",
+    "NVIDIA_NIM_API_KEY1",
+    "NVIDIA_NIM_API_KEY2",
+    "NVIDIA_NIM_API_KEY3",
+    "NVIDIA_NIM_API_KEY4",
+    "NVIDIA_NIM_API_KEY5",
+    "NVIDIA_NIM_API_KEY6",
+    "NVIDIA_NIM_API_KEY7",
+    "NVIDIA_NIM_API_KEY8",
+    "NVIDIA_NIM_API_KEY9",
+    "NVIDIA_NIM_API_KEY10",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
     "GEMINI_API_KEY",
@@ -143,6 +153,10 @@ mod tests {
     #[test]
     fn allow_list_accepts_known_keys_and_rejects_others() {
         assert!(is_allowed_secret_name("NVIDIA_NIM_API_KEY"));
+        for idx in 1..=10 {
+            let key_name = format!("NVIDIA_NIM_API_KEY{idx}");
+            assert!(is_allowed_secret_name(&key_name));
+        }
         assert!(is_allowed_secret_name("OPENAI_API_KEY"));
         assert!(is_allowed_secret_name("ANTHROPIC_API_KEY"));
         assert!(is_allowed_secret_name("GEMINI_API_KEY"));
@@ -155,6 +169,8 @@ mod tests {
         assert!(!is_allowed_secret_name("PATH"));
         assert!(!is_allowed_secret_name("MAGNM_ENGINE_TOKEN"));
         assert!(!is_allowed_secret_name("nvidia_nim_api_key"));
+        assert!(!is_allowed_secret_name("NVIDIA_NIM_API_KEY0"));
+        assert!(!is_allowed_secret_name("NVIDIA_NIM_API_KEY11"));
         assert!(!is_allowed_secret_name("NVIDIA_NIM_API_KEY_UNKNOWN"));
     }
 

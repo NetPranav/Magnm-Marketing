@@ -56,14 +56,18 @@ def main():
     engine_dir = os.path.join(root, "engine")
     venv_dir = os.path.join(root, ".venv-build")
     req_file = os.path.join(root, "scripts", "build_requirements.txt")
+    engine_req_file = os.path.join(root, "engine", "requirements.txt")
 
     vpy = _venv_python(venv_dir)
     if not os.path.exists(vpy):
         print(f"Creating build virtualenv at {venv_dir} ...")
         venv.create(venv_dir, with_pip=True)
 
-    print(f"Installing build dependencies from {req_file} ...")
-    subprocess.run([vpy, "-m", "pip", "install", "-r", req_file], check=True)
+    print(f"Installing build and engine dependencies from {req_file} and {engine_req_file} ...")
+    subprocess.run(
+        [vpy, "-m", "pip", "install", "-r", req_file, "-r", engine_req_file],
+        check=True,
+    )
 
     pyi_root = os.path.join(venv_dir, "pyinstaller")
     dist_dir = os.path.join(pyi_root, "dist")
@@ -103,6 +107,8 @@ def main():
     ]
     for mod in hidden_imports:
         cmd.extend(["--hidden-import", mod])
+    for pkg in ("ddgs", "playwright"):
+        cmd.extend(["--collect-all", pkg])
     for src, dest in data_specs:
         cmd.extend(["--add-data", f"{src}{os.pathsep}{dest}"])
     cmd.append(os.path.join(engine_dir, "main.py"))

@@ -7,12 +7,20 @@ This workspace runs on Linux with the Python engine in `engine/`.
 Copy `.env.example` to `.env` and fill in your API keys (such as `NVIDIA_NIM_API_KEY`).
 Real keys go only in `.env`, which is gitignored and must never be committed.
 
+## Development setup
+
+Create `.venv` and install the Python engine libraries and Playwright Chromium browser:
+
+```bash
+python3 scripts/dev_setup.py
+```
+
 ## Starting the dashboard
 
 Run the local dashboard server:
 
 ```bash
-python3 engine/server.py
+.venv/bin/python engine/server.py
 ```
 
 The dashboard is served at `http://127.0.0.1:5050`.

@@ -69,10 +69,11 @@ def _write_cached_catalog(cache_file, model_ids):
     os.replace(tmp_path, cache_file)
 
 
-def get_catalog(api_key, base_url=None, force=False, cache_path=None, ttl_hours=None, timeout=10):
+def get_catalog(api_key=None, base_url=None, force=False, cache_path=None, ttl_hours=None, timeout=10):
     """Return the set of available NIM model IDs, using a TTL cache in state/.
 
     Returns the cached set if fresh, or refetches from {base_url}/models.
+    When api_key is None, selects any healthy key from key_pool.
     On any network or HTTP error, returns the existing cached set if present, else None.
     """
     _catalog_state.last_error = None
@@ -88,6 +89,13 @@ def get_catalog(api_key, base_url=None, force=False, cache_path=None, ttl_hours=
         age = datetime.now(timezone.utc) - fetched_dt
         if timedelta(0) <= age < timedelta(hours=float(ttl_hours)):
             return cached_models
+
+    if api_key is None:
+        try:
+            import key_pool
+            api_key = key_pool.get_pool().peek_healthy_key()
+        except Exception:
+            api_key = ""
 
     if not api_key:
         return cached_models

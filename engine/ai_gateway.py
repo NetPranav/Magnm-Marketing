@@ -23,6 +23,8 @@ if ENGINE_DIR not in sys.path:
     sys.path.insert(0, ENGINE_DIR)
 
 import db
+import key_pool
+from key_pool import AIAuthError, AINotConnected
 import model_registry
 import paths
 
@@ -31,14 +33,6 @@ ENV_PATH = paths.data(".env")
 DEFAULT_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
 _sleep = time.sleep
-
-
-class AINotConnected(RuntimeError):
-    """Raised when no configured AI provider or local Ollama instance can answer."""
-
-
-class AIAuthError(RuntimeError):
-    """Raised when an AI provider rejects authentication credentials (HTTP 401/403)."""
 
 
 class EmptyModelResponse(RuntimeError):
@@ -277,7 +271,8 @@ def get_config():
             return env_val
         return default
 
-    global_nim_key = get_val("NVIDIA_NIM_API_KEY") or get_val("NVIDIA_API_KEY")
+    pool = key_pool.get_pool()
+    global_nim_key = pool.first_pool_key() or get_val("NVIDIA_NIM_API_KEY") or get_val("NVIDIA_API_KEY")
     nim_base_default = models_cfg.get("nim_base_url", DEFAULT_NIM_BASE_URL)
     default_backup = models_cfg.get("tiers", {}).get("reasoning", {}).get("backup", "")
 
@@ -320,21 +315,30 @@ def get_role_model_matrix():
     """Return per-role model & API key readiness metadata (never returning raw secrets)."""
     cfg = get_config()
     models_cfg = model_registry.load_models_config()
+    pool = key_pool.get_pool()
+    pool_count = pool.pool_count()
     global_key = cfg["NVIDIA_NIM_API_KEY"]
+    healthy_pool_key = pool.peek_healthy_key() or global_key
 
     catalog_by_key = {}
     matrix = []
     for role_id, spec in ROLE_MODEL_SPEC.items():
         role_key = cfg["ROLE_KEYS"].get(role_id, "")
         effective_key = role_key or global_key
-        key_source = "role" if role_key else ("global" if global_key else "none")
+        catalog_key = role_key or healthy_pool_key
+        if role_key:
+            key_source = "role"
+        elif pool_count > 0:
+            key_source = f"pool ({pool_count} key)" if pool_count == 1 else f"pool ({pool_count} keys)"
+        else:
+            key_source = "none"
 
-        if effective_key:
-            if effective_key not in catalog_by_key:
-                catalog_by_key[effective_key] = model_registry.get_catalog(
-                    effective_key, cfg["NVIDIA_NIM_BASE_URL"]
+        if catalog_key:
+            if catalog_key not in catalog_by_key:
+                catalog_by_key[catalog_key] = model_registry.get_catalog(
+                    catalog_key, cfg["NVIDIA_NIM_BASE_URL"]
                 )
-            catalog = catalog_by_key[effective_key]
+            catalog = catalog_by_key[catalog_key]
         else:
             catalog = None
 
@@ -359,7 +363,7 @@ def get_role_model_matrix():
             "timeout_s": tier_info["timeout_s"],
             "max_tokens": tier_info["max_tokens"],
             "specialization": spec["specialization"],
-            "has_key": bool(effective_key),
+            "has_key": bool(role_key or pool_count > 0),
             "key_source": key_source,
             "masked_key": _mask_secret(effective_key)
         })
@@ -438,8 +442,8 @@ def _read_http_error_body(err):
         return ""
 
 
-def _parse_retry_after(err, default_wait):
-    """Extract Retry-After seconds from an HTTPError if valid, capped at 20s."""
+def _extract_retry_after(err):
+    """Return Retry-After seconds from an HTTPError as float, or None if missing/invalid."""
     headers = getattr(err, "headers", None)
     if headers:
         raw = headers.get("Retry-After")
@@ -447,10 +451,155 @@ def _parse_retry_after(err, default_wait):
             try:
                 val = float(str(raw).strip())
                 if val >= 0:
-                    return min(val, 20.0)
+                    return val
             except (ValueError, TypeError):
                 pass
+    return None
+
+
+def _parse_retry_after(err, default_wait):
+    """Extract Retry-After seconds from an HTTPError if valid, capped at 20s."""
+    val = _extract_retry_after(err)
+    if val is not None:
+        return min(val, 20.0)
     return min(float(default_wait), 20.0)
+
+
+def _build_nim_success(model_requested, model_used, text, usage, fallback_reason=None, key_label=None):
+    out = {
+        "text": text,
+        "provider": "nvidia_nim",
+        "model_requested": model_requested,
+        "model_used": model_used,
+        "fallback_used": model_used != model_requested,
+        "fallback_reason": fallback_reason,
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+    }
+    if key_label is not None:
+        out["key_label"] = key_label
+    return out
+
+
+def _complete_nvidia_nim_with_pool(
+    pool,
+    role,
+    base_url,
+    system_prompt,
+    user_prompt,
+    model,
+    images=None,
+    fallback_model=None,
+    max_tokens=1500,
+    timeout=60,
+):
+    """Execute NIM completion using KeyPool rotation on 429 and 401/403."""
+    api_key, key_label = pool.acquire(role=role, sleep_fn=_sleep)
+    fallback_reason = None
+    last_error = None
+    tried_429_labels = set()
+    wait_retries = 0
+
+    while True:
+        tried_429_labels.add(key_label)
+        try:
+            text, usage = _single_nim_request_meta(
+                api_key, base_url, system_prompt, user_prompt, model,
+                images=images, max_tokens=max_tokens, timeout=timeout,
+            )
+            pool.report(key_label, "ok")
+            return _build_nim_success(model, model, text, usage, key_label=key_label)
+        except urllib.error.HTTPError as e:
+            err_body = _read_http_error_body(e)
+            last_error = e
+            if e.code in (401, 403):
+                pool.report(key_label, "auth_failed")
+                api_key, key_label = pool.acquire(role=role, sleep_fn=_sleep)
+                continue
+            if e.code == 400:
+                pool.report(key_label, "error")
+                raise RuntimeError(
+                    f"NVIDIA NIM bad request (HTTP 400) for '{model}': {err_body or e.reason}"
+                ) from e
+            if e.code == 429:
+                raw_retry = _extract_retry_after(e)
+                pool.report(key_label, "rate_limited", retry_after=raw_retry)
+                next_pair = pool.try_acquire_nowait(role=role, exclude_labels=tried_429_labels)
+                if next_pair is not None:
+                    api_key, key_label = next_pair
+                    continue
+                if wait_retries < 2:
+                    default_wait = 2 * (2 ** wait_retries)
+                    _sleep(_parse_retry_after(e, default_wait))
+                    wait_retries += 1
+                    maybe = pool.try_acquire_nowait(role=role)
+                    if maybe is not None:
+                        api_key, key_label = maybe
+                    continue
+                fallback_reason = f"HTTP 429: {err_body or e.reason}"
+                break
+            pool.report(key_label, "error")
+            if e.code in (404, 410):
+                fallback_reason = "model removed from NVIDIA catalog"
+                break
+            if e.code in (500, 502, 503, 504):
+                fallback_reason = f"HTTP {e.code}: {err_body or e.reason}"
+                break
+            raise RuntimeError(
+                f"NVIDIA NIM error (HTTP {e.code}) for '{model}': {err_body or e.reason}"
+            ) from e
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as e:
+            pool.report(key_label, "error")
+            last_error = e
+            fallback_reason = f"Network/Timeout: {e}"
+            break
+        except EmptyModelResponse as e:
+            pool.report(key_label, "error")
+            last_error = e
+            fallback_reason = "empty answer"
+            break
+
+    if fallback_model and model != fallback_model:
+        print(
+            f"[ai_gateway] NIM endpoint '{model}' failed ({fallback_reason}). Retrying backup '{fallback_model}'...",
+            file=sys.stderr,
+        )
+        while True:
+            try:
+                text, usage = _single_nim_request_meta(
+                    api_key, base_url, system_prompt, user_prompt, fallback_model,
+                    images=images, max_tokens=max_tokens, timeout=timeout,
+                )
+                pool.report(key_label, "ok")
+                return _build_nim_success(
+                    model, fallback_model, text, usage,
+                    fallback_reason=fallback_reason, key_label=key_label,
+                )
+            except urllib.error.HTTPError as e:
+                err_body = _read_http_error_body(e)
+                if e.code in (401, 403):
+                    pool.report(key_label, "auth_failed")
+                    api_key, key_label = pool.acquire(role=role, sleep_fn=_sleep)
+                    continue
+                if e.code == 429:
+                    pool.report(key_label, "rate_limited", retry_after=_extract_retry_after(e))
+                else:
+                    pool.report(key_label, "error")
+                raise RuntimeError(
+                    f"NVIDIA NIM backup '{fallback_model}' failed (HTTP {e.code}): {err_body or e.reason}"
+                ) from e
+            except (urllib.error.URLError, TimeoutError, socket.timeout) as e:
+                pool.report(key_label, "error")
+                raise RuntimeError(
+                    f"NVIDIA NIM backup '{fallback_model}' failed (Network/Timeout): {e}"
+                ) from e
+            except EmptyModelResponse as e:
+                pool.report(key_label, "error")
+                raise RuntimeError(
+                    f"NVIDIA NIM backup '{fallback_model}' failed (empty answer): {e}"
+                ) from e
+
+    raise RuntimeError(f"NVIDIA NIM error for '{model}': {fallback_reason}") from last_error
 
 
 def complete_nvidia_nim(
@@ -463,8 +612,24 @@ def complete_nvidia_nim(
     fallback_model=None,
     max_tokens=1500,
     timeout=60,
+    role=None,
+    pool=None,
 ):
-    """Execute completion against NVIDIA NIM with 429 retries and backup model fallback."""
+    """Execute completion against NVIDIA NIM with key-pool rotation, 429 retries, and backup fallback."""
+    if pool is not None or api_key is None:
+        return _complete_nvidia_nim_with_pool(
+            pool=pool if pool is not None else key_pool.get_pool(),
+            role=role,
+            base_url=base_url,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=model,
+            images=images,
+            fallback_model=fallback_model,
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+
     fallback_reason = None
     last_error = None
 
@@ -799,11 +964,13 @@ def _dispatch_non_confidential(
     model_tier,
     image_paths,
     force_live_only,
+    pool=None,
 ):
     """Run provider cascade for non-confidential completions."""
     failures = {}
+    has_nim = bool(nim_key) or (pool is not None and pool.has_keys(role=role_key))
 
-    if nim_key:
+    if has_nim:
         try:
             result = complete_nvidia_nim(
                 api_key=nim_key,
@@ -815,10 +982,12 @@ def _dispatch_non_confidential(
                 fallback_model=backup_model,
                 max_tokens=effective_max_tokens,
                 timeout=effective_timeout,
+                role=role_key,
+                pool=pool,
             )
             result["warnings"] = warnings
             return result
-        except AIAuthError:
+        except (AIAuthError, AINotConnected):
             raise
         except Exception as e:
             failures["nvidia_nim"] = _short_error_reason(e)
@@ -1006,12 +1175,14 @@ def generate_completion_with_meta(
         )
         return result
 
-    nim_key = cfg["ROLE_KEYS"].get(role_key) or cfg["NVIDIA_NIM_API_KEY"]
+    pool = key_pool.get_pool()
+    has_nim = pool.has_keys(role=role_key)
+    nim_key = pool.peek_healthy_key(role=role_key) if has_nim else (cfg["ROLE_KEYS"].get(role_key) or cfg["NVIDIA_NIM_API_KEY"])
     requested_model, backup_model, warnings = _resolve_for_role(role_key, cfg, models_cfg, nim_key)
     tier_info = model_registry.tier_settings(role_key)
     effective_timeout = tier_info["timeout_s"]
     effective_max_tokens = tier_info["max_tokens"] if max_tokens is None else int(max_tokens)
-    default_provider = "nvidia_nim" if nim_key else cfg["DEFAULT_PROVIDER"]
+    default_provider = "nvidia_nim" if (has_nim or nim_key) else cfg["DEFAULT_PROVIDER"]
 
     try:
         result = _dispatch_non_confidential(
@@ -1030,6 +1201,7 @@ def generate_completion_with_meta(
             model_tier=model_tier,
             image_paths=image_paths,
             force_live_only=force_live_only,
+            pool=pool if has_nim else None,
         )
     except Exception as e:
         err_msg = str(e)[:300] if isinstance(e, AINotConnected) else _short_error_reason(e)
@@ -1083,10 +1255,12 @@ def test_role_endpoint(role_id):
         return {"success": False, "role_id": role_key, "error": f"Unknown role '{role_key}'"}
 
     spec = ROLE_MODEL_SPEC[role_key]
-    nim_key = cfg["ROLE_KEYS"].get(role_key) or cfg["NVIDIA_NIM_API_KEY"]
+    pool = key_pool.get_pool()
+    has_nim = pool.has_keys(role=role_key)
+    nim_key = pool.peek_healthy_key(role=role_key) if has_nim else (cfg["ROLE_KEYS"].get(role_key) or cfg["NVIDIA_NIM_API_KEY"])
     primary, backup, warnings = _resolve_for_role(role_key, cfg, models_cfg, nim_key)
 
-    if not nim_key and not (cfg["OPENAI_API_KEY"] or cfg["ANTHROPIC_API_KEY"] or cfg["GEMINI_API_KEY"] or cfg["GROQ_API_KEY"]):
+    if not has_nim and not nim_key and not (cfg["OPENAI_API_KEY"] or cfg["ANTHROPIC_API_KEY"] or cfg["GEMINI_API_KEY"] or cfg["GROQ_API_KEY"]):
         return {
             "success": False,
             "role_id": role_key,

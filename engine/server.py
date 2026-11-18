@@ -34,6 +34,7 @@ import cmo_runtime
 import db
 import events
 import jobs
+import key_pool
 import paths
 import product_rules
 import repo_sync
@@ -370,6 +371,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         elif url.path == "/api/setup_check":
             self.send_json(setup_check.run_setup_checks())
+
+        elif url.path == "/api/key_pool":
+            self.send_json(key_pool.status())
 
         elif url.path == "/api/roster":
             self.send_json(agent_chat.get_roster_status())
@@ -1864,8 +1868,23 @@ FIRST.</textarea>
 
           <div class="grid-2" style="gap:14px;">
             <div>
-              <label class="field-label">Primary NVIDIA NIM API Key (NVIDIA_NIM_API_KEY) <span id="nimGlobalMaskBadge" class="code-tag" style="margin-left:6px;">Unset</span></label>
-              <input type="password" id="envNimGlobalKey" placeholder="nvapi-... (leave blank to keep existing)">
+              <label class="field-label">NVIDIA NIM API Key <span id="nimGlobalMaskBadge" class="code-tag" style="margin-left:6px;">Unset</span></label>
+              <div style="display:flex; gap:8px;">
+                <select id="envNimKeyName" style="width:215px; flex-shrink:0;">
+                  <option value="NVIDIA_NIM_API_KEY">NVIDIA_NIM_API_KEY</option>
+                  <option value="NVIDIA_NIM_API_KEY1">NVIDIA_NIM_API_KEY1</option>
+                  <option value="NVIDIA_NIM_API_KEY2">NVIDIA_NIM_API_KEY2</option>
+                  <option value="NVIDIA_NIM_API_KEY3">NVIDIA_NIM_API_KEY3</option>
+                  <option value="NVIDIA_NIM_API_KEY4">NVIDIA_NIM_API_KEY4</option>
+                  <option value="NVIDIA_NIM_API_KEY5">NVIDIA_NIM_API_KEY5</option>
+                  <option value="NVIDIA_NIM_API_KEY6">NVIDIA_NIM_API_KEY6</option>
+                  <option value="NVIDIA_NIM_API_KEY7">NVIDIA_NIM_API_KEY7</option>
+                  <option value="NVIDIA_NIM_API_KEY8">NVIDIA_NIM_API_KEY8</option>
+                  <option value="NVIDIA_NIM_API_KEY9">NVIDIA_NIM_API_KEY9</option>
+                  <option value="NVIDIA_NIM_API_KEY10">NVIDIA_NIM_API_KEY10</option>
+                </select>
+                <input type="password" id="envNimGlobalKey" placeholder="nvapi-... (leave blank to keep existing)" style="flex:1;">
+              </div>
             </div>
             <div class="grid-2" style="gap:10px;">
               <div>
@@ -1884,6 +1903,21 @@ FIRST.</textarea>
             <button class="btn btn-lime" onclick="saveFullEnvConfig()">
               <svg class="icon"><use href="#icon-check"/></svg> Save Gateway &amp; Per-Role Models to .env
             </button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">NVIDIA keys</span>
+            <div style="display:flex; align-items:center; gap:10px;">
+              <span class="panel-meta" id="keyPoolSummary">Loading pool...</span>
+              <button class="btn btn-sm" onclick="loadKeyPool()">
+                <svg class="icon"><use href="#icon-refresh"/></svg> Refresh
+              </button>
+            </div>
+          </div>
+          <div id="keyPoolList" style="display:flex; flex-direction:column; gap:6px;">
+            <div class="panel-meta">Open AI Models &amp; .env to inspect the NVIDIA key pool.</div>
           </div>
         </div>
 
@@ -2102,6 +2136,7 @@ FIRST.</textarea>
       if (tabId === 'tab-team') loadRoster();
       if (tabId === 'tab-models') {
         if (latestState) renderModelsStudio(latestState, true);
+        loadKeyPool();
         loadSetupCheck();
       }
     }
@@ -2406,6 +2441,51 @@ FIRST.</textarea>
       return upper.includes('KEY') || upper.includes('TOKEN') || upper.includes('SECRET');
     }
 
+    async function loadKeyPool() {
+      const listEl = document.getElementById('keyPoolList');
+      const sumEl = document.getElementById('keyPoolSummary');
+      if (!listEl) return;
+      try {
+        const res = await fetch('/api/key_pool');
+        const keys = await res.json();
+        if (!Array.isArray(keys) || keys.length === 0) {
+          if (sumEl) sumEl.innerText = 'No keys configured';
+          listEl.innerHTML = '<div class="panel-meta">No NVIDIA keys found. Add NVIDIA_NIM_API_KEY1..10 above.</div>';
+          return;
+        }
+        const healthyCount = keys.filter(k => k.healthy).length;
+        if (sumEl) sumEl.innerText = `${healthyCount} / ${keys.length} healthy`;
+        listEl.innerHTML = keys.map(k => {
+          let stateLabel = 'healthy';
+          let badgeCls = 'badge-ok';
+          if (k.disabled_reason) {
+            stateLabel = 'rejected';
+            badgeCls = 'badge-danger';
+          } else if (k.cooling_down_s > 0) {
+            stateLabel = `cooling (${k.cooling_down_s}s)`;
+            badgeCls = 'badge-warn';
+          } else if (!k.healthy) {
+            stateLabel = 'cooling';
+            badgeCls = 'badge-warn';
+          }
+          return `
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:6px 10px; background:#101319; border:1px solid var(--border); border-radius:6px;">
+              <div style="display:flex; align-items:center; gap:10px; min-width:0;">
+                <span class="code-tag">${escapeHtml(k.label)}</span>
+                <span class="panel-meta">${escapeHtml(k.masked)}</span>
+              </div>
+              <div style="display:flex; align-items:center; gap:10px;">
+                <span class="panel-meta">${Number(k.requests_last_min || 0)} req/min</span>
+                <span class="badge ${badgeCls}">${escapeHtml(stateLabel)}</span>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } catch (e) {
+        listEl.innerHTML = '<div class="panel-meta" style="color:var(--danger);">Failed to load NVIDIA key pool.</div>';
+      }
+    }
+
     async function loadSetupCheck() {
       const listEl = document.getElementById('setupCheckList');
       const sumEl = document.getElementById('setupCheckSummary');
@@ -2491,7 +2571,8 @@ FIRST.</textarea>
         NIM_FALLBACK_MODEL: document.getElementById('envNimFallbackModel').value.trim()
       };
       const gk = document.getElementById('envNimGlobalKey').value.trim();
-      if (gk) updates['NVIDIA_NIM_API_KEY'] = gk;
+      const nimKeyName = (document.getElementById('envNimKeyName')?.value || 'NVIDIA_NIM_API_KEY').trim();
+      if (gk) updates[nimKeyName] = gk;
       const ok = document.getElementById('envOpenAiKey').value.trim();
       if (ok) updates['OPENAI_API_KEY'] = ok;
       const gmk = document.getElementById('envGeminiKey').value.trim();
@@ -2557,6 +2638,7 @@ FIRST.</textarea>
         document.getElementById('envNimGlobalKey').value = '';
         await fetchStatus();
         renderModelsStudio(latestState, true);
+        loadKeyPool();
       } else {
         alert('Error saving .env: ' + (out.error || 'Unknown'));
       }
