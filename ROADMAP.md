@@ -10,6 +10,14 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
   - Confidential work goes to Ollama only.
   - Product rules in `config/product_rules.json`.
   - 30 unit tests.
+- **Phase 1 done (2026-11-19):** built by agy, reviewed and tested by Claude.
+  - Tauri desktop app (`apps/desktop`) runs the engine as a packaged sidecar.
+  - Per-user data folder, local API token, keys in the OS keychain.
+  - SQLite storage, job queue with live updates, keep-awake, setup check, import of the old folder.
+  - Linux `.deb` built and launched.
+  - CI workflow for Windows, macOS and Linux (not run yet, needs the updater signing key).
+  - Models re-selected from live NIM tests.
+  - 63 engine tests and 6 Rust tests.
 
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.
