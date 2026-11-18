@@ -168,7 +168,7 @@ def write_draft(ctx, type, platform, title, body, content_id=None, notes=None, p
     },
 )
 def read_content(ctx, content_id, version=None):
-    item = db.get_content_item(content_id, version=version, include_versions=True)
+    item = db.get_content_item(content_id, version=version, include_versions=False)
     if item is None:
         return {"error": f"Content item '{content_id}' not found"}
     return item

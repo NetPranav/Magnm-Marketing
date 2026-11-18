@@ -186,27 +186,35 @@ def _truncate_result_if_needed(result):
     trimmed["truncated"] = True
     trimmed["note"] = _TRUNCATION_NOTE
 
-    # Shrink largest string fields first to preserve structure when possible.
+    # Shrink whichever top-level string or list field is largest in serialized size first.
     while len(json.dumps(trimmed, ensure_ascii=False)) > MAX_RESULT_CHARS:
+        cur_total = len(json.dumps(trimmed, ensure_ascii=False))
+        excess = cur_total - MAX_RESULT_CHARS
         str_keys = [
             k for k, v in trimmed.items()
             if k not in ("note",) and isinstance(v, str) and len(v) > 80
         ]
-        if str_keys:
-            biggest_k = max(str_keys, key=lambda k: len(trimmed[k]))
-            excess = len(json.dumps(trimmed, ensure_ascii=False)) - MAX_RESULT_CHARS
-            cur = trimmed[biggest_k]
-            keep = max(0, len(cur) - max(excess + 32, 64))
-            trimmed[biggest_k] = cur[:keep] + "...[truncated]"
-            continue
-
         list_keys = [
             k for k, v in trimmed.items()
             if isinstance(v, list) and len(v) > 0
         ]
+
+        biggest_sk = max(str_keys, key=lambda k: len(trimmed[k])) if str_keys else None
+        biggest_s_len = len(trimmed[biggest_sk]) if biggest_sk else 0
+
+        biggest_lk = None
+        biggest_l_len = 0
         if list_keys:
             biggest_lk = max(list_keys, key=lambda k: len(json.dumps(trimmed[k], ensure_ascii=False)))
+            biggest_l_len = len(json.dumps(trimmed[biggest_lk], ensure_ascii=False))
+
+        if biggest_lk and biggest_l_len >= biggest_s_len:
             trimmed[biggest_lk] = trimmed[biggest_lk][:-1]
+            continue
+        if biggest_sk:
+            cur = trimmed[biggest_sk]
+            keep = max(0, len(cur) - max(excess + 32, 64))
+            trimmed[biggest_sk] = cur[:keep] + "...[truncated]"
             continue
 
         break

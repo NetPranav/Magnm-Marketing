@@ -17,13 +17,16 @@ if _ENGINE_DIR not in sys.path:
 
 import agent_runtime
 import agents
+import ai_gateway
 import db
 import events
 import jobs
 import paths
 import platforms
 import posting_kit
+import product_rules
 from tools import content as content_tools
+from tools import core as core_tools
 
 _IST = ZoneInfo("Asia/Kolkata")
 
@@ -607,26 +610,217 @@ class BlogWorkflow(BaseWorkflow):
         return StepResult.wait_user(gate["question"], options=gate["options"], gate_id=gate["id"])
 
     def _parse_outline_sections(self, outline_body):
-        sections = []
+        return [s["heading"] for s in self._parse_outline_sections_with_meta(outline_body, 1600)]
+
+    @staticmethod
+    def _parse_length_words_target(length_words):
+        """Return target word count (midpoint for a range like '1200-2000')."""
+        if isinstance(length_words, (int, float)) and length_words > 0:
+            return int(round(length_words))
+        raw = str(length_words or "").replace(",", "").strip()
+        nums = [int(n) for n in re.findall(r"\d+", raw)]
+        if len(nums) >= 2:
+            return int(round((nums[0] + nums[1]) / 2.0))
+        if len(nums) == 1 and nums[0] > 0:
+            return nums[0]
+        return 1600
+
+    @staticmethod
+    def _extract_tldr_block(outline_body):
+        """Extract the '## TL;DR' section from an outline if present."""
+        lines = (outline_body or "").splitlines()
+        in_tldr = False
+        collected = []
+        for line in lines:
+            if re.match(r"^\s*##\s+", line):
+                heading = re.sub(r"^\s*##\s+", "", line).strip().lower()
+                if heading in ("tl;dr", "tldr", "tl:dr"):
+                    in_tldr = True
+                    collected.append(line.rstrip())
+                    continue
+                if in_tldr:
+                    break
+            elif in_tldr:
+                collected.append(line.rstrip())
+        return "\n".join(collected).strip()
+
+    @staticmethod
+    def _extract_weight_hint(text, length_words_target):
+        """Extract optional weight fraction or word hint from a heading/intent string."""
+        s = str(text or "")
+        m_w = re.search(r"[\[(]\s*weight\s*[:=]\s*(\d+(?:\.\d+)?)\s*(%?)\s*[\])]", s, re.IGNORECASE)
+        if m_w:
+            val = float(m_w.group(1))
+            w = val / 100.0 if (m_w.group(2) == "%" or val > 1.0) else val
+            cleaned = (s[: m_w.start()] + s[m_w.end() :]).strip()
+            return w, cleaned
+        m_pct = re.search(r"[\[(]\s*(\d+(?:\.\d+)?)\s*%\s*[\])]", s)
+        if m_pct:
+            w = float(m_pct.group(1)) / 100.0
+            cleaned = (s[: m_pct.start()] + s[m_pct.end() :]).strip()
+            return w, cleaned
+        m_words = re.search(r"[\[(]\s*~?(\d+)\s*words?\s*[\])]", s, re.IGNORECASE)
+        if m_words and length_words_target > 0:
+            w = float(m_words.group(1)) / float(length_words_target)
+            cleaned = (s[: m_words.start()] + s[m_words.end() :]).strip()
+            return w, cleaned
+        return None, s.strip()
+
+    def _parse_outline_sections_with_meta(self, outline_body, length_words_target):
+        """Parse sections with headings, briefs, normalized weights, and word budgets."""
+        raw_sections = []
+        current = None
         for line in (outline_body or "").splitlines():
             m = re.match(r"^\s*##\s+(.+?)\s*$", line)
             if m:
-                heading = m.group(1).strip()
-                if heading.lower() in ("tl;dr", "tldr", "tl:dr"):
+                raw_heading = m.group(1).strip()
+                if raw_heading.lower() in ("tl;dr", "tldr", "tl:dr"):
+                    current = None
                     continue
-                sections.append(heading)
-        if not sections:
+                weight, clean_heading = self._extract_weight_hint(raw_heading, length_words_target)
+                current = {"heading": clean_heading, "brief_lines": [], "weight": weight}
+                raw_sections.append(current)
+            elif current is not None and line.strip():
+                if current["weight"] is None:
+                    w_line, cleaned_line = self._extract_weight_hint(line.strip(), length_words_target)
+                    if w_line is not None:
+                        current["weight"] = w_line
+                        if cleaned_line:
+                            current["brief_lines"].append(cleaned_line)
+                        continue
+                current["brief_lines"].append(line.strip())
+
+        if not raw_sections:
             for line in (outline_body or "").splitlines():
                 m = re.match(r"^\s*(?:\d+[.)]|###)\s+(.+?)\s*$", line)
                 if m:
-                    heading = m.group(1).strip()
-                    if heading.lower() not in ("tl;dr", "tldr"):
-                        sections.append(heading)
-        if not sections:
-            sections = ["Introduction", "Core Architecture", "Practical Walkthrough", "Summary"]
-        return sections
+                    raw_heading = m.group(1).strip()
+                    if raw_heading.lower() not in ("tl;dr", "tldr", "tl:dr"):
+                        weight, clean_heading = self._extract_weight_hint(raw_heading, length_words_target)
+                        raw_sections.append({"heading": clean_heading, "brief_lines": [], "weight": weight})
+
+        if not raw_sections:
+            for default_h in ("Introduction", "Core Architecture", "Practical Walkthrough", "Summary"):
+                raw_sections.append({"heading": default_h, "brief_lines": [], "weight": None})
+
+        n = len(raw_sections)
+        specified = [s["weight"] for s in raw_sections if s["weight"] is not None and s["weight"] > 0]
+        unspecified_count = sum(1 for s in raw_sections if s["weight"] is None or s["weight"] <= 0)
+        if not specified:
+            weights = [1.0 / n] * n
+        elif unspecified_count == 0:
+            total_w = sum(s["weight"] for s in raw_sections)
+            weights = [s["weight"] / total_w for s in raw_sections]
+        else:
+            spec_sum = sum(specified)
+            rem = (1.0 - spec_sum) / unspecified_count if spec_sum < 1.0 else 1.0 / n
+            raw_w = [
+                (s["weight"] if (s["weight"] is not None and s["weight"] > 0) else rem)
+                for s in raw_sections
+            ]
+            total_w = sum(raw_w) or 1.0
+            weights = [w / total_w for w in raw_w]
+
+        specs = []
+        for s, w in zip(raw_sections, weights):
+            specs.append(
+                {
+                    "heading": s["heading"],
+                    "brief": " ".join(s["brief_lines"]).strip() or s["heading"],
+                    "weight": round(w, 4),
+                    "budget": max(1, int(round(length_words_target * w))),
+                }
+            )
+        return specs
+
+    @staticmethod
+    def _fetch_grounding_material(topic, product_id=None):
+        """Fetch facts, rules, shipped repo changes, and research notes once via tool functions."""
+        facts_res = core_tools.read_product_facts(None, product_id=product_id)
+        repo_res = core_tools.read_repo_changes(None, repo_id=product_id, limit=10)
+        if isinstance(repo_res, dict) and repo_res.get("error"):
+            repo_res = {"synced_at": None, "repositories": []}
+
+        research_notes = []
+        seen = set()
+        queries = []
+        if topic:
+            queries.append(topic)
+        if product_id and str(product_id).lower() not in [q.lower() for q in queries]:
+            queries.append(str(product_id))
+        for q in queries:
+            res = core_tools.search_research(None, query=q, limit=6)
+            for item in (res or {}).get("results") or []:
+                key = (item.get("title") or "", item.get("url") or "")
+                if key not in seen:
+                    seen.add(key)
+                    research_notes.append(item)
+                if len(research_notes) >= 8:
+                    break
+            if len(research_notes) >= 8:
+                break
+
+        return {
+            "product_facts": (facts_res or {}).get("product_facts") or "",
+            "product_rules": (facts_res or {}).get("product_rules") or "",
+            "repo_changes": repo_res if isinstance(repo_res, dict) else {},
+            "research_notes": research_notes,
+        }
+
+    @staticmethod
+    def _format_grounding_block(grounding):
+        """Format cached grounding dict into a plain-text prompt block."""
+        parts = []
+        pf = (grounding.get("product_facts") or "").strip()
+        if pf:
+            parts.append(f"Verified product facts:\n{pf}")
+        pr = (grounding.get("product_rules") or "").strip()
+        if pr:
+            parts.append(f"Product rules:\n{pr}")
+        repos = (grounding.get("repo_changes") or {}).get("repositories") or []
+        if repos:
+            repo_lines = ["Shipped items / recent repo changes:"]
+            for r in repos:
+                repo_lines.append(
+                    f"- {r.get('name') or r.get('id')} (status={r.get('status')}, version={r.get('version')})"
+                )
+                for c in (r.get("recent_commits") or [])[:5]:
+                    repo_lines.append(f"  * {c.get('date', '')} {c.get('hash', '')}: {c.get('message', '')}".strip())
+            parts.append("\n".join(repo_lines))
+        notes = grounding.get("research_notes") or []
+        if notes:
+            note_lines = ["Relevant research notes:"]
+            for n in notes[:6]:
+                summary = (n.get("summary") or "").strip()
+                note_lines.append(f"- {n.get('title') or 'Note'}: {summary[:240]}")
+            parts.append("\n".join(note_lines))
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _last_paragraph(text):
+        """Return the last non-heading paragraph of text for section-to-section flow."""
+        blocks = [b.strip() for b in re.split(r"\n\s*\n+", str(text or "").strip()) if b.strip()]
+        for blk in reversed(blocks):
+            if not re.match(r"^\s*#{1,4}\s+\S+$", blk):
+                return blk
+        return blocks[-1] if blocks else ""
+
+    @staticmethod
+    def _ensure_section_heading(text, heading):
+        """Strip outer markdown fences if present and ensure section starts with '## <heading>'."""
+        cleaned = str(text or "").strip()
+        fence = re.match(r"^```(?:markdown|md)?\s*\n(.*?)\n```\s*$", cleaned, re.DOTALL | re.IGNORECASE)
+        if fence:
+            cleaned = fence.group(1).strip()
+        if not cleaned:
+            return ""
+        first_line = cleaned.splitlines()[0].strip()
+        if not re.match(r"^#{1,3}\s+", first_line):
+            return f"## {heading}\n\n{cleaned}"
+        return cleaned
 
     def step_draft_sections(self, run, state):
+        step_t0 = time.monotonic()
         blog_id = state.get("outline_content_id")
         if not blog_id:
             return StepResult.fail("Missing outline_content_id")
@@ -634,94 +828,163 @@ class BlogWorkflow(BaseWorkflow):
         if item is None:
             return StepResult.fail(f"Blog content item '{blog_id}' not found")
 
-        sections = state.get("sections")
-        if not sections:
-            sections = self._parse_outline_sections(item.get("body") or "")
-            state["sections"] = sections
+        inputs = run["inputs"]
+        product_id = inputs.get("product_id")
+        audience = inputs.get("audience") or "developers and technical builders"
+
+        if not state.get("outline_body"):
+            state["outline_body"] = item.get("body") or ""
+        outline_body = state["outline_body"]
+
+        if not state.get("grounding"):
+            state["grounding"] = self._fetch_grounding_material(inputs["topic"], product_id=product_id)
+            _persist_state(run["id"], state)
+        grounding = state["grounding"]
+        grounding_text = self._format_grounding_block(grounding)
+
+        length_target = self._parse_length_words_target(inputs.get("length_words"))
+        state["length_words_target"] = length_target
+
+        section_specs = state.get("section_specs")
+        if not section_specs:
+            existing_sections = state.get("sections")
+            if existing_sections:
+                n = len(existing_sections)
+                w = 1.0 / max(1, n)
+                section_specs = [
+                    {
+                        "heading": h,
+                        "brief": h,
+                        "weight": round(w, 4),
+                        "budget": max(1, int(round(length_target * w))),
+                    }
+                    for h in existing_sections
+                ]
+            else:
+                section_specs = self._parse_outline_sections_with_meta(outline_body, length_target)
+                state["sections"] = [s["heading"] for s in section_specs]
+            state["section_specs"] = section_specs
             _persist_state(run["id"], state)
 
         completed = state.setdefault("completed_sections", [])
-        inputs = run["inputs"]
-        product_id = inputs.get("product_id")
+        step_timings = state.setdefault("step_timings_ms", {})
+        tldr_block = self._extract_tldr_block(outline_body)
+        writer_sys_prompt = agents.build_system_prompt("writer")
+        is_confidential = bool(
+            (product_id and product_id in product_rules.confidential_product_ids())
+            or product_rules.mentions_confidential(inputs["topic"])
+        )
+        total_sections = len(section_specs)
 
-        for idx, heading in enumerate(sections):
+        for idx, spec in enumerate(section_specs):
             if idx in completed:
                 continue
+
+            latest_run = db.get_workflow_run(run["id"])
+            if latest_run and latest_run["status"] == "cancelled":
+                raise RuntimeError("Workflow run cancelled")
+
+            heading = spec["heading"]
+            budget = int(spec["budget"])
+            brief = spec.get("brief") or heading
             current_item = db.get_content_item(blog_id)
-            prev_ver = current_item["current_version"]
             prev_body = current_item.get("body") or ""
+            prev_words = 0 if idx == 0 else len(prev_body.split())
 
-            if idx == 0:
-                body_guidance = (
-                    "Start the full article by keeping a concise '## TL;DR' followed by this first section. "
-                    f"Existing outline:\n{prev_body}"
-                )
-            else:
-                body_guidance = (
-                    "Append this new section to the existing article body (preserve all earlier sections verbatim "
-                    f"and add '## {heading}' at the end).\nExisting article body:\n{prev_body}"
-                )
-
-            instruction = (
-                f"Draft section {idx + 1}/{len(sections)} ('{heading}') for blog content_id='{blog_id}' "
-                f"on topic: {inputs['topic']}.\n"
-                f"Requirements:\n"
-                "1. Call read_product_facts first so every claim is grounded.\n"
-                "2. Write this section in <= 400 words. Direct, concrete tone, zero emojis.\n"
-                f"3. {body_guidance}\n"
-                f"4. Save via write_draft(type='blog', platform='blog', content_id='{blog_id}', "
-                f"title={json.dumps(current_item['title'])}, body=<updated full article body>, "
-                f"notes={json.dumps(f'section {idx + 1}/{len(sections)}: {heading}')}, "
-                f"product_id={json.dumps(product_id)})."
-            )
-            sess = _run_agent_for_step(
-                run,
-                state,
-                f"section_{idx}",
-                "writer",
-                instruction,
-                title=f"Blog section {idx + 1}: {heading}",
-            )
-            if sess["status"] == "waiting_user":
-                return _session_wait_result(sess, state)
-            if sess["status"] in ("failed", "cancelled"):
-                return StepResult.fail(sess.get("error") or f"Writer section {idx + 1} {sess['status']}")
-
-            updated = db.get_content_item(blog_id)
-            if updated["current_version"] == prev_ver:
-                sec_text = (sess.get("result_text") or "").strip()
-                if sec_text:
-                    new_body = (prev_body.rstrip() + "\n\n" + sec_text).strip() if idx > 0 else sec_text
-                    content_tools.write_draft(
-                        None,
-                        type="blog",
-                        platform="blog",
-                        title=current_item["title"],
-                        body=new_body,
-                        content_id=blog_id,
-                        notes=f"section {idx + 1}/{len(sections)}: {heading}",
-                        product_id=product_id,
-                    )
-            elif idx > 0 and prev_body.strip():
-                # Ensure earlier sections were not accidentally dropped when writer passed only the new section
-                new_body = updated.get("body") or ""
-                anchor = prev_body.strip()[:80]
-                if anchor not in new_body:
-                    stitched = prev_body.rstrip() + "\n\n" + new_body.lstrip()
-                    content_tools.write_draft(
-                        None,
-                        type="blog",
-                        platform="blog",
-                        title=updated["title"],
-                        body=stitched,
-                        content_id=blog_id,
-                        notes=f"section {idx + 1}/{len(sections)} (merged): {heading}",
-                        product_id=product_id,
-                    )
-
-            completed.append(idx)
+            state["progress"] = f"section {idx + 1}/{total_sections}, {prev_words} words so far"
             _persist_state(run["id"], state)
 
+            if idx == 0:
+                flow_context = (
+                    f"Opening TL;DR (already kept at top of post):\n{tldr_block}"
+                    if tldr_block
+                    else "(Opening section of the article.)"
+                )
+            else:
+                flow_context = (
+                    "Previous section's last paragraph (continue smoothly from this without repeating it):\n"
+                    f"{self._last_paragraph(prev_body)}"
+                )
+
+            user_prompt = (
+                f"Draft ONLY section {idx + 1}/{total_sections} ('{heading}') for the blog post.\n"
+                f"Blog title: {current_item['title']}\n"
+                f"Topic: {inputs['topic']}\n"
+                f"Target audience: {audience}\n"
+                "Do NOT call any tools or output tool calls. All grounding facts are included below.\n\n"
+                f"### Grounding Material\n{grounding_text}\n\n"
+                f"### Full Approved Outline\n{outline_body}\n\n"
+                f"### Flow Context\n{flow_context}\n\n"
+                "### Section Brief & Word Budget\n"
+                f"- Section {idx + 1}/{total_sections}: ## {heading}\n"
+                f"- Section brief: {brief}\n"
+                f"- Word budget: {budget} words (aim close to {budget} words; strictly stay under {int(budget * 1.3)} words).\n"
+                "- Direct, concrete, builder-to-builder tone. Zero emojis. Only state verified facts.\n"
+                f"- Output ONLY this single markdown section starting with '## {heading}'."
+            )
+
+            sec_t0 = time.monotonic()
+            res = ai_gateway.generate_completion_with_meta(
+                system_prompt=writer_sys_prompt,
+                user_prompt=user_prompt,
+                agent_role="writer",
+                tier="longform",
+                confidential=is_confidential,
+            )
+            section_text = self._ensure_section_heading(res.get("text") or "", heading)
+            if not section_text:
+                return StepResult.fail(f"Writer returned empty text for section {idx + 1} ('{heading}')")
+
+            sec_words = len(section_text.split())
+            if sec_words > 1.3 * budget:
+                shorten_prompt = (
+                    f"Tighten to {budget} words, keep facts unchanged.\n"
+                    f"Current length: {sec_words} words. Target budget: {budget} words.\n"
+                    f"Keep the heading '## {heading}' and all verified technical facts intact; cut filler and repetition.\n"
+                    "Do NOT call any tools. Output ONLY the tightened markdown section.\n\n"
+                    f"### Grounding Material\n{grounding_text}\n\n"
+                    f"### Section to Tighten\n{section_text}"
+                )
+                short_res = ai_gateway.generate_completion_with_meta(
+                    system_prompt=writer_sys_prompt,
+                    user_prompt=shorten_prompt,
+                    agent_role="writer",
+                    tier="longform",
+                    confidential=is_confidential,
+                )
+                short_text = self._ensure_section_heading(short_res.get("text") or "", heading)
+                if short_text:
+                    section_text = short_text
+
+            if idx == 0:
+                if tldr_block and "## tl;dr" not in section_text.lower() and "## tldr" not in section_text.lower():
+                    new_body = f"{tldr_block}\n\n{section_text}".strip()
+                else:
+                    new_body = section_text.strip()
+            else:
+                new_body = f"{prev_body.rstrip()}\n\n{section_text}".strip()
+
+            content_tools.write_draft(
+                None,
+                type="blog",
+                platform="blog",
+                title=current_item["title"],
+                body=new_body,
+                content_id=blog_id,
+                notes=f"section {idx + 1}/{total_sections}: {heading}",
+                product_id=product_id,
+            )
+
+            sec_elapsed_ms = int((time.monotonic() - sec_t0) * 1000)
+            words_so_far = len(new_body.split())
+            completed.append(idx)
+            state["words_so_far"] = words_so_far
+            state["progress"] = f"section {idx + 1}/{total_sections}, {words_so_far} words so far"
+            step_timings[f"section_{idx}"] = sec_elapsed_ms
+            _persist_state(run["id"], state)
+
+        step_timings["draft_sections"] = int((time.monotonic() - step_t0) * 1000)
+        _persist_state(run["id"], state)
         return StepResult.next()
 
     def step_review_blog(self, run, state):
@@ -733,6 +996,9 @@ class BlogWorkflow(BaseWorkflow):
         return StepResult.next()
 
     def step_fix_blog(self, run, state):
+        """Apply reviewer fixes via ONE direct call with the full body in the prompt.
+        A result much shorter than the original is rejected (keeps the original), so a
+        truncated reply can never replace the article."""
         if state.get("blog_fix_done"):
             return StepResult.next()
         rev = state.get("blog_review") or {}
@@ -740,72 +1006,96 @@ class BlogWorkflow(BaseWorkflow):
             state["blog_fix_done"] = True
             return StepResult.next()
         blog_id = state.get("outline_content_id")
-        instruction = (
-            f"Revise blog content_id='{blog_id}' once to fix all reviewer warnings:\n"
-            f"{rev.get('notes', '')}\n"
-            "Call read_content, fix the issues, save a new version via write_draft(content_id=...), "
-            "and verify with check_text."
+        item = db.get_content_item(blog_id)
+        if item is None:
+            return StepResult.fail(f"Blog '{blog_id}' not found")
+        body = item.get("body") or ""
+        grounding_text = self._format_grounding_block(state.get("grounding") or {}) if state.get("grounding") else ""
+        prompt = (
+            "Revise this blog article to fix ONLY the reviewer's points below. Keep everything else, "
+            "including all sections, headings and verified facts. Output the COMPLETE revised article "
+            "in markdown and nothing else.\n\n"
+            f"### Reviewer notes\n{rev.get('notes', '')}\n\n"
+            + (f"### Grounding Material\n{grounding_text}\n\n" if grounding_text else "")
+            + f"### Article\n{body}"
         )
-        sess = _run_agent_for_step(run, state, "fix_blog", "writer", instruction, title="Fix blog")
-        if sess["status"] == "waiting_user":
-            return _session_wait_result(sess, state)
-        if sess["status"] in ("failed", "cancelled"):
-            return StepResult.fail(sess.get("error") or f"Writer fix_blog {sess['status']}")
+        res = ai_gateway.generate_completion_with_meta(
+            system_prompt=agents.build_system_prompt("writer"),
+            user_prompt=prompt,
+            agent_role="writer",
+            tier="longform",
+            confidential=self._blog_is_confidential(run),
+        )
+        revised = (res.get("text") or "").strip()
+        old_words, new_words = len(body.split()), len(revised.split())
+        if revised and new_words >= 0.8 * old_words:
+            content_tools.write_draft(
+                None, type="blog", platform="blog", title=item.get("title") or "",
+                body=revised, content_id=blog_id, notes="reviewer fixes applied",
+                product_id=item.get("product_id"),
+            )
+            state["blog_fix_result"] = f"applied ({old_words} -> {new_words} words)"
+        else:
+            state["blog_fix_result"] = (
+                f"rejected: revision had {new_words} words vs {old_words} (possible truncation); kept original"
+            )
         state["blog_fix_done"] = True
         return StepResult.next()
 
+    def _blog_is_confidential(self, run):
+        inputs = run["inputs"]
+        product_id = inputs.get("product_id")
+        return bool(
+            (product_id and product_id in product_rules.confidential_product_ids())
+            or product_rules.mentions_confidential(inputs["topic"])
+        )
+
     def step_seo_pass(self, run, state):
+        """SEO metadata via ONE direct call. The article body is never sent back through a
+        model here: an earlier agent-session version re-saved a truncated body (data loss)."""
         if state.get("seo_done"):
             return StepResult.next()
         blog_id = state.get("outline_content_id")
         item = db.get_content_item(blog_id)
         if item is None:
             return StepResult.fail(f"Blog '{blog_id}' not found")
-        instruction = (
-            f"Run an SEO pass on blog content_id='{blog_id}'.\n"
-            "1. Call read_content(content_id=...) to read the full article.\n"
-            "2. Produce valid JSON with exact keys: seo_title (<= 60 chars), "
-            "meta_description (<= 155 chars), and slug (lowercase hyphenated).\n"
-            f"3. Save a new version via write_draft(type='blog', platform='blog', content_id='{blog_id}', "
-            f"title=<updated or current title>, body=<full body>, notes=<the JSON string>).\n"
-            "4. Also output the JSON object in your final reply."
+        body = item.get("body") or ""
+        headings = "\n".join(line for line in body.splitlines() if line.lstrip().startswith("#"))
+        prompt = (
+            f"Blog title: {item.get('title') or run['inputs']['topic']}\n"
+            f"Headings:\n{headings}\n\nOpening of the article:\n{body[:2500]}\n\n"
+            "Return ONLY a JSON object with exactly these keys: seo_title (max 60 characters), "
+            "meta_description (max 155 characters), slug (lowercase, hyphen-separated). "
+            "Only describe what the article says. No other text."
         )
-        sess = _run_agent_for_step(run, state, "seo_pass", "writer", instruction, title="Blog SEO pass")
-        if sess["status"] == "waiting_user":
-            return _session_wait_result(sess, state)
-        if sess["status"] in ("failed", "cancelled"):
-            return StepResult.fail(sess.get("error") or f"SEO pass {sess['status']}")
-
-        updated = db.get_content_item(blog_id)
-        seo_json = _extract_json_block(updated.get("notes") or "") or _extract_json_block(sess.get("result_text") or "")
+        t0 = time.monotonic()
+        res = ai_gateway.generate_completion_with_meta(
+            system_prompt=agents.build_system_prompt("writer"),
+            user_prompt=prompt,
+            agent_role="writer",
+            confidential=self._blog_is_confidential(run),
+        )
+        seo_json = _extract_json_block(res.get("text") or "")
         if not isinstance(seo_json, dict):
             seo_json = {}
-        seo_title = str(seo_json.get("seo_title") or updated.get("title") or run["inputs"]["topic"])[:60].strip()
-        meta_desc = str(
-            seo_json.get("meta_description")
-            or (updated.get("body") or "").replace("\n", " ").strip()[:155]
-        )[:155].strip()
+        seo_title = str(seo_json.get("seo_title") or item.get("title") or run["inputs"]["topic"])[:60].strip()
+        meta_desc = str(seo_json.get("meta_description") or body.replace("\n", " ").strip()[:155])[:155].strip()
         slug = _slugify(seo_json.get("slug") or seo_title)
-        normalized_seo = {
-            "seo_title": seo_title,
-            "meta_description": meta_desc,
-            "slug": slug,
-        }
-        normalized_str = json.dumps(normalized_seo, ensure_ascii=False)
-        if (updated.get("notes") or "").strip() != normalized_str:
-            content_tools.write_draft(
-                None,
-                type="blog",
-                platform="blog",
-                title=updated.get("title") or seo_title,
-                body=updated.get("body") or "",
-                content_id=blog_id,
-                notes=normalized_str,
-                product_id=updated.get("product_id"),
-            )
-
+        normalized_seo = {"seo_title": seo_title, "meta_description": meta_desc, "slug": slug}
+        # Save the SEO JSON as notes on a new version whose body is the FULL body from the DB.
+        content_tools.write_draft(
+            None,
+            type="blog",
+            platform="blog",
+            title=item.get("title") or seo_title,
+            body=body,
+            content_id=blog_id,
+            notes=json.dumps(normalized_seo, ensure_ascii=False),
+            product_id=item.get("product_id"),
+        )
         state["seo"] = normalized_seo
         state["seo_done"] = True
+        state.setdefault("step_timings_ms", {})["seo_pass"] = int((time.monotonic() - t0) * 1000)
         return StepResult.next()
 
     def step_repurpose_blog(self, run, state):
@@ -841,8 +1131,12 @@ class BlogWorkflow(BaseWorkflow):
 
     def step_finalize(self, run, state):
         all_ids = []
-        if state.get("outline_content_id"):
-            all_ids.append(state["outline_content_id"])
+        blog_id = state.get("outline_content_id")
+        if blog_id:
+            all_ids.append(blog_id)
+            blog_item = db.get_content_item(blog_id)
+            if blog_item:
+                state["final_word_count"] = len((blog_item.get("body") or "").split())
         _merge_unique(all_ids, state.get("repurposed_ids") or [])
         for cid in all_ids:
             item = db.get_content_item(cid)

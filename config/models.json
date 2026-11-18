@@ -12,8 +12,14 @@
     "writing": {
       "primary": "minimaxai/minimax-m3.1-flash",
       "backup": "nvidia/nemotron-3-ultra-550b-a55b",
-      "timeout_s": 150,
+      "timeout_s": 240,
       "max_tokens": 6000
+    },
+    "longform": {
+      "primary": "minimaxai/minimax-m3.1-flash",
+      "backup": "nvidia/nemotron-3-ultra-550b-a55b",
+      "timeout_s": 300,
+      "max_tokens": 8000
     },
     "research": {
       "primary": "mistralai/mistral-large-4-1t-a52b",

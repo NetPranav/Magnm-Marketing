@@ -18,6 +18,7 @@ if ENGINE_DIR not in sys.path:
     sys.path.insert(0, ENGINE_DIR)
 
 import agent_runtime
+import agents
 import ai_gateway
 import db
 import events
@@ -27,6 +28,7 @@ import posting_kit
 import server
 import tools
 from tools import ToolContext
+from tools import core as core_tools
 import workflows
 
 
@@ -275,9 +277,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("workflow_done", ev_types)
 
     def test_02_blog_workflow_outline_gate_revise_approve_sections_seo_repurpose(self):
-        """blog: stops at outline gate -> Revise -> v2 -> gate -> Approve -> sections -> SEO -> repurpose -> done."""
+        """blog: stops at outline gate -> Revise -> v2 -> gate -> Approve -> direct section calls -> SEO -> repurpose -> done."""
         outline_calls = {"n": 0}
-        section_calls = []
+        gateway_calls = []
+        seo_calls = []
 
         def fake_start_session(agent_id, user_message, **kwargs):
             title = kwargs.get("title") or ""
@@ -306,36 +309,6 @@ class WorkflowTests(unittest.TestCase):
                 if cid:
                     draft_args["content_id"] = cid
                 tools.run_tool("write_draft", ctx, draft_args, ["write_draft"])
-                return sess
-
-            if agent_id == "writer" and "Draft section" in user_message:
-                m_cid = re.search(r"content_id='(cnt_[a-zA-Z0-9_]+)'", user_message)
-                cid = m_cid.group(1)
-                m_sec = re.search(r"Draft section (\d+)/\d+ \('([^']+)'\)", user_message)
-                sec_idx = int(m_sec.group(1))
-                sec_name = m_sec.group(2)
-                section_calls.append(sec_name)
-                existing = db.get_content_item(cid)["body"]
-                sec_para = f"## {sec_name}\nDetailed engineering explanation for {sec_name} grounded in Cero facts."
-                new_body = (
-                    f"## TL;DR\nCero checks commands before running them.\n\n{sec_para}"
-                    if sec_idx == 1
-                    else f"{existing}\n\n{sec_para}"
-                )
-                tools.run_tool(
-                    "write_draft",
-                    ctx,
-                    {
-                        "type": "blog",
-                        "platform": "blog",
-                        "title": "How Cero Decides Approval",
-                        "body": new_body,
-                        "content_id": cid,
-                        "notes": f"section {sec_idx}",
-                        "product_id": "cero",
-                    },
-                    ["write_draft"],
-                )
                 return sess
 
             if agent_id == "reviewer":
@@ -401,9 +374,34 @@ class WorkflowTests(unittest.TestCase):
                 )
                 return sess
 
-            return sess
+            raise AssertionError(f"Unexpected agent session: {agent_id} ({title})")
 
-        with patch.object(agent_runtime, "start_session", side_effect=fake_start_session):
+        def fake_generate_meta(**kwargs):
+            if "Return ONLY a JSON object with exactly these keys" in kwargs["user_prompt"]:
+                seo_calls.append(kwargs)
+                return {
+                    "text": json.dumps({
+                        "seo_title": "How Cero Decides Command Approval",
+                        "meta_description": "How Cero asks before running commands that change your system.",
+                        "slug": "how-cero-decides-command-approval",
+                    }),
+                    "provider": "nvidia_nim",
+                    "model_used": "minimaxai/minimax-m3.1-flash",
+                }
+            gateway_calls.append(kwargs)
+            prompt = kwargs["user_prompt"]
+            m_sec = re.search(r"Draft ONLY section \d+/\d+ \('([^']+)'\)", prompt)
+            sec_name = m_sec.group(1) if m_sec else "Section"
+            body = (
+                f"## {sec_name}\n"
+                f"Detailed engineering explanation for {sec_name} grounded in Cero facts. "
+                f"Ending paragraph for {sec_name} flow check."
+            )
+            return {"text": body, "provider": "nvidia_nim", "model_used": "minimaxai/minimax-m3.1-flash"}
+
+        with patch.object(agent_runtime, "start_session", side_effect=fake_start_session), patch.object(
+            ai_gateway, "generate_completion_with_meta", side_effect=fake_generate_meta
+        ):
             run = workflows.start("blog", {"topic": "How Cero decides which commands need your approval", "product_id": "cero"})
             self.assertTrue(_wait_until(lambda: (workflows.get(run["id"]) or {}).get("status") == "waiting_user"))
 
@@ -437,7 +435,23 @@ class WorkflowTests(unittest.TestCase):
 
         done_run = workflows.get(run["id"])
         self.assertEqual(outline_calls["n"], 2)
-        self.assertEqual(len(section_calls), 3)
+        # Exactly one direct gateway call per section (3 sections)
+        self.assertEqual(len(gateway_calls), 3)
+        expected_sys = agents.build_system_prompt("writer")
+        for idx, call in enumerate(gateway_calls):
+            self.assertEqual(call["agent_role"], "writer")
+            self.assertEqual(call["tier"], "longform")
+            self.assertEqual(call["system_prompt"], expected_sys)
+            self.assertIn("Word budget: 533 words", call["user_prompt"])
+            self.assertIn("Verified product facts:", call["user_prompt"])
+            if idx > 0:
+                prev_sec = ["Why Command Approval Matters", "How Classification Works"][idx - 1]
+                self.assertIn(f"Ending paragraph for {prev_sec} flow check.", call["user_prompt"])
+
+        # Grounding stored once in state and progress reported
+        self.assertIn("product_facts", done_run["state"]["grounding"])
+        self.assertIn("repo_changes", done_run["state"]["grounding"])
+        self.assertRegex(done_run["state"]["progress"], r"^section 3/3, \d+ words so far$")
 
         blog_item = db.get_content_item(blog_id, include_versions=True)
         self.assertEqual(blog_item["status"], "ready")
@@ -539,30 +553,30 @@ class WorkflowTests(unittest.TestCase):
 
             self.assertTrue(_wait_until(lambda: (workflows.get(run["id"]) or {}).get("status") == "done"))
 
-        done_run = workflows.get(run["id"])
-        child_ids = done_run["state"]["child_run_ids"]
-        self.assertEqual(sorted(child_ids.keys()), ["0", "1"])
+            done_run = workflows.get(run["id"])
+            child_ids = done_run["state"]["child_run_ids"]
+            self.assertEqual(sorted(child_ids.keys()), ["0", "1"])
 
-        child0 = workflows.get(child_ids["0"])
-        child1 = workflows.get(child_ids["1"])
-        self.assertEqual(child0["kind"], "post")
-        self.assertEqual(child0["inputs"]["platforms"], ["linkedin"])
-        self.assertEqual(child0["inputs"]["product_id"], "cero")
-        self.assertIn("Cero command preview", child0["inputs"]["brief"])
+            child0 = workflows.get(child_ids["0"])
+            child1 = workflows.get(child_ids["1"])
+            self.assertEqual(child0["kind"], "post")
+            self.assertEqual(child0["inputs"]["platforms"], ["linkedin"])
+            self.assertEqual(child0["inputs"]["product_id"], "cero")
+            self.assertIn("Cero command preview", child0["inputs"]["brief"])
 
-        self.assertEqual(child1["kind"], "post")
-        self.assertEqual(child1["inputs"]["platforms"], ["x"])
-        self.assertIn("Emphasize zero cloud uploads", child1["inputs"]["brief"])
+            self.assertEqual(child1["kind"], "post")
+            self.assertEqual(child1["inputs"]["platforms"], ["x"])
+            self.assertIn("Emphasize zero cloud uploads", child1["inputs"]["brief"])
 
-        # Wait for spawned child post runs to finish before tearDown
-        self.assertTrue(
-            _wait_until(
-                lambda: (
-                    (workflows.get(child_ids["0"]) or {}).get("status") == "done"
-                    and (workflows.get(child_ids["1"]) or {}).get("status") == "done"
+            # Wait for spawned child post runs to finish while start_session is still patched
+            self.assertTrue(
+                _wait_until(
+                    lambda: (
+                        (workflows.get(child_ids["0"]) or {}).get("status") == "done"
+                        and (workflows.get(child_ids["1"]) or {}).get("status") == "done"
+                    )
                 )
             )
-        )
 
     def test_04_video_script_captions_srt_valid_and_monotonic(self):
         """video_script: writes script.md, shotlist.json, and valid monotonic captions.srt."""
@@ -919,6 +933,310 @@ class WorkflowTests(unittest.TestCase):
             list_h.do_GET()
             self.assertEqual(list_h.status_code, 200)
             self.assertTrue(any(r["id"] == wf_id for r in list_h.response_json()))
+
+    def test_09_blog_section_budget_enforced_triggers_single_shortening_call(self):
+        """Over-long section (>1.3x budget) triggers exactly one shortening call with tier='longform'."""
+        outline_body = (
+            "## TL;DR\nCero previews mutating commands.\n\n"
+            "## Motivation (weight: 0.25)\nWhy approval matters.\n\n"
+            "## Architecture (weight: 0.75)\nHow the classifier works."
+        )
+        blog_item = db.create_content_item(
+            content_id="cnt_blog_budget_1",
+            content_type="blog",
+            platform="blog",
+            title="Cero Approval Architecture",
+            body=outline_body,
+            notes="outline",
+            product_id="cero",
+            status="draft",
+        )
+        run = db.create_workflow_run(
+            {
+                "id": "wf_blog_budget_1",
+                "kind": "blog",
+                "status": "running",
+                "current_step": 2,
+                "inputs": {
+                    "topic": "How Cero decides approval",
+                    "product_id": "cero",
+                    "length_words": "400-800",  # midpoint = 600 -> budgets 150 and 450
+                },
+                "state": {
+                    "content_ids": [blog_item["id"]],
+                    "session_ids": [],
+                    "step_sessions": {},
+                    "outline_content_id": blog_item["id"],
+                    "outline_approved": True,
+                },
+            }
+        )
+
+        gateway_calls = []
+        seo_calls = []
+
+        def fake_generate_meta(**kwargs):
+            if "Return ONLY a JSON object with exactly these keys" in kwargs["user_prompt"]:
+                seo_calls.append(kwargs)
+                return {
+                    "text": json.dumps({
+                        "seo_title": "How Cero Decides Command Approval",
+                        "meta_description": "How Cero asks before running commands that change your system.",
+                        "slug": "how-cero-decides-command-approval",
+                    }),
+                    "provider": "nvidia_nim",
+                    "model_used": "minimaxai/minimax-m3.1-flash",
+                }
+            gateway_calls.append(kwargs)
+            prompt = kwargs["user_prompt"]
+            if "Tighten to 150 words, keep facts unchanged" in prompt:
+                return {
+                    "text": "## Motivation\n" + ("concise " * 120) + "end.",
+                    "provider": "nvidia_nim",
+                    "model_used": "minimaxai/minimax-m3.1-flash",
+                }
+            if "Draft ONLY section 1/2" in prompt:
+                # 260 words > 1.3 * 150 (195) -> must trigger one shortening call
+                return {
+                    "text": "## Motivation\n" + ("verbose " * 260),
+                    "provider": "nvidia_nim",
+                    "model_used": "minimaxai/minimax-m3.1-flash",
+                }
+            # Section 2/2: within budget (450)
+            return {
+                "text": "## Architecture\n" + ("detail " * 200),
+                "provider": "nvidia_nim",
+                "model_used": "minimaxai/minimax-m3.1-flash",
+            }
+
+        def fake_start_session(agent_id, user_message, **kwargs):
+            sess = _create_fake_session(agent_id, title=kwargs.get("title") or "")
+            ctx = ToolContext(session_id=sess["id"], agent_id=agent_id)
+            if agent_id == "reviewer":
+                m_cid = re.search(r"Review content item (cnt_[a-zA-Z0-9_]+)", user_message)
+                tools.run_tool(
+                    "write_review",
+                    ctx,
+                    {"content_id": m_cid.group(1), "verdict": "ok", "notes": "ok"},
+                    ["write_review"],
+                )
+            elif agent_id == "writer" and "SEO pass" in user_message:
+                item = db.get_content_item(blog_item["id"])
+                tools.run_tool(
+                    "write_draft",
+                    ctx,
+                    {
+                        "type": "blog",
+                        "platform": "blog",
+                        "title": item["title"],
+                        "body": item["body"],
+                        "content_id": blog_item["id"],
+                        "notes": json.dumps({"seo_title": "Cero Approval", "meta_description": "Desc", "slug": "cero-approval"}),
+                    },
+                    ["write_draft"],
+                )
+            elif agent_id == "writer" and "Repurpose blog" in user_message:
+                tools.run_tool(
+                    "write_draft",
+                    ctx,
+                    {"type": "post", "platform": "linkedin", "title": "LI", "body": "Cero post."},
+                    ["write_draft"],
+                )
+            return sess
+
+        with patch.object(core_tools, "read_product_facts", wraps=core_tools.read_product_facts) as spy_facts, patch.object(
+            ai_gateway, "generate_completion_with_meta", side_effect=fake_generate_meta
+        ), patch.object(agent_runtime, "start_session", side_effect=fake_start_session):
+            workflows.execute_workflow_job({"run_id": run["id"]})
+
+        done_run = workflows.get(run["id"])
+        self.assertEqual(done_run["status"], "done")
+        # Grounding fetched exactly ONCE before drafting
+        self.assertEqual(spy_facts.call_count, 1)
+        # 2 sections: section 1 drafted + 1 shortening call; section 2 drafted (no shortening) -> 3 calls total
+        self.assertEqual(len(gateway_calls), 3)
+        self.assertTrue(all(c["tier"] == "longform" for c in gateway_calls))
+        self.assertIn("Word budget: 150 words", gateway_calls[0]["user_prompt"])
+        self.assertIn("Tighten to 150 words, keep facts unchanged", gateway_calls[1]["user_prompt"])
+        self.assertIn("Word budget: 450 words", gateway_calls[2]["user_prompt"])
+
+        final_item = db.get_content_item(blog_item["id"])
+        self.assertIn("concise", final_item["body"])
+        self.assertNotIn("verbose", final_item["body"])
+        self.assertRegex(done_run["state"]["progress"], r"^section 2/2, \d+ words so far$")
+
+    def test_10_blog_crash_resume_skips_completed_sections_and_skips_fix_when_ok(self):
+        """Crash resume skips completed sections, reuses cached grounding, and skips fix_blog on verdict='ok'."""
+        outline_body = (
+            "## TL;DR\nCero previews mutating commands.\n\n"
+            "## Intro\nMotivation.\n\n"
+            "## Classifier\nHow it decides.\n\n"
+            "## Wrapup\nClosing notes."
+        )
+        blog_item = db.create_content_item(
+            content_id="cnt_blog_resume_1",
+            content_type="blog",
+            platform="blog",
+            title="Cero Approval Resume",
+            body=outline_body,
+            notes="outline",
+            product_id="cero",
+            status="draft",
+        )
+        # Simulate section 0 already written as v2 before crash
+        db.add_content_version(
+            content_id=blog_item["id"],
+            body="## TL;DR\nCero previews mutating commands.\n\n## Intro\nExisting intro body.\n\nIntro closing paragraph.",
+            notes="section 1/3: Intro",
+            title="Cero Approval Resume",
+            platform="blog",
+            product_id="cero",
+        )
+
+        run = db.create_workflow_run(
+            {
+                "id": "wf_blog_resume_1",
+                "kind": "blog",
+                "status": "running",
+                "current_step": 2,
+                "inputs": {"topic": "How Cero decides approval", "product_id": "cero", "length_words": "1200-2000"},
+                "state": {
+                    "content_ids": [blog_item["id"]],
+                    "session_ids": [],
+                    "step_sessions": {},
+                    "outline_content_id": blog_item["id"],
+                    "outline_approved": True,
+                    "outline_body": outline_body,
+                    "sections": ["Intro", "Classifier", "Wrapup"],
+                    "completed_sections": [0],
+                    "grounding": {
+                        "product_facts": "Cero verified facts.",
+                        "product_rules": "Cero show everything.",
+                        "repo_changes": {"repositories": []},
+                        "research_notes": [],
+                    },
+                },
+            }
+        )
+
+        gateway_calls = []
+        seo_calls = []
+        session_titles = []
+
+        def fake_generate_meta(**kwargs):
+            if "Return ONLY a JSON object with exactly these keys" in kwargs["user_prompt"]:
+                seo_calls.append(kwargs)
+                return {
+                    "text": json.dumps({
+                        "seo_title": "How Cero Decides Command Approval",
+                        "meta_description": "How Cero asks before running commands that change your system.",
+                        "slug": "how-cero-decides-command-approval",
+                    }),
+                    "provider": "nvidia_nim",
+                    "model_used": "minimaxai/minimax-m3.1-flash",
+                }
+            gateway_calls.append(kwargs)
+            m_sec = re.search(r"Draft ONLY section (\d+)/\d+ \('([^']+)'\)", kwargs["user_prompt"])
+            sec_name = m_sec.group(2)
+            return {
+                "text": f"## {sec_name}\nResumed content for {sec_name}.",
+                "provider": "nvidia_nim",
+                "model_used": "minimaxai/minimax-m3.1-flash",
+            }
+
+        def fake_start_session(agent_id, user_message, **kwargs):
+            title = kwargs.get("title") or ""
+            session_titles.append((agent_id, title))
+            sess = _create_fake_session(agent_id, title=title)
+            ctx = ToolContext(session_id=sess["id"], agent_id=agent_id)
+            if agent_id == "reviewer":
+                m_cid = re.search(r"Review content item (cnt_[a-zA-Z0-9_]+)", user_message)
+                tools.run_tool(
+                    "write_review",
+                    ctx,
+                    {"content_id": m_cid.group(1), "verdict": "ok", "notes": "ok"},
+                    ["write_review"],
+                )
+            elif agent_id == "writer" and "SEO pass" in user_message:
+                item = db.get_content_item(blog_item["id"])
+                tools.run_tool(
+                    "write_draft",
+                    ctx,
+                    {
+                        "type": "blog",
+                        "platform": "blog",
+                        "title": item["title"],
+                        "body": item["body"],
+                        "content_id": blog_item["id"],
+                        "notes": json.dumps({"seo_title": "Cero Resume", "meta_description": "Desc", "slug": "cero-resume"}),
+                    },
+                    ["write_draft"],
+                )
+            elif agent_id == "writer" and "Repurpose blog" in user_message:
+                tools.run_tool(
+                    "write_draft",
+                    ctx,
+                    {"type": "post", "platform": "x", "title": "X", "body": "Cero X post."},
+                    ["write_draft"],
+                )
+            return sess
+
+        with patch.object(core_tools, "read_product_facts", side_effect=AssertionError("should reuse cached grounding")), patch.object(
+            ai_gateway, "generate_completion_with_meta", side_effect=fake_generate_meta
+        ), patch.object(agent_runtime, "start_session", side_effect=fake_start_session):
+            recovered = workflows.recover_stale_runs(start_worker=True)
+            self.assertEqual([r["id"] for r in recovered], [run["id"]])
+            self.assertTrue(_wait_until(lambda: (workflows.get(run["id"]) or {}).get("status") == "done"))
+
+        done_run = workflows.get(run["id"])
+        self.assertEqual(done_run["status"], "done")
+        # Section 0 was skipped; only sections 1 (Classifier) and 2 (Wrapup) called the gateway
+        self.assertEqual(len(gateway_calls), 2)
+        self.assertIn("Draft ONLY section 2/3 ('Classifier')", gateway_calls[0]["user_prompt"])
+        self.assertIn("Intro closing paragraph.", gateway_calls[0]["user_prompt"])
+        self.assertIn("Draft ONLY section 3/3 ('Wrapup')", gateway_calls[1]["user_prompt"])
+        self.assertEqual(done_run["state"]["completed_sections"], [0, 1, 2])
+        # fix_blog did NOT run because verdict was 'ok'
+        self.assertFalse(any(title == "Fix blog" for _, title in session_titles))
+
+        final_item = db.get_content_item(blog_item["id"])
+        self.assertIn("Existing intro body.", final_item["body"])
+        self.assertIn("## Classifier", final_item["body"])
+        self.assertIn("## Wrapup", final_item["body"])
+
+    def test_11_seo_and_fix_never_lose_article_text(self):
+        """Regression (live run 2026-11-19): the SEO step re-saved a truncated body, dropping ~300
+        words. SEO must keep the full DB body; fix_blog must reject a reply that lost content."""
+        from tools import content as content_tools
+
+        long_body = "\n\n".join(f"## Section {i}\n" + ("word " * 300) for i in range(6))
+        created = content_tools.write_draft(
+            None, type="blog", platform="blog", title="Long blog", body=long_body, product_id="cero"
+        )
+        blog_id = created["content_id"]
+        wf = workflows.BlogWorkflow()
+        run = {"id": "wf_test_regression", "inputs": {"topic": "Cero approvals", "product_id": "cero"}}
+
+        def fake_seo(**kwargs):
+            return {"text": json.dumps({"seo_title": "T", "meta_description": "D", "slug": "t"}),
+                    "provider": "nvidia_nim", "model_used": "m"}
+
+        state = {"outline_content_id": blog_id}
+        with patch.object(workflows, "_persist_state", lambda *a, **k: None), \
+                patch.object(ai_gateway, "generate_completion_with_meta", side_effect=fake_seo):
+            wf.step_seo_pass(run, state)
+        after_seo = db.get_content_item(blog_id)
+        self.assertEqual(after_seo["body"], long_body)
+        self.assertEqual(json.loads(after_seo["notes"])["slug"], "t")
+
+        def fake_truncated_fix(**kwargs):
+            return {"text": "## Section 0\nshort", "provider": "nvidia_nim", "model_used": "m"}
+
+        state = {"outline_content_id": blog_id, "blog_review": {"verdict": "warn", "notes": "fix x"}}
+        with patch.object(ai_gateway, "generate_completion_with_meta", side_effect=fake_truncated_fix):
+            wf.step_fix_blog(run, state)
+        self.assertEqual(db.get_content_item(blog_id)["body"], long_body)
+        self.assertIn("rejected", state["blog_fix_result"])
 
 
 if __name__ == "__main__":

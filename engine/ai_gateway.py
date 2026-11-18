@@ -304,11 +304,11 @@ def get_config():
     }
 
 
-def _resolve_for_role(role_id, cfg, models_cfg, nim_key):
+def _resolve_for_role(role_id, cfg, models_cfg, nim_key, tier=None):
     """Fetch catalog (if key present) and resolve primary, backup, warnings for role_id."""
     catalog = model_registry.get_catalog(nim_key, cfg["NVIDIA_NIM_BASE_URL"]) if nim_key else None
     merged_cfg = {**models_cfg, "ROLE_MODEL_OVERRIDES": cfg.get("ROLE_MODEL_OVERRIDES", {})}
-    return model_registry.resolve_role_models(role_id, merged_cfg, catalog)
+    return model_registry.resolve_role_models(role_id, merged_cfg, catalog, tier_override=tier)
 
 
 def get_role_model_matrix():
@@ -1407,6 +1407,7 @@ def _execute_gateway_messages(
     confidential=False,
     max_tokens=None,
     allow_image_warning=False,
+    tier=None,
 ):
     """Shared gateway execution for confidential Ollama and non-confidential provider cascades."""
     t0 = time.monotonic()
@@ -1456,8 +1457,8 @@ def _execute_gateway_messages(
     pool = key_pool.get_pool()
     has_nim = pool.has_keys(role=role_key)
     nim_key = pool.peek_healthy_key(role=role_key) if has_nim else (cfg["ROLE_KEYS"].get(role_key) or cfg["NVIDIA_NIM_API_KEY"])
-    requested_model, backup_model, warnings = _resolve_for_role(role_key, cfg, models_cfg, nim_key)
-    tier_info = model_registry.tier_settings(role_key)
+    requested_model, backup_model, warnings = _resolve_for_role(role_key, cfg, models_cfg, nim_key, tier=tier)
+    tier_info = model_registry.tier_settings(role_key, models_cfg, tier_override=tier)
     effective_timeout = tier_info["timeout_s"]
     effective_max_tokens = tier_info["max_tokens"] if max_tokens is None else int(max_tokens)
     default_provider = "nvidia_nim" if (has_nim or nim_key) else cfg["DEFAULT_PROVIDER"]
@@ -1553,6 +1554,7 @@ def generate_completion_with_meta(
     force_live_only=False,
     confidential=False,
     max_tokens=None,
+    tier=None,
 ):
     """Unified entry point returning generated text plus full model & fallback telemetry."""
     messages = _build_messages_from_prompts(
@@ -1571,10 +1573,11 @@ def generate_completion_with_meta(
         confidential=confidential,
         max_tokens=max_tokens,
         allow_image_warning=False,
+        tier=tier,
     )
 
 
-def generate_completion(system_prompt, user_prompt, model_tier="fast", image_paths=None, agent_role="", confidential=False, max_tokens=None):
+def generate_completion(system_prompt, user_prompt, model_tier="fast", image_paths=None, agent_role="", confidential=False, max_tokens=None, tier=None):
     """Backward-compatible wrapper returning completion string only."""
     return generate_completion_with_meta(
         system_prompt=system_prompt,
@@ -1584,6 +1587,7 @@ def generate_completion(system_prompt, user_prompt, model_tier="fast", image_pat
         agent_role=agent_role,
         confidential=confidential,
         max_tokens=max_tokens,
+        tier=tier,
     )["text"]
 
 

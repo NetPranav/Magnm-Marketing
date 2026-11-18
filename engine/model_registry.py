@@ -143,7 +143,7 @@ def _role_env_name(role_key):
     return f"NIM_MODEL_{role_key.upper().replace('-', '_')}"
 
 
-def resolve_role_models(role, cfg=None, catalog=None):
+def resolve_role_models(role, cfg=None, catalog=None, tier_override=None):
     """Resolve (primary, backup, warnings) for a role using models.json and optional catalog.
 
     Env override NIM_MODEL_<ROLE> is used only when catalog is None or contains it.
@@ -161,7 +161,7 @@ def resolve_role_models(role, cfg=None, catalog=None):
         overrides = cfg.get("ROLE_MODEL_OVERRIDES", {}) if isinstance(cfg, dict) else {}
 
     role_key = (role or "").lower().strip()
-    tier_name = models_cfg.get("roles", {}).get(role_key, "fast")
+    tier_name = (tier_override or "").strip() or models_cfg.get("roles", {}).get(role_key, "fast")
     tiers = models_cfg.get("tiers", {})
     tier_spec = tiers.get(tier_name) or tiers.get("fast") or {}
     tier_primary = tier_spec.get("primary", "")
@@ -217,11 +217,11 @@ def _coerce_positive_int(val, default):
         return default
 
 
-def tier_settings(role, cfg=None):
-    """Return {"tier": name, "timeout_s": int, "max_tokens": int} for a role."""
+def tier_settings(role, cfg=None, tier_override=None):
+    """Return {"tier": name, "timeout_s": int, "max_tokens": int} for a role or explicit tier."""
     models_cfg = cfg if (isinstance(cfg, dict) and "tiers" in cfg) else load_models_config()
     role_key = (role or "").lower().strip()
-    tier_name = models_cfg.get("roles", {}).get(role_key, "fast")
+    tier_name = (tier_override or "").strip() or models_cfg.get("roles", {}).get(role_key, "fast")
     tiers = models_cfg.get("tiers", {})
     tier_spec = tiers.get(tier_name)
     if not isinstance(tier_spec, dict):

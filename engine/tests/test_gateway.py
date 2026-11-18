@@ -596,6 +596,55 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(by_role["listener"]["timeout_s"], 60)
         self.assertEqual(by_role["listener"]["max_tokens"], 1500)
 
+    def test_21_longform_tier_override_uses_longform_timeout_and_models(self):
+        """config/models.json has longform tier (300s, 8000) and generate_completion_with_meta honors tier override."""
+        cfg = model_registry.load_models_config()
+        lf = cfg["tiers"]["longform"]
+        self.assertEqual(lf["primary"], "minimaxai/minimax-m3.1-flash")
+        self.assertEqual(lf["backup"], "nvidia/nemotron-3-ultra-550b-a55b")
+        self.assertEqual(lf["timeout_s"], 300)
+        self.assertEqual(lf["max_tokens"], 8000)
+
+        seen = []
+
+        def fake_post(url, payload, headers, timeout=45):
+            seen.append({"payload": payload, "timeout": timeout})
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        with patch.dict(os.environ, {"NVIDIA_NIM_API_KEY": "nvapi-test"}), patch.object(
+            model_registry, "get_catalog", return_value=None
+        ), patch.object(ai_gateway, "_http_post_json", side_effect=fake_post):
+            # Default role tier for writer is "writing" (150s, 6000)
+            ai_gateway.generate_completion_with_meta(
+                system_prompt="sys",
+                user_prompt="hi",
+                agent_role="writer",
+            )
+            self.assertEqual(seen[-1]["timeout"], 150)
+            self.assertEqual(seen[-1]["payload"]["max_tokens"], 6000)
+
+            # Explicit tier="longform" overrides timeout/max_tokens and uses longform primary
+            ai_gateway.generate_completion_with_meta(
+                system_prompt="sys",
+                user_prompt="hi",
+                agent_role="writer",
+                tier="longform",
+            )
+            self.assertEqual(seen[-1]["timeout"], 300)
+            self.assertEqual(seen[-1]["payload"]["max_tokens"], 8000)
+            self.assertEqual(seen[-1]["payload"]["model"], "minimaxai/minimax-m3.1-flash")
+
+            # Explicit tier="longform" also overrides cmo's reasoning tier models/limits
+            ai_gateway.generate_completion_with_meta(
+                system_prompt="sys",
+                user_prompt="hi",
+                agent_role="cmo",
+                tier="longform",
+            )
+            self.assertEqual(seen[-1]["timeout"], 300)
+            self.assertEqual(seen[-1]["payload"]["max_tokens"], 8000)
+            self.assertEqual(seen[-1]["payload"]["model"], "minimaxai/minimax-m3.1-flash")
+
 
 if __name__ == "__main__":
     unittest.main()
