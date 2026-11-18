@@ -378,23 +378,137 @@ def _strip_thinking_tags(text):
     return cleaned.strip()
 
 
+def _parse_tool_calls(raw_tool_calls):
+    """Normalize OpenAI/Ollama tool_calls into [{id, name, arguments}]."""
+    parsed_calls = []
+    if not isinstance(raw_tool_calls, list):
+        return parsed_calls
+    for idx, tc in enumerate(raw_tool_calls):
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+        tc_id = tc.get("id") or f"call_{idx}"
+        name = fn.get("name") or tc.get("name") or ""
+        raw_args = fn.get("arguments") if "arguments" in fn else tc.get("arguments")
+        if isinstance(raw_args, dict):
+            arguments = dict(raw_args)
+        elif isinstance(raw_args, str):
+            stripped = raw_args.strip()
+            if not stripped:
+                arguments = {}
+            else:
+                try:
+                    loaded = json.loads(stripped)
+                    arguments = loaded if isinstance(loaded, dict) else {"_raw": raw_args}
+                except Exception:
+                    arguments = {"_raw": raw_args}
+        elif raw_args is None:
+            arguments = {}
+        else:
+            arguments = {"_raw": str(raw_args)}
+        parsed_calls.append({"id": str(tc_id), "name": str(name), "arguments": arguments})
+    return parsed_calls
+
+
+def _prepare_messages_for_model(messages, model):
+    """Copy messages and drop image_url content parts when model is not a vision model."""
+    is_vision = model_registry.is_vision_model(model)
+    prepared = []
+    dropped_images = False
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        out_msg = dict(msg)
+        content = msg.get("content")
+        if isinstance(content, list):
+            if is_vision:
+                out_msg["content"] = [dict(p) if isinstance(p, dict) else p for p in content]
+            else:
+                kept = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        dropped_images = True
+                    else:
+                        kept.append(dict(part) if isinstance(part, dict) else part)
+                if all(isinstance(p, dict) and p.get("type") == "text" for p in kept):
+                    out_msg["content"] = "\n".join(str(p.get("text", "")) for p in kept)
+                else:
+                    out_msg["content"] = kept
+        prepared.append(out_msg)
+    warning = f"Dropped image parts for non-vision model '{model}'." if dropped_images else None
+    return prepared, warning
+
+
+def _extract_usage_dict(res):
+    """Return {prompt_tokens, completion_tokens} or None if absent."""
+    usage = res.get("usage") if isinstance(res, dict) else None
+    if not isinstance(usage, dict) or not usage:
+        return None
+    if "prompt_tokens" not in usage and "completion_tokens" not in usage:
+        return None
+    return {
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+    }
+
+
 def _http_post_json(url, payload, headers, timeout=45):
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _single_nim_request_meta(api_key, base_url, system_prompt, user_prompt, model, images=None, max_tokens=1500, timeout=60):
-    url = f"{base_url.rstrip('/')}/chat/completions"
+def _single_openai_compat_chat_meta(
+    url,
+    api_key,
+    messages,
+    model,
+    tools=None,
+    max_tokens=None,
+    timeout=45,
+    top_p=None,
+    accept_json=False,
+):
+    """Execute one OpenAI-compatible chat/completions call and parse text, tool_calls, and usage."""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "Accept": "application/json"
+    }
+    if accept_json:
+        headers["Accept"] = "application/json"
+
+    prepared_messages, img_warning = _prepare_messages_for_model(messages, model)
+    payload = {
+        "model": model,
+        "messages": prepared_messages,
+        "temperature": 0.4,
+    }
+    if top_p is not None:
+        payload["top_p"] = top_p
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+    if tools:
+        payload["tools"] = tools
+
+    res = _http_post_json(url, payload, headers, timeout=timeout)
+    msg = res["choices"][0]["message"] or {}
+    cleaned = _strip_thinking_tags(msg.get("content") or "")
+    tool_calls = _parse_tool_calls(msg.get("tool_calls") or [])
+    if not cleaned.strip() and not tool_calls:
+        raise EmptyModelResponse("model returned no answer (all tokens spent on reasoning)")
+    return {
+        "text": cleaned,
+        "tool_calls": tool_calls,
+        "usage": _extract_usage_dict(res),
+        "img_warning": img_warning,
     }
 
+
+def _build_messages_from_prompts(system_prompt, user_prompt, images=None, vision_enabled=True):
+    """Build OpenAI chat messages from system_prompt, user_prompt, and optional image paths."""
     has_images = False
     content_parts = [{"type": "text", "text": user_prompt}]
-    if images and model_registry.is_vision_model(model):
+    if images and vision_enabled:
         for img_path in images:
             if os.path.exists(img_path):
                 with open(img_path, "rb") as f:
@@ -410,21 +524,29 @@ def _single_nim_request_meta(api_key, base_url, system_prompt, user_prompt, mode
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": content_parts if has_images else user_prompt})
+    return messages
 
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": 0.4,
-        "top_p": 0.9,
-        "max_tokens": max_tokens
-    }
-    res = _http_post_json(url, payload, headers, timeout=timeout)
-    raw = res["choices"][0]["message"].get("content")
-    cleaned = _strip_thinking_tags(raw)
-    if not cleaned or not cleaned.strip():
-        raise EmptyModelResponse("model returned no answer (all tokens spent on reasoning)")
-    usage = res.get("usage") if isinstance(res, dict) else None
-    return cleaned, (usage if isinstance(usage, dict) else {})
+
+def _single_nim_request_meta(api_key, base_url, system_prompt, user_prompt, model, images=None, max_tokens=1500, timeout=60):
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    messages = _build_messages_from_prompts(
+        system_prompt,
+        user_prompt,
+        images=images,
+        vision_enabled=model_registry.is_vision_model(model),
+    )
+    res = _single_openai_compat_chat_meta(
+        url=url,
+        api_key=api_key,
+        messages=messages,
+        model=model,
+        tools=None,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        top_p=0.9,
+        accept_json=True,
+    )
+    return res["text"], (res["usage"] or {})
 
 
 def _single_nim_request(api_key, base_url, system_prompt, user_prompt, model, images=None, max_tokens=1500, timeout=60):
@@ -465,9 +587,17 @@ def _parse_retry_after(err, default_wait):
     return min(float(default_wait), 20.0)
 
 
-def _build_nim_success(model_requested, model_used, text, usage, fallback_reason=None, key_label=None):
+def _build_nim_success(
+    model_requested,
+    model_used,
+    res_meta,
+    fallback_reason=None,
+    key_label=None,
+):
+    usage = res_meta.get("usage") or {}
     out = {
-        "text": text,
+        "text": res_meta["text"],
+        "tool_calls": res_meta.get("tool_calls") or [],
         "provider": "nvidia_nim",
         "model_requested": model_requested,
         "model_used": model_used,
@@ -475,25 +605,17 @@ def _build_nim_success(model_requested, model_used, text, usage, fallback_reason
         "fallback_reason": fallback_reason,
         "prompt_tokens": usage.get("prompt_tokens"),
         "completion_tokens": usage.get("completion_tokens"),
+        "usage": res_meta.get("usage"),
     }
+    if res_meta.get("img_warning"):
+        out["img_warning"] = res_meta["img_warning"]
     if key_label is not None:
         out["key_label"] = key_label
     return out
 
 
-def _complete_nvidia_nim_with_pool(
-    pool,
-    role,
-    base_url,
-    system_prompt,
-    user_prompt,
-    model,
-    images=None,
-    fallback_model=None,
-    max_tokens=1500,
-    timeout=60,
-):
-    """Execute NIM completion using KeyPool rotation on 429 and 401/403."""
+def _run_nim_with_pool(pool, role, model, fallback_model, call_fn):
+    """Execute a NIM request callable using KeyPool rotation on 429 and 401/403."""
     api_key, key_label = pool.acquire(role=role, sleep_fn=_sleep)
     fallback_reason = None
     last_error = None
@@ -503,12 +625,9 @@ def _complete_nvidia_nim_with_pool(
     while True:
         tried_429_labels.add(key_label)
         try:
-            text, usage = _single_nim_request_meta(
-                api_key, base_url, system_prompt, user_prompt, model,
-                images=images, max_tokens=max_tokens, timeout=timeout,
-            )
+            res_meta = call_fn(api_key, model)
             pool.report(key_label, "ok")
-            return _build_nim_success(model, model, text, usage, key_label=key_label)
+            return _build_nim_success(model, model, res_meta, key_label=key_label)
         except urllib.error.HTTPError as e:
             err_body = _read_http_error_body(e)
             last_error = e
@@ -566,13 +685,10 @@ def _complete_nvidia_nim_with_pool(
         )
         while True:
             try:
-                text, usage = _single_nim_request_meta(
-                    api_key, base_url, system_prompt, user_prompt, fallback_model,
-                    images=images, max_tokens=max_tokens, timeout=timeout,
-                )
+                res_meta = call_fn(api_key, fallback_model)
                 pool.report(key_label, "ok")
                 return _build_nim_success(
-                    model, fallback_model, text, usage,
+                    model, fallback_model, res_meta,
                     fallback_reason=fallback_reason, key_label=key_label,
                 )
             except urllib.error.HTTPError as e:
@@ -602,53 +718,15 @@ def _complete_nvidia_nim_with_pool(
     raise RuntimeError(f"NVIDIA NIM error for '{model}': {fallback_reason}") from last_error
 
 
-def complete_nvidia_nim(
-    api_key,
-    base_url,
-    system_prompt,
-    user_prompt,
-    model,
-    images=None,
-    fallback_model=None,
-    max_tokens=1500,
-    timeout=60,
-    role=None,
-    pool=None,
-):
-    """Execute completion against NVIDIA NIM with key-pool rotation, 429 retries, and backup fallback."""
-    if pool is not None or api_key is None:
-        return _complete_nvidia_nim_with_pool(
-            pool=pool if pool is not None else key_pool.get_pool(),
-            role=role,
-            base_url=base_url,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model=model,
-            images=images,
-            fallback_model=fallback_model,
-            max_tokens=max_tokens,
-            timeout=timeout,
-        )
-
+def _run_nim_single_key(api_key, model, fallback_model, call_fn):
+    """Execute a NIM request callable using a single explicit API key with retries and fallback."""
     fallback_reason = None
     last_error = None
 
     for attempt in range(3):
         try:
-            text, usage = _single_nim_request_meta(
-                api_key, base_url, system_prompt, user_prompt, model,
-                images=images, max_tokens=max_tokens, timeout=timeout
-            )
-            return {
-                "text": text,
-                "provider": "nvidia_nim",
-                "model_requested": model,
-                "model_used": model,
-                "fallback_used": False,
-                "fallback_reason": None,
-                "prompt_tokens": usage.get("prompt_tokens"),
-                "completion_tokens": usage.get("completion_tokens"),
-            }
+            res_meta = call_fn(api_key, model)
+            return _build_nim_success(model, model, res_meta)
         except urllib.error.HTTPError as e:
             err_body = _read_http_error_body(e)
             last_error = e
@@ -663,8 +741,7 @@ def complete_nvidia_nim(
             if e.code == 429:
                 if attempt < 2:
                     default_wait = 2 * (2 ** attempt)
-                    wait_s = _parse_retry_after(e, default_wait)
-                    _sleep(wait_s)
+                    _sleep(_parse_retry_after(e, default_wait))
                     continue
                 fallback_reason = f"HTTP 429: {err_body or e.reason}"
                 break
@@ -692,20 +769,10 @@ def complete_nvidia_nim(
             file=sys.stderr,
         )
         try:
-            text, usage = _single_nim_request_meta(
-                api_key, base_url, system_prompt, user_prompt, fallback_model,
-                images=images, max_tokens=max_tokens, timeout=timeout
+            res_meta = call_fn(api_key, fallback_model)
+            return _build_nim_success(
+                model, fallback_model, res_meta, fallback_reason=fallback_reason,
             )
-            return {
-                "text": text,
-                "provider": "nvidia_nim",
-                "model_requested": model,
-                "model_used": fallback_model,
-                "fallback_used": True,
-                "fallback_reason": fallback_reason,
-                "prompt_tokens": usage.get("prompt_tokens"),
-                "completion_tokens": usage.get("completion_tokens"),
-            }
         except urllib.error.HTTPError as e:
             err_body = _read_http_error_body(e)
             if e.code in (401, 403):
@@ -725,6 +792,81 @@ def complete_nvidia_nim(
             ) from e
 
     raise RuntimeError(f"NVIDIA NIM error for '{model}': {fallback_reason}") from last_error
+
+
+def _complete_nim_messages(
+    api_key,
+    base_url,
+    messages,
+    model,
+    tools=None,
+    fallback_model=None,
+    max_tokens=1500,
+    timeout=60,
+    role=None,
+    pool=None,
+):
+    """Execute multi-turn NIM completion with optional tools, key-pool rotation, and fallback."""
+    url = f"{base_url.rstrip('/')}/chat/completions"
+
+    def call_fn(key_to_use, target_model):
+        return _single_openai_compat_chat_meta(
+            url=url,
+            api_key=key_to_use,
+            messages=messages,
+            model=target_model,
+            tools=tools,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            top_p=0.9,
+            accept_json=True,
+        )
+
+    if pool is not None or api_key is None:
+        return _run_nim_with_pool(
+            pool=pool if pool is not None else key_pool.get_pool(),
+            role=role,
+            model=model,
+            fallback_model=fallback_model,
+            call_fn=call_fn,
+        )
+    return _run_nim_single_key(api_key, model, fallback_model, call_fn)
+
+
+def complete_nvidia_nim(
+    api_key,
+    base_url,
+    system_prompt,
+    user_prompt,
+    model,
+    images=None,
+    fallback_model=None,
+    max_tokens=1500,
+    timeout=60,
+    role=None,
+    pool=None,
+):
+    """Execute completion against NVIDIA NIM with key-pool rotation, 429 retries, and backup fallback."""
+    messages = _build_messages_from_prompts(
+        system_prompt,
+        user_prompt,
+        images=images,
+        vision_enabled=model_registry.is_vision_model(model),
+    )
+    out = _complete_nim_messages(
+        api_key=api_key,
+        base_url=base_url,
+        messages=messages,
+        model=model,
+        tools=None,
+        fallback_model=fallback_model,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        role=role,
+        pool=pool,
+    )
+    out.pop("img_warning", None)
+    return out
 
 
 def complete_openai_compat(url, api_key, system_prompt, user_prompt, model, images=None, provider_name="openai"):
@@ -948,7 +1090,128 @@ def _record_run(
         pass
 
 
-def _dispatch_non_confidential(
+def _messages_to_prompts(messages):
+    """Collapse a messages list into (system_prompt, user_prompt) for non-tool legacy providers."""
+    sys_parts = []
+    user_parts = []
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role", "")
+        content = msg.get("content")
+        if isinstance(content, list):
+            text_val = "\n".join(
+                str(p.get("text", ""))
+                for p in content
+                if isinstance(p, dict) and p.get("type") == "text"
+            )
+        else:
+            text_val = str(content or "")
+        if role == "system":
+            if text_val:
+                sys_parts.append(text_val)
+        elif text_val:
+            user_parts.append(text_val)
+    return "\n\n".join(sys_parts), "\n\n".join(user_parts)
+
+
+def _single_ollama_chat_meta(base_url, messages, model, tools=None, timeout=20):
+    """Execute Ollama /api/chat with messages and optional tools, falling back without tools if unsupported."""
+    url = f"{base_url.rstrip('/')}/api/chat"
+    headers = {"Content-Type": "application/json"}
+    prepared_messages, img_warning = _prepare_messages_for_model(messages, model)
+    warnings = [img_warning] if img_warning else []
+
+    def _post(include_tools):
+        payload = {"model": model, "messages": prepared_messages, "stream": False}
+        if include_tools and tools:
+            payload["tools"] = tools
+        res = _http_post_json(url, payload, headers, timeout=timeout)
+        if isinstance(res, dict) and res.get("error"):
+            raise RuntimeError(str(res["error"]))
+        return res
+
+    used_tools = bool(tools)
+    try:
+        res = _post(include_tools=used_tools)
+    except urllib.error.HTTPError as e:
+        if used_tools and e.code == 400:
+            res = _post(include_tools=False)
+            used_tools = False
+            warnings.append(f"Ollama model '{model}' does not support tools; called without tools.")
+        else:
+            raise
+    except Exception as e:
+        if used_tools and ("tool" in str(e).lower() or "support" in str(e).lower()):
+            res = _post(include_tools=False)
+            used_tools = False
+            warnings.append(f"Ollama model '{model}' does not support tools; called without tools.")
+        else:
+            raise
+
+    msg = res.get("message") if isinstance(res, dict) else {}
+    if not isinstance(msg, dict):
+        msg = {}
+    cleaned = _strip_thinking_tags(msg.get("content") or "")
+    tool_calls = _parse_tool_calls(msg.get("tool_calls") or []) if used_tools else []
+    if not cleaned.strip() and not tool_calls:
+        raise AINotConnected("Ollama couldn't answer: empty response")
+
+    usage = None
+    if isinstance(res, dict) and ("prompt_eval_count" in res or "eval_count" in res):
+        usage = {
+            "prompt_tokens": res.get("prompt_eval_count"),
+            "completion_tokens": res.get("eval_count"),
+        }
+
+    return {
+        "text": cleaned,
+        "tool_calls": tool_calls,
+        "provider": "ollama",
+        "model_requested": model,
+        "model_used": f"ollama/{model}",
+        "fallback_used": False,
+        "fallback_reason": None,
+        "warnings": warnings,
+        "usage": usage,
+    }
+
+
+def _complete_confidential_ollama(base_url, ollama_model, messages, tools=None):
+    """Run confidential completion/chat against local Ollama, mapping errors to AINotConnected."""
+    if not base_url or not _ollama_reachable(base_url):
+        raise AINotConnected(
+            "This is confidential work and needs local AI (Ollama), which is not running."
+        )
+    try:
+        return _single_ollama_chat_meta(
+            base_url=base_url,
+            messages=messages,
+            model=ollama_model,
+            tools=tools,
+        )
+    except AINotConnected:
+        raise
+    except urllib.error.HTTPError as e:
+        err_body = _read_http_error_body(e)
+        if e.code == 404 or "not found" in err_body.lower():
+            raise AINotConnected(
+                f"Ollama is running but the model '{ollama_model}' isn't installed. Run: ollama pull {ollama_model}"
+            ) from e
+        raise AINotConnected(
+            f"Ollama couldn't answer: {_short_error_reason(e)}"
+        ) from e
+    except Exception as e:
+        if "not found" in str(e).lower():
+            raise AINotConnected(
+                f"Ollama is running but the model '{ollama_model}' isn't installed. Run: ollama pull {ollama_model}"
+            ) from e
+        raise AINotConnected(
+            f"Ollama couldn't answer: {_short_error_reason(e)}"
+        ) from e
+
+
+def _dispatch_non_confidential_messages(
     cfg,
     models_cfg,
     ollama_model,
@@ -959,33 +1222,39 @@ def _dispatch_non_confidential(
     role_key,
     effective_timeout,
     effective_max_tokens,
-    system_prompt,
-    user_prompt,
-    model_tier,
-    image_paths,
-    force_live_only,
+    messages,
+    tools=None,
+    model_tier="fast",
+    image_paths=None,
+    force_live_only=False,
     pool=None,
+    allow_image_warning=False,
 ):
-    """Run provider cascade for non-confidential completions."""
+    """Run provider cascade for non-confidential chat/completions with optional tools."""
     failures = {}
     has_nim = bool(nim_key) or (pool is not None and pool.has_keys(role=role_key))
+    base_warnings = list(warnings or [])
+    has_tools = bool(tools)
 
     if has_nim:
         try:
-            result = complete_nvidia_nim(
+            result = _complete_nim_messages(
                 api_key=nim_key,
                 base_url=cfg["NVIDIA_NIM_BASE_URL"],
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
+                messages=messages,
                 model=requested_model,
-                images=image_paths,
+                tools=tools if has_tools else None,
                 fallback_model=backup_model,
                 max_tokens=effective_max_tokens,
                 timeout=effective_timeout,
                 role=role_key,
                 pool=pool,
             )
-            result["warnings"] = warnings
+            img_warn = result.pop("img_warning", None)
+            out_warnings = list(base_warnings)
+            if allow_image_warning and img_warn and img_warn not in out_warnings:
+                out_warnings.append(img_warn)
+            result["warnings"] = out_warnings
             return result
         except (AIAuthError, AINotConnected):
             raise
@@ -996,49 +1265,74 @@ def _dispatch_non_confidential(
                 raise
 
     sec_cfg = models_cfg.get("secondary_providers", {})
+    system_prompt, user_prompt = _messages_to_prompts(messages)
 
     if cfg["OPENAI_API_KEY"]:
         oai_cfg = sec_cfg.get("openai", {})
         oai_model = oai_cfg.get("fast", "gpt-4o-mini") if model_tier == "fast" else oai_cfg.get("reasoning", "gpt-4o")
         try:
+            if has_tools or not image_paths:
+                res_meta = _single_openai_compat_chat_meta(
+                    "https://api.openai.com/v1/chat/completions",
+                    cfg["OPENAI_API_KEY"],
+                    messages,
+                    model=oai_model,
+                    tools=tools if has_tools else None,
+                    max_tokens=effective_max_tokens,
+                    timeout=effective_timeout,
+                )
+                out_warnings = list(base_warnings)
+                if allow_image_warning and res_meta.get("img_warning"):
+                    out_warnings.append(res_meta["img_warning"])
+                return {
+                    "text": res_meta["text"],
+                    "tool_calls": res_meta["tool_calls"],
+                    "provider": "openai",
+                    "model_requested": oai_model,
+                    "model_used": oai_model,
+                    "fallback_used": True,
+                    "fallback_reason": "Secondary provider OpenAI",
+                    "warnings": out_warnings,
+                    "usage": res_meta["usage"],
+                }
             txt = complete_openai_compat(
                 "https://api.openai.com/v1/chat/completions",
                 cfg["OPENAI_API_KEY"], system_prompt, user_prompt,
                 model=oai_model, images=image_paths, provider_name="openai"
             )
             return {
-                "text": txt, "provider": "openai",
+                "text": txt, "tool_calls": [], "provider": "openai",
                 "model_requested": oai_model, "model_used": oai_model,
                 "fallback_used": True, "fallback_reason": "Secondary provider OpenAI",
-                "warnings": warnings,
+                "warnings": base_warnings, "usage": None,
             }
         except Exception as e:
             failures["openai"] = _short_error_reason(e)
             print(f"[ai_gateway] OpenAI failed: {e}", file=sys.stderr)
 
-    if cfg["ANTHROPIC_API_KEY"]:
+    if not has_tools and cfg["ANTHROPIC_API_KEY"]:
         ant_model = sec_cfg.get("anthropic", {}).get("default", "claude-sonnet-5-5")
         try:
             txt = complete_anthropic(cfg["ANTHROPIC_API_KEY"], system_prompt, user_prompt, model=ant_model)
             return {
-                "text": txt, "provider": "anthropic",
+                "text": txt, "tool_calls": [], "provider": "anthropic",
                 "model_requested": ant_model, "model_used": ant_model,
                 "fallback_used": True, "fallback_reason": "Secondary provider Anthropic",
-                "warnings": warnings,
+                "warnings": base_warnings, "usage": None,
             }
         except Exception as e:
             failures["anthropic"] = _short_error_reason(e)
             print(f"[ai_gateway] Anthropic failed: {e}", file=sys.stderr)
 
-    if cfg["GEMINI_API_KEY"]:
+    if not has_tools and cfg["GEMINI_API_KEY"]:
         gem_model = sec_cfg.get("gemini", {}).get("default", "gemini-1.5-flash")
         try:
             txt = complete_gemini(cfg["GEMINI_API_KEY"], system_prompt, user_prompt, model=gem_model)
             return {
-                "text": txt, "provider": "gemini",
+                "text": txt, "tool_calls": [], "provider": "gemini",
                 "model_requested": gem_model, "model_used": gem_model,
                 "fallback_used": True, "fallback_reason": "Secondary provider Gemini",
-                "warnings": warnings,
+                "warnings": base_warnings, "usage": None,
             }
         except Exception as e:
             failures["gemini"] = _short_error_reason(e)
@@ -1047,42 +1341,54 @@ def _dispatch_non_confidential(
     if cfg["GROQ_API_KEY"]:
         groq_model = sec_cfg.get("groq", {}).get("default", "llama-3.3-70b-versatile")
         try:
-            txt = complete_openai_compat(
+            res_meta = _single_openai_compat_chat_meta(
                 "https://api.groq.com/openai/v1/chat/completions",
-                cfg["GROQ_API_KEY"], system_prompt, user_prompt,
-                model=groq_model, provider_name="groq"
+                cfg["GROQ_API_KEY"],
+                messages,
+                model=groq_model,
+                tools=tools if has_tools else None,
+                max_tokens=effective_max_tokens,
+                timeout=effective_timeout,
             )
+            out_warnings = list(base_warnings)
+            if allow_image_warning and res_meta.get("img_warning"):
+                out_warnings.append(res_meta["img_warning"])
             return {
-                "text": txt, "provider": "groq",
-                "model_requested": groq_model, "model_used": groq_model,
-                "fallback_used": True, "fallback_reason": "Secondary provider Groq",
-                "warnings": warnings,
+                "text": res_meta["text"],
+                "tool_calls": res_meta["tool_calls"],
+                "provider": "groq",
+                "model_requested": groq_model,
+                "model_used": groq_model,
+                "fallback_used": True,
+                "fallback_reason": "Secondary provider Groq",
+                "warnings": out_warnings,
+                "usage": res_meta["usage"],
             }
         except Exception as e:
             failures["groq"] = _short_error_reason(e)
             print(f"[ai_gateway] Groq failed: {e}", file=sys.stderr)
 
-    if not force_live_only and cfg.get("USE_CHATGPT_CLI_FALLBACK"):
+    if not has_tools and not force_live_only and cfg.get("USE_CHATGPT_CLI_FALLBACK"):
         cli_resp = complete_chatgpt_cli(system_prompt, user_prompt)
         if cli_resp:
             return {
-                "text": cli_resp, "provider": "chatgpt_cli",
+                "text": cli_resp, "tool_calls": [], "provider": "chatgpt_cli",
                 "model_requested": requested_model, "model_used": "chatgpt_cli",
                 "fallback_used": True, "fallback_reason": "Browser ChatGPT CLI session",
-                "warnings": warnings,
+                "warnings": base_warnings, "usage": None,
             }
 
-    if not force_live_only and cfg["OLLAMA_BASE_URL"] and _ollama_reachable(cfg["OLLAMA_BASE_URL"]):
+    if not has_tools and not force_live_only and cfg["OLLAMA_BASE_URL"] and _ollama_reachable(cfg["OLLAMA_BASE_URL"]):
         try:
             txt = complete_ollama(
                 cfg["OLLAMA_BASE_URL"], system_prompt, user_prompt, model=ollama_model
             )
             if txt:
                 return {
-                    "text": txt, "provider": "ollama",
+                    "text": txt, "tool_calls": [], "provider": "ollama",
                     "model_requested": ollama_model, "model_used": f"ollama/{ollama_model}",
                     "fallback_used": True, "fallback_reason": "Local Ollama fallback",
-                    "warnings": warnings,
+                    "warnings": base_warnings, "usage": None,
                 }
             failures["ollama"] = "empty response"
         except Exception as e:
@@ -1091,17 +1397,18 @@ def _dispatch_non_confidential(
     raise AINotConnected(_build_not_connected_message(bool(nim_key), failures))
 
 
-def generate_completion_with_meta(
-    system_prompt,
-    user_prompt,
+def _execute_gateway_messages(
+    messages,
+    tools=None,
     model_tier="fast",
     image_paths=None,
     agent_role="",
     force_live_only=False,
     confidential=False,
     max_tokens=None,
+    allow_image_warning=False,
 ):
-    """Unified entry point returning generated text plus full model & fallback telemetry."""
+    """Shared gateway execution for confidential Ollama and non-confidential provider cascades."""
     t0 = time.monotonic()
     cfg = get_config()
     models_cfg = model_registry.load_models_config()
@@ -1111,44 +1418,12 @@ def generate_completion_with_meta(
     if confidential:
         base_url = cfg["OLLAMA_BASE_URL"]
         try:
-            if not base_url or not _ollama_reachable(base_url):
-                raise AINotConnected(
-                    "This is confidential work and needs local AI (Ollama), which is not running."
-                )
-            try:
-                txt = complete_ollama(
-                    base_url, system_prompt, user_prompt, model=ollama_model
-                )
-                if not txt:
-                    raise AINotConnected("Ollama couldn't answer: empty response")
-                result = {
-                    "text": txt,
-                    "provider": "ollama",
-                    "model_requested": ollama_model,
-                    "model_used": f"ollama/{ollama_model}",
-                    "fallback_used": False,
-                    "fallback_reason": None,
-                    "warnings": [],
-                }
-            except AINotConnected:
-                raise
-            except urllib.error.HTTPError as e:
-                err_body = _read_http_error_body(e)
-                if e.code == 404 or "not found" in err_body.lower():
-                    raise AINotConnected(
-                        f"Ollama is running but the model '{ollama_model}' isn't installed. Run: ollama pull {ollama_model}"
-                    ) from e
-                raise AINotConnected(
-                    f"Ollama couldn't answer: {_short_error_reason(e)}"
-                ) from e
-            except Exception as e:
-                if "not found" in str(e).lower():
-                    raise AINotConnected(
-                        f"Ollama is running but the model '{ollama_model}' isn't installed. Run: ollama pull {ollama_model}"
-                    ) from e
-                raise AINotConnected(
-                    f"Ollama couldn't answer: {_short_error_reason(e)}"
-                ) from e
+            result = _complete_confidential_ollama(
+                base_url=base_url,
+                ollama_model=ollama_model,
+                messages=messages,
+                tools=tools,
+            )
         except Exception as e:
             _record_run(
                 role=role_key,
@@ -1163,6 +1438,7 @@ def generate_completion_with_meta(
             )
             raise
 
+        usage = result.get("usage") or {}
         _record_run(
             role=role_key,
             provider=result["provider"],
@@ -1171,6 +1447,8 @@ def generate_completion_with_meta(
             fallback_used=False,
             fallback_reason=None,
             latency_ms=int((time.monotonic() - t0) * 1000),
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
             ok=True,
         )
         return result
@@ -1185,7 +1463,7 @@ def generate_completion_with_meta(
     default_provider = "nvidia_nim" if (has_nim or nim_key) else cfg["DEFAULT_PROVIDER"]
 
     try:
-        result = _dispatch_non_confidential(
+        result = _dispatch_non_confidential_messages(
             cfg=cfg,
             models_cfg=models_cfg,
             ollama_model=ollama_model,
@@ -1196,12 +1474,13 @@ def generate_completion_with_meta(
             role_key=role_key,
             effective_timeout=effective_timeout,
             effective_max_tokens=effective_max_tokens,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
+            messages=messages,
+            tools=tools,
             model_tier=model_tier,
             image_paths=image_paths,
             force_live_only=force_live_only,
             pool=pool if has_nim else None,
+            allow_image_warning=allow_image_warning,
         )
     except Exception as e:
         err_msg = str(e)[:300] if isinstance(e, AINotConnected) else _short_error_reason(e)
@@ -1218,6 +1497,9 @@ def generate_completion_with_meta(
         )
         raise
 
+    usage = result.get("usage") or {}
+    prompt_tokens = result.get("prompt_tokens") if result.get("prompt_tokens") is not None else usage.get("prompt_tokens")
+    completion_tokens = result.get("completion_tokens") if result.get("completion_tokens") is not None else usage.get("completion_tokens")
     _record_run(
         role=role_key,
         provider=result.get("provider"),
@@ -1226,11 +1508,70 @@ def generate_completion_with_meta(
         fallback_used=bool(result.get("fallback_used")),
         fallback_reason=result.get("fallback_reason"),
         latency_ms=int((time.monotonic() - t0) * 1000),
-        prompt_tokens=result.get("prompt_tokens"),
-        completion_tokens=result.get("completion_tokens"),
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
         ok=True,
     )
     return result
+
+
+def chat_with_tools(
+    messages,
+    tools=None,
+    agent_role="",
+    confidential=False,
+    max_tokens=None,
+):
+    """Multi-turn chat completion supporting OpenAI-compatible tools, vision filtering, and confidential Ollama."""
+    res = _execute_gateway_messages(
+        messages=messages,
+        tools=list(tools) if tools else None,
+        agent_role=agent_role,
+        confidential=confidential,
+        max_tokens=max_tokens,
+        allow_image_warning=True,
+    )
+    return {
+        "text": res.get("text", ""),
+        "tool_calls": res.get("tool_calls") or [],
+        "provider": res.get("provider"),
+        "model_requested": res.get("model_requested"),
+        "model_used": res.get("model_used"),
+        "fallback_used": bool(res.get("fallback_used")),
+        "fallback_reason": res.get("fallback_reason"),
+        "warnings": list(res.get("warnings") or []),
+        "usage": res.get("usage"),
+    }
+
+
+def generate_completion_with_meta(
+    system_prompt,
+    user_prompt,
+    model_tier="fast",
+    image_paths=None,
+    agent_role="",
+    force_live_only=False,
+    confidential=False,
+    max_tokens=None,
+):
+    """Unified entry point returning generated text plus full model & fallback telemetry."""
+    messages = _build_messages_from_prompts(
+        system_prompt,
+        user_prompt,
+        images=image_paths,
+        vision_enabled=True,
+    )
+    return _execute_gateway_messages(
+        messages=messages,
+        tools=None,
+        model_tier=model_tier,
+        image_paths=image_paths,
+        agent_role=agent_role,
+        force_live_only=force_live_only,
+        confidential=confidential,
+        max_tokens=max_tokens,
+        allow_image_warning=False,
+    )
 
 
 def generate_completion(system_prompt, user_prompt, model_tier="fast", image_paths=None, agent_role="", confidential=False, max_tokens=None):

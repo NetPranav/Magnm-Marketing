@@ -20,7 +20,7 @@ if _ENGINE_DIR not in sys.path:
 
 import paths
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -216,9 +216,65 @@ def _apply_migration_v2(conn):
     )
 
 
+def _apply_migration_v3(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS tool_calls (
+            rowid INTEGER PRIMARY KEY,
+            session_id TEXT,
+            agent_id TEXT,
+            tool TEXT NOT NULL,
+            args_json TEXT,
+            ok INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            duration_ms INTEGER,
+            ts TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_tool_calls_session
+            ON tool_calls(session_id, rowid);
+
+        CREATE TABLE IF NOT EXISTS research_notes (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            url TEXT,
+            source TEXT,
+            agent_id TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_research_notes_created
+            ON research_notes(created_at);
+
+        CREATE TABLE IF NOT EXISTS agent_sessions (
+            id TEXT PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            messages_json TEXT NOT NULL,
+            pending_question_json TEXT,
+            parent_session_id TEXT,
+            depth INTEGER NOT NULL DEFAULT 0,
+            title TEXT,
+            result_text TEXT,
+            error TEXT,
+            allowed_tools_json TEXT,
+            confidential INTEGER NOT NULL DEFAULT 0,
+            steps INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_sessions_status_updated
+            ON agent_sessions(status, updated_at);
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
+    (3, _apply_migration_v3),
 )
 
 
@@ -1085,3 +1141,332 @@ def fail_stale_running_jobs(finished_at, error="engine restarted"):
                 (finished_at, str(error), f"Failed: {error}"),
             )
     return [get_job(jid) for jid in stale_ids]
+
+
+def log_tool_call(
+    session_id,
+    agent_id,
+    tool,
+    args_json,
+    ok=True,
+    error=None,
+    duration_ms=0,
+    ts=None,
+):
+    """Record a tool execution row in the tool_calls table."""
+    ensure_init()
+    conn = connect()
+    if ts is None:
+        ts = datetime.now(timezone.utc).isoformat()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO tool_calls (
+                session_id, agent_id, tool, args_json, ok, error, duration_ms, ts
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                agent_id,
+                str(tool),
+                args_json,
+                1 if ok else 0,
+                error,
+                int(duration_ms) if duration_ms is not None else 0,
+                str(ts),
+            ),
+        )
+
+
+def list_tool_calls(session_id=None, limit=50):
+    """Return recent tool_calls rows, optionally filtered by session_id."""
+    ensure_init()
+    conn = connect()
+    if session_id is not None:
+        rows = conn.execute(
+            """
+            SELECT rowid, session_id, agent_id, tool, args_json, ok, error, duration_ms, ts
+            FROM tool_calls
+            WHERE session_id = ?
+            ORDER BY rowid ASC
+            LIMIT ?
+            """,
+            (str(session_id), int(limit)),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT rowid, session_id, agent_id, tool, args_json, ok, error, duration_ms, ts
+            FROM tool_calls
+            ORDER BY rowid DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+    return [
+        {
+            "id": r["rowid"],
+            "session_id": r["session_id"],
+            "agent_id": r["agent_id"],
+            "tool": r["tool"],
+            "args_json": r["args_json"],
+            "ok": bool(r["ok"]),
+            "error": r["error"],
+            "duration_ms": r["duration_ms"],
+            "ts": r["ts"],
+        }
+        for r in rows
+    ]
+
+
+def save_research_note(note_id, title, body, url=None, source=None, agent_id=None, created_at=None):
+    """Insert a research note into research_notes and return its dict."""
+    ensure_init()
+    conn = connect()
+    if created_at is None:
+        created_at = datetime.now(timezone.utc).isoformat()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO research_notes (id, title, body, url, source, agent_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(note_id),
+                str(title),
+                str(body),
+                url,
+                source,
+                agent_id,
+                str(created_at),
+            ),
+        )
+    return {
+        "id": str(note_id),
+        "title": str(title),
+        "body": str(body),
+        "url": url,
+        "source": source,
+        "agent_id": agent_id,
+        "created_at": str(created_at),
+    }
+
+
+def search_research_notes(query, limit=20):
+    """Search research_notes case-insensitively by keyword tokens."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT id, title, body, url, source, agent_id, created_at
+        FROM research_notes
+        ORDER BY created_at DESC, rowid DESC
+        """
+    ).fetchall()
+    tokens = [t for t in str(query or "").lower().split() if t]
+    hits = []
+    for r in rows:
+        haystack = " ".join(
+            str(x or "") for x in (r["title"], r["body"], r["url"], r["source"])
+        ).lower()
+        if not tokens or all(tok in haystack for tok in tokens):
+            hits.append(
+                {
+                    "id": r["id"],
+                    "title": r["title"],
+                    "body": r["body"],
+                    "url": r["url"] or "",
+                    "source": r["source"] or "research_notes",
+                    "agent_id": r["agent_id"],
+                    "created_at": r["created_at"],
+                }
+            )
+            if len(hits) >= int(limit):
+                break
+    return hits
+
+
+_SESSION_SELECT_COLS = (
+    "id, agent_id, status, messages_json, pending_question_json, "
+    "parent_session_id, depth, title, result_text, error, "
+    "allowed_tools_json, confidential, steps, created_at, updated_at"
+)
+
+
+def _deserialize_session(row):
+    if row is None:
+        return None
+    messages = json.loads(row["messages_json"]) if row["messages_json"] else []
+    pending = json.loads(row["pending_question_json"]) if row["pending_question_json"] else None
+    allowed_tools = json.loads(row["allowed_tools_json"]) if row["allowed_tools_json"] else []
+    return {
+        "id": row["id"],
+        "agent_id": row["agent_id"],
+        "status": row["status"],
+        "messages": messages,
+        "pending_question": pending,
+        "parent_session_id": row["parent_session_id"],
+        "depth": int(row["depth"] or 0),
+        "title": row["title"],
+        "result_text": row["result_text"],
+        "error": row["error"],
+        "allowed_tools": allowed_tools,
+        "confidential": bool(row["confidential"]),
+        "steps": int(row["steps"] or 0),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def create_agent_session(session):
+    """Insert a new agent_sessions row and return the deserialized session dict."""
+    ensure_init()
+    conn = connect()
+    now = datetime.now(timezone.utc).isoformat()
+    created_at = session.get("created_at") or now
+    updated_at = session.get("updated_at") or created_at
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO agent_sessions (
+                id, agent_id, status, messages_json, pending_question_json,
+                parent_session_id, depth, title, result_text, error,
+                allowed_tools_json, confidential, steps, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(session["id"]),
+                str(session["agent_id"]),
+                str(session.get("status", "running")),
+                json.dumps(session.get("messages") or [], ensure_ascii=False),
+                json.dumps(session["pending_question"], ensure_ascii=False)
+                if session.get("pending_question") is not None
+                else None,
+                session.get("parent_session_id"),
+                int(session.get("depth", 0)),
+                session.get("title"),
+                session.get("result_text"),
+                session.get("error"),
+                json.dumps(list(session.get("allowed_tools") or []), ensure_ascii=False),
+                1 if session.get("confidential") else 0,
+                int(session.get("steps", 0)),
+                str(created_at),
+                str(updated_at),
+            ),
+        )
+    return get_agent_session(session["id"])
+
+
+def get_agent_session(session_id):
+    """Return a single agent session dict by ID, or None if missing."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        f"SELECT {_SESSION_SELECT_COLS} FROM agent_sessions WHERE id = ?",
+        (str(session_id),),
+    ).fetchone()
+    return _deserialize_session(row)
+
+
+def list_agent_sessions(limit=20, status=None):
+    """Return recent agent sessions ordered newest-first, optionally filtered by status."""
+    ensure_init()
+    conn = connect()
+    if status:
+        rows = conn.execute(
+            f"""
+            SELECT {_SESSION_SELECT_COLS}
+            FROM agent_sessions
+            WHERE status = ?
+            ORDER BY updated_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            (str(status), int(limit)),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"""
+            SELECT {_SESSION_SELECT_COLS}
+            FROM agent_sessions
+            ORDER BY updated_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+    return [_deserialize_session(r) for r in rows]
+
+
+_UPDATABLE_SESSION_FIELDS = {
+    "status",
+    "messages",
+    "pending_question",
+    "title",
+    "result_text",
+    "error",
+    "allowed_tools",
+    "confidential",
+    "steps",
+    "updated_at",
+}
+
+
+def update_agent_session(session_id, **fields):
+    """Update selected fields on an agent_sessions row and return the updated dict."""
+    ensure_init()
+    updates = []
+    params = []
+    for k, v in fields.items():
+        if k not in _UPDATABLE_SESSION_FIELDS:
+            raise ValueError(f"Unsupported agent_session field: {k}")
+        if k == "messages":
+            updates.append("messages_json = ?")
+            params.append(json.dumps(v or [], ensure_ascii=False))
+        elif k == "pending_question":
+            updates.append("pending_question_json = ?")
+            params.append(json.dumps(v, ensure_ascii=False) if v is not None else None)
+        elif k == "allowed_tools":
+            updates.append("allowed_tools_json = ?")
+            params.append(json.dumps(list(v or []), ensure_ascii=False))
+        elif k == "confidential":
+            updates.append("confidential = ?")
+            params.append(1 if v else 0)
+        elif k == "steps":
+            updates.append("steps = ?")
+            params.append(int(v))
+        else:
+            updates.append(f"{k} = ?")
+            params.append(v)
+
+    if "updated_at" not in fields:
+        updates.append("updated_at = ?")
+        params.append(datetime.now(timezone.utc).isoformat())
+
+    params.append(str(session_id))
+    conn = connect()
+    with conn:
+        conn.execute(
+            f"UPDATE agent_sessions SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+    return get_agent_session(session_id)
+
+
+def fail_stale_running_sessions(updated_at, error="engine restarted"):
+    """Mark any agent_sessions left in 'running' state as failed and return them."""
+    ensure_init()
+    conn = connect()
+    with conn:
+        rows = conn.execute(
+            "SELECT id FROM agent_sessions WHERE status = 'running' ORDER BY rowid ASC"
+        ).fetchall()
+        stale_ids = [r["id"] for r in rows]
+        if stale_ids:
+            conn.execute(
+                """
+                UPDATE agent_sessions
+                SET status = 'failed', error = ?, updated_at = ?
+                WHERE status = 'running'
+                """,
+                (str(error), str(updated_at)),
+            )
+    return [get_agent_session(sid) for sid in stale_ids]

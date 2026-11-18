@@ -112,6 +112,9 @@ def main(argv=None):
     import db
     db.init_db()
 
+    import agent_runtime
+    agent_runtime.recover_stale_sessions()
+
     import jobs
     jobs.start_worker()
 

@@ -9,6 +9,7 @@ Runs on http://127.0.0.1:5050
 """
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import hmac
 import importlib.util
@@ -28,6 +29,7 @@ if _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
 
 import agent_chat
+import agent_runtime
 import ai_gateway
 import assets_manager
 import cmo_runtime
@@ -46,6 +48,7 @@ ROOT = paths.DATA_ROOT
 PORT = 5050
 HOST = "127.0.0.1"
 ENGINE_TOKEN = os.environ.get("MAGNM_ENGINE_TOKEN", "")
+_SESSION_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="magnm-session")
 
 _KEYCHAIN_ERROR_PAYLOAD = {
     "success": False,
@@ -398,6 +401,27 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.send_json(product_rules.load_rules())
             except Exception as e:
                 self.send_json({"error": str(e)}, status=500)
+
+        elif url.path == "/api/sessions":
+            qs = urllib.parse.parse_qs(url.query)
+            try:
+                limit = int(qs.get("limit", ["20"])[0])
+            except (TypeError, ValueError):
+                limit = 20
+            limit = max(1, min(limit, 500))
+            status_filter = qs.get("status", [None])[0]
+            self.send_json(agent_runtime.list_sessions(limit=limit, status=status_filter))
+
+        elif url.path.startswith("/api/sessions/"):
+            session_id = url.path[len("/api/sessions/"):].strip("/")
+            if not session_id or "/" in session_id:
+                self.send_json({"error": "Not found"}, status=404)
+                return
+            sess = agent_runtime.get_session(session_id)
+            if sess is None:
+                self.send_json({"error": "Session not found"}, status=404)
+                return
+            self.send_json(sess)
 
         elif url.path.startswith("/api/chat_history/"):
             agent_id = url.path.split("/")[-1]
@@ -801,6 +825,57 @@ Hard Rules:
                 self.send_json({"success": True})
             else:
                 self.send_json({"error": "Schedules missing"}, status=500)
+
+        elif url.path == "/api/sessions/start":
+            agent_id = (params.get("agent_id") or "").strip()
+            message = params.get("message")
+            system_prompt = params.get("system_prompt")
+            allowed_tools = params.get("allowed_tools")
+            if not agent_id or not isinstance(message, str) or not message.strip():
+                self.send_json({"error": "agent_id and message are required"}, status=400)
+                return
+            if not isinstance(system_prompt, str) or not isinstance(allowed_tools, list):
+                self.send_json(
+                    {"error": "system_prompt (string) and allowed_tools (array) are required"},
+                    status=400,
+                )
+                return
+            session = agent_runtime.create_session(
+                agent_id,
+                message,
+                system_prompt=system_prompt,
+                allowed_tools=allowed_tools,
+                attachments=params.get("attachments"),
+                parent_session_id=params.get("parent_session_id"),
+                depth=int(params.get("depth") or 0),
+                confidential=bool(params.get("confidential")),
+                title=params.get("title"),
+            )
+            _SESSION_EXECUTOR.submit(agent_runtime.run_session, session["id"])
+            self.send_json({"success": True, "session_id": session["id"]})
+
+        elif re.match(r"^/api/sessions/[^/]+/answer$", url.path):
+            session_id = url.path.split("/")[3]
+            if "answer" not in params:
+                self.send_json({"error": "answer is required"}, status=400)
+                return
+            try:
+                agent_runtime.prepare_resume(session_id, params.get("answer"))
+            except ValueError as exc:
+                msg = str(exc)
+                status = 404 if "not found" in msg.lower() else 400
+                self.send_json({"error": msg}, status=status)
+                return
+            _SESSION_EXECUTOR.submit(agent_runtime.run_session, session_id)
+            self.send_json({"success": True, "session_id": session_id, "status": "running"})
+
+        elif re.match(r"^/api/sessions/[^/]+/cancel$", url.path):
+            session_id = url.path.split("/")[3]
+            sess = agent_runtime.cancel_session(session_id)
+            if sess is None:
+                self.send_json({"error": "Session not found"}, status=404)
+                return
+            self.send_json({"success": True, "session": sess})
 
         else:
             self.send_error(404, "Unknown endpoint")
@@ -3111,6 +3186,7 @@ def main():
     print("MAGNM PR & SOCIAL AGENCY COMMAND CENTER (v5 - NVIDIA NIM)")
     print("============================================================")
     db.init_db()
+    agent_runtime.recover_stale_sessions()
     jobs.start_worker()
     print(f"Starting multi-threaded server on http://{HOST}:{PORT}")
     server = ThreadingHTTPServer((HOST, PORT), CommandCenterHandler)
