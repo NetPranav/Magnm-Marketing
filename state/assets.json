@@ -1,0 +1,24 @@
+{
+  "assets": [
+    {
+      "id": "asset_20261112_073824_6b7fa434f92a",
+      "name": "cero_terminal_preview.png",
+      "saved_filename": "asset_20261112_073824_6b7fa434f92a.png",
+      "relative_path": "assets/uploads/asset_20261112_073824_6b7fa434f92a.png",
+      "mime_type": "image/png",
+      "file_group": "image",
+      "size": "0.1 KB",
+      "size_bytes": 70,
+      "category": "cero",
+      "description": "Verified Cero terminal preview screenshot showing safe approval prompts",
+      "tags": [
+        "cero",
+        "terminal",
+        "screenshot",
+        "v2.2.3"
+      ],
+      "uploaded_at": "2026-11-12T07:38:24.982323+00:00"
+    }
+  ],
+  "updated_at": "2026-11-15T12:21:28.170436+00:00"
+}

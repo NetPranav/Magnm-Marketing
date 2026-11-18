@@ -1,0 +1,290 @@
+[
+  {
+    "source": "Hacker News",
+    "title": "Show HN: Get your coding agent off ~2019 JavaScript, onto modern web primitives",
+    "url": "https://github.com/GoogleChrome/modern-web-guidance",
+    "created_at": "2026-11-10T18:01:15Z",
+    "engagement": "429 points, 142 comments",
+    "points": 429,
+    "comments": 142,
+    "query": "developer command line",
+    "scoring": {
+      "relevance": 3,
+      "audience_interest": 5,
+      "credibility": 5,
+      "timeliness": 5,
+      "score": 375,
+      "max_score": 625
+    }
+  },
+  {
+    "source": "Hacker News",
+    "title": "Launch HN: Simantic (YC F26) \u2013 Firmware Simulation for AI Agents",
+    "url": "https://news.ycombinator.com/item?id=50291116",
+    "created_at": "2026-10-29T15:56:32Z",
+    "engagement": "80 points, 37 comments",
+    "points": 80,
+    "comments": 37,
+    "query": "terminal AI",
+    "scoring": {
+      "relevance": 3,
+      "audience_interest": 4,
+      "credibility": 5,
+      "timeliness": 4,
+      "score": 240,
+      "max_score": 625
+    }
+  },
+  {
+    "source": "Hacker News",
+    "title": "Launch HN: Kino AI (YC S23) \u2013 AI media manager and video editor",
+    "url": "https://news.ycombinator.com/item?id=50368804",
+    "created_at": "2026-11-04T17:31:53Z",
+    "engagement": "112 points, 37 comments",
+    "points": 112,
+    "comments": 37,
+    "query": "developer command line",
+    "scoring": {
+      "relevance": 2,
+      "audience_interest": 4,
+      "credibility": 5,
+      "timeliness": 5,
+      "score": 200,
+      "max_score": 625
+    }
+  },
+  {
+    "source": "Hacker News",
+    "title": "Show HN: Gauge \u2013 Open-Source CLI to recursively improve your docs",
+    "url": "https://github.com/gauge-sh/gauge-cli",
+    "created_at": "2026-11-04T20:31:30Z",
+    "engagement": "43 points, 10 comments",
+    "points": 43,
+    "comments": 10,
+    "query": "developer command line",
+    "scoring": {
+      "relevance": 3,
+      "audience_interest": 3,
+      "credibility": 4,
+      "timeliness": 4,
+      "score": 144,
+      "max_score": 625
+    }
+  },
+  {
+    "source": "Hacker News",
+    "title": "Show HN: Canopy, a cross-platform DAG engine for agents CLI",
+    "url": "https://univerlab.org/canopy/",
+    "created_at": "2026-11-04T21:43:41Z",
+    "engagement": "4 points, 0 comments",
+    "points": 4,
+    "comments": 0,
+    "query": "CLI agent",
+    "scoring": {
+      "relevance": 4,
+      "audience_interest": 1,
+      "credibility": 4,
+      "timeliness": 4,
+      "score": 64,
+      "max_score": 625
+    }
+  },
+  {
+    "source": "Hacker News",
+    "title": "Which coding-agent CLI is best for headless workflow automation?",
+    "url": "https://aictrl.dev/blog/headless-coding-agent-cli-benchmark",
+    "created_at": "2026-11-01T18:42:17Z",
+    "engagement": "2 points, 0 comments",
+    "points": 2,
+    "comments": 0,
+    "query": "CLI agent",
+    "scoring": {
+      "relevance": 4,
+      "audience_interest": 1,
+      "credibility": 4,
+      "timeliness": 4,
+      "score": 64,
+      "max_score": 625
+    }
+  },
+  {
+    "source": "Hacker News",
+    "title": "Show HN: Desk - Open-source macOS workspace for CLI coding agents",
+    "url": "https://github.com/s-nish/desk",
+    "created_at": "2026-11-09T19:30:38Z",
+    "engagement": "1 points, 1 comments",
+    "points": 1,
+    "comments": 1,
+    "query": "CLI agent",
+    "scoring": {
+      "relevance": 4,
+      "audience_interest": 1,
+      "credibility": 4,
+      "timeliness": 4,
+      "score": 64,
+      "max_score": 625
+    }
+  },
+  {
+    "source": "Hacker News",
+    "title": "Show HN: A Terminal UI for Hacker News, and CLI for Agents",
+    "url": "https://github.com/kaushalvivek/hn-cli",
+    "created_at": "2026-11-09T21:05:08Z",
+    "engagement": "1 points, 0 comments",
+    "points": 1,
+    "comments": 0,
+    "query": "CLI agent",
+    "scoring": {
+      "relevance": 4,
+      "audience_interest": 1,
+      "credibility": 4,
+      "timeliness": 4,
+      "score": 64,
+      "max_score": 625
+    }
+  },
+  {
+    "source": "Hacker News",
+    "title": "Agent Meter \u2013 Native macOS menu bar monitor for CLI coding agents",
+    "url": "https://github.com/amazingyyc/AgentMeter",
+    "created_at": "2026-11-04T12:03:12Z",
+    "engagement": "1 points, 0 comments",
+    "points": 1,
+    "comments": 0,
+    "query": "CLI agent",
+    "scoring": {
+      "relevance": 4,
+      "audience_interest": 1,
+      "credibility": 4,
+      "timeliness": 4,
+      "score": 64,
+      "max_score": 625
+    }
+  },
+  {
+    "source": "Hacker News",
+    "title": "Show HN: Halyard \u2013 Mac and iPhone app for AI agents in tmux, nothing to install",
+    "url": "https://apps.apple.com/us/app/halyard-ai-agent-terminal/id6809046638",
+    "created_at": "2026-11-11T10:24:10Z",
+    "engagement": "4 points, 0 comments",
+    "points": 4,
+    "comments": 0,
+    "query": "terminal AI",
+    "scoring": {
+      "relevance": 3,
+      "audience_interest": 1,
+      "credibility": 4,
+      "timeliness": 4,
+      "score": 48,
+      "max_score": 625
+    }
+  },
+  {
+    "source": "Hacker News",
+    "title": "Terminal-Bench 4.1: 23 of 66 tasks have scoring or data problems",
+    "url": "https://vetto.ai/companies/terminal-bench-4-audit/",
+    "created_at": "2026-11-10T14:51:33Z",
+    "engagement": "2 points, 0 comments",
+    "points": 2,
+    "comments": 0,
+    "query": "terminal AI",
+    "scoring": {
+      "relevance": 3,
+      "audience_interest": 1,
+      "credibility": 4,
+      "timeliness": 4,
+      "score": 48,
+      "max_score": 625
+    }
+  },
+  {
+    "source": "Hacker News",
+    "title": "Show HN: Synaps \u2013 Turn your agents into autonomous daemons",
+    "url": "https://github.com/HaseebKhalid1507/SynapsCLI",
+    "created_at": "2026-11-05T13:57:13Z",
+    "engagement": "2 points, 0 comments",
+    "points": 2,
+    "comments": 0,
+    "query": "local LLM terminal",
+    "scoring": {
+      "relevance": 3,
+      "audience_interest": 1,
+      "credibility": 4,
+      "timeliness": 4,
+      "score": 48,
+      "max_score": 625
+    }
+  },
+  {
+    "source": "Hacker News",
+    "title": "Show HN: Rystic \u2013 Stateful Local Simulators of Slack, GitHub and Linear",
+    "url": "https://www.rystic.ai",
+    "created_at": "2026-11-11T00:44:10Z",
+    "engagement": "4 points, 0 comments",
+    "points": 4,
+    "comments": 0,
+    "query": "developer command line",
+    "scoring": {
+      "relevance": 3,
+      "audience_interest": 1,
+      "credibility": 4,
+      "timeliness": 4,
+      "score": 48,
+      "max_score": 625
+    }
+  },
+  {
+    "source": "Hacker News",
+    "title": "A new protocol and software suite for AIs",
+    "url": "https://news.ycombinator.com/item?id=50397008",
+    "created_at": "2026-11-06T19:19:09Z",
+    "engagement": "3 points, 0 comments",
+    "points": 3,
+    "comments": 0,
+    "query": "terminal AI",
+    "scoring": {
+      "relevance": 2,
+      "audience_interest": 1,
+      "credibility": 4,
+      "timeliness": 4,
+      "score": 32,
+      "max_score": 625
+    }
+  },
+  {
+    "source": "Hacker News",
+    "title": "Ask HN: Are you putting off hardware upgrades because of AI coding tools?",
+    "url": "https://news.ycombinator.com/item?id=50307060",
+    "created_at": "2026-10-30T17:18:06Z",
+    "engagement": "5 points, 4 comments",
+    "points": 5,
+    "comments": 4,
+    "query": "terminal AI",
+    "scoring": {
+      "relevance": 2,
+      "audience_interest": 1,
+      "credibility": 4,
+      "timeliness": 4,
+      "score": 32,
+      "max_score": 625
+    }
+  },
+  {
+    "source": "Hacker News",
+    "title": "Show HN: Clawdline \u2013 Manage Claude Code/Codex sessions across computers",
+    "url": "https://clawdline.com/",
+    "created_at": "2026-10-31T17:05:23Z",
+    "engagement": "1 points, 1 comments",
+    "points": 1,
+    "comments": 1,
+    "query": "developer command line",
+    "scoring": {
+      "relevance": 2,
+      "audience_interest": 1,
+      "credibility": 4,
+      "timeliness": 4,
+      "score": 32,
+      "max_score": 625
+    }
+  }
+]

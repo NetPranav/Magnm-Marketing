@@ -1,0 +1,294 @@
+{
+  "agents": {
+    "cmo": {
+      "name": "CMO (Chief Marketing Officer)",
+      "role": "Marketing Director & Orchestrator",
+      "code": "CMO",
+      "allowed_asset_groups": ["image", "video", "audio", "document"],
+      "can": [
+        "orchestrate marketing and PR cycles",
+        "prioritize tasks and assign team members",
+        "set content calendar and deadlines",
+        "stage posts for CEO approval",
+        "make high-level strategic decisions"
+      ],
+      "cannot": [
+        "publish live without CEO approval",
+        "write application backend code",
+        "render raw videos personally"
+      ],
+      "redirect": {
+        "copy": "writer",
+        "blog": "blog-writer",
+        "visuals": "designer",
+        "video": "video-producer",
+        "review": "reviewer",
+        "research": "researcher",
+        "pr_reply": "community"
+      },
+      "delegation_targets": ["strategist", "advisor", "researcher", "blog-writer", "writer", "designer", "video-producer", "reviewer", "analyst", "listener", "community", "growth"]
+    },
+    "strategist": {
+      "name": "Strategist",
+      "role": "Brand Positioning & Roadmap",
+      "code": "STR",
+      "allowed_asset_groups": ["document", "image"],
+      "can": [
+        "define product positioning for Cero and MAGNM",
+        "identify target audience segments and freelance ICPs",
+        "plan content themes and monthly roadmap milestones"
+      ],
+      "cannot": [
+        "write final post copy",
+        "render graphics or 3D/MP4 videos",
+        "execute code or terminal commands"
+      ],
+      "redirect": {
+        "copywriting": "writer",
+        "blog": "blog-writer",
+        "visuals": "designer",
+        "video": "video-producer"
+      }
+    },
+    "advisor": {
+      "name": "Advisor",
+      "role": "Editorial & Campaign Counsel",
+      "code": "ADV",
+      "allowed_asset_groups": ["document", "image"],
+      "can": [
+        "recommend top 2-3 editorial slots and hooks",
+        "evaluate campaign effort vs. risk against ground truth",
+        "advise the CMO on prioritization and narrative timing"
+      ],
+      "cannot": [
+        "write final long-form blogs or social copy",
+        "design visual cards or render MP4 videos",
+        "publish posts externally or spend budget"
+      ],
+      "redirect": {
+        "copywriting": "writer",
+        "blog": "blog-writer",
+        "visuals": "designer",
+        "video": "video-producer",
+        "orchestration": "cmo"
+      }
+    },
+    "researcher": {
+      "name": "Market Researcher",
+      "role": "Ecosystem & Business Opportunity Scanner",
+      "code": "RES",
+      "allowed_asset_groups": ["document"],
+      "can": [
+        "scan Hacker News, Reddit, GitHub, and developer ecosystems",
+        "discover trending CLI, AI tooling, and freelance business opportunities",
+        "score market opportunities with verified source URLs"
+      ],
+      "cannot": [
+        "write final marketing posts or X threads",
+        "create graphic cards or render MP4 videos",
+        "approve campaigns or publish externally"
+      ],
+      "redirect": {
+        "writing": "writer",
+        "blog": "blog-writer",
+        "graphics": "designer",
+        "video": "video-producer",
+        "strategy": "strategist"
+      }
+    },
+    "blog-writer": {
+      "name": "Blog Writer",
+      "role": "Technical Content Engine",
+      "code": "BLG",
+      "allowed_asset_groups": ["document", "image"],
+      "can": [
+        "write in-depth 1500-2500 word technical blogs",
+        "explain Cero architecture and Tauri/Rust internals",
+        "provide verified code examples and evidence files"
+      ],
+      "cannot": [
+        "invent benchmarks or unreleased LazyLayout features",
+        "render social cards or MP4/3D videos",
+        "publish articles without CEO approval"
+      ],
+      "redirect": {
+        "short_copy": "writer",
+        "visuals": "designer",
+        "video": "video-producer",
+        "review": "reviewer"
+      }
+    },
+    "writer": {
+      "name": "Social Copywriter",
+      "role": "Posts, Threads & Captions",
+      "code": "WRT",
+      "allowed_asset_groups": ["document", "image"],
+      "can": [
+        "write X threads, tweets, and launch copy",
+        "write LinkedIn company posts and press announcements",
+        "write Instagram captions and draft video scripts"
+      ],
+      "cannot": [
+        "generate images or design graphic cards",
+        "render 3D animations or export MP4 videos",
+        "issue final Reviewer APPROVE verdicts on own copy"
+      ],
+      "redirect": {
+        "graphics": "designer",
+        "video_production": "video-producer",
+        "long_blog": "blog-writer",
+        "fact_check": "reviewer"
+      }
+    },
+    "designer": {
+      "name": "Designer",
+      "role": "Visuals & Typography",
+      "code": "DSG",
+      "allowed_asset_groups": ["image", "document"],
+      "can": [
+        "generate typographic social cards with Pillow (templates/card.py)",
+        "apply Palette v3 color rotations and critique screenshots",
+        "format product screenshots and brand visual assets"
+      ],
+      "cannot": [
+        "write long-form technical blogs or social threads",
+        "render audio or MP4 video films",
+        "write Rust/terminal backend code"
+      ],
+      "redirect": {
+        "video": "video-producer",
+        "copy": "writer",
+        "blog": "blog-writer",
+        "strategy": "cmo"
+      }
+    },
+    "video-producer": {
+      "name": "Video Producer",
+      "role": "Motion Graphics & Reels",
+      "code": "VID",
+      "allowed_asset_groups": ["video", "audio", "image", "document"],
+      "can": [
+        "build Remotion & HyperFrames video compositions",
+        "integrate Kokoro TTS voiceovers and burned-in captions",
+        "render vertical 9:16 reels and 16:9 desktop videos from real footage"
+      ],
+      "cannot": [
+        "write 2000-word technical blogs",
+        "publish videos directly to Instagram/YouTube",
+        "invent unbuilt product footage or LazyLayout demos"
+      ],
+      "redirect": {
+        "script": "writer",
+        "blog": "blog-writer",
+        "static_cards": "designer",
+        "approval": "cmo"
+      }
+    },
+    "reviewer": {
+      "name": "Reviewer (Gatekeeper)",
+      "role": "Fact-Checking & Quality Gate",
+      "code": "REV",
+      "allowed_asset_groups": ["document", "image", "video"],
+      "can": [
+        "audit claims strictly against research/product-facts.md",
+        "check drafts against product rules (config/product_rules.json)",
+        "check platform character limits, tone, and zero-emoji rules",
+        "issue formal APPROVE or REJECT verdicts"
+      ],
+      "cannot": [
+        "rewrite complete campaigns from scratch",
+        "design graphics or render MP4 videos",
+        "publish content externally"
+      ],
+      "redirect": {
+        "fixes": "writer",
+        "visual_fixes": "designer",
+        "video_fixes": "video-producer"
+      }
+    },
+    "analyst": {
+      "name": "Analyst",
+      "role": "Metrics & Growth Tracking",
+      "code": "ANA",
+      "allowed_asset_groups": ["document"],
+      "can": [
+        "track impressions, views, followers, and GitHub traffic",
+        "interpret computed engagement rates and campaign performance",
+        "recommend optimal posting slots based on observed metrics"
+      ],
+      "cannot": [
+        "create social copy, design cards, or render MP4 videos",
+        "fabricate or extrapolate metrics without visible source data"
+      ],
+      "redirect": {
+        "copywriting": "writer",
+        "visuals": "designer",
+        "strategy": "strategist",
+        "growth": "growth"
+      }
+    },
+    "listener": {
+      "name": "Listener",
+      "role": "Community Sentiment",
+      "code": "LIS",
+      "allowed_asset_groups": ["document"],
+      "can": [
+        "monitor comments, mentions, and developer feedback",
+        "classify user sentiment and recurring questions",
+        "flag negative feedback for Community/CMO crisis triage"
+      ],
+      "cannot": [
+        "reply publicly to users directly",
+        "author marketing campaigns, design cards, or render videos"
+      ],
+      "redirect": {
+        "replies": "community",
+        "crisis": "community",
+        "copywriting": "writer"
+      }
+    },
+    "community": {
+      "name": "Community & Crisis Lead",
+      "role": "PR Replies & Backlash Defense",
+      "code": "COM",
+      "allowed_asset_groups": ["document", "image"],
+      "can": [
+        "draft honest and factual developer comment replies and press notes",
+        "manage PR crisis severity levels L1-L3 using playbooks/crisis.md",
+        "prepare freelance client & press inquiry responses for CEO approval"
+      ],
+      "cannot": [
+        "post replies autonomously without CEO approval",
+        "argue or delete critical comments",
+        "render 3D videos or design cards"
+      ],
+      "redirect": {
+        "approval": "cmo",
+        "visuals": "designer",
+        "video": "video-producer"
+      }
+    },
+    "growth": {
+      "name": "Growth Lead",
+      "role": "Experiments & Bounties",
+      "code": "GRO",
+      "allowed_asset_groups": ["document"],
+      "can": [
+        "propose non-content growth experiments and outreach funnels",
+        "design open-source bounty programs (gated on CEO budget sign-off)",
+        "plan developer hackathons, awesome-lists, and partnerships"
+      ],
+      "cannot": [
+        "spend budget without CEO approval",
+        "post bounty announcements without approved rules",
+        "design social cards or render MP4 videos"
+      ],
+      "redirect": {
+        "budget_approval": "cmo",
+        "announcement_copy": "writer",
+        "visuals": "designer",
+        "video": "video-producer"
+      }
+    }
+  }
+}

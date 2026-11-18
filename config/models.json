@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "nim_base_url": "https://integrate.api.nvidia.com/v1",
+  "catalog_ttl_hours": 24,
+  "tiers": {
+    "reasoning": {"primary": "deepseek-ai/deepseek-v4.1-flash", "backup": "nvidia/nemotron-3-ultra-550b-a55b"},
+    "writing":   {"primary": "deepseek-ai/deepseek-v4.1-flash", "backup": "z-ai/glm-5.3-flash"},
+    "research":  {"primary": "z-ai/glm-5.3-flash", "backup": "nvidia/nemotron-3-ultra-550b-a55b"},
+    "vision":    {"primary": "nvidia/nemotron-3.5-super-vl-120b-a12b", "backup": "meta/llama-3.2-90b-vision-instruct"},
+    "fast":      {"primary": "nvidia/nemotron-3.5-lightning-30b-a3b", "backup": "openai/gpt-oss-20b"}
+  },
+  "vision_models": [
+    "nvidia/nemotron-3.5-super-vl-120b-a12b",
+    "meta/llama-3.2-90b-vision-instruct",
+    "meta/llama-3.2-11b-vision-instruct"
+  ],
+  "roles": {
+    "cmo": "reasoning",
+    "strategist": "reasoning",
+    "advisor": "reasoning",
+    "growth": "reasoning",
+    "writer": "writing",
+    "blog-writer": "writing",
+    "community": "writing",
+    "video-producer": "writing",
+    "researcher": "research",
+    "analyst": "research",
+    "reviewer": "vision",
+    "designer": "vision",
+    "listener": "fast"
+  },
+  "image_models": {
+    "generate": "black-forest-labs/flux.2-klein-4b",
+    "edit": "black-forest-labs/flux.1-kontext-dev"
+  },
+  "local": {
+    "ollama_model": "llama3.2"
+  },
+  "secondary_providers": {
+    "openai": {"fast": "gpt-4o-mini", "reasoning": "gpt-4o"},
+    "anthropic": {"default": "claude-sonnet-5-5"},
+    "gemini": {"default": "gemini-1.5-flash"},
+    "groq": {"default": "llama-3.3-70b-versatile"}
+  }
+}

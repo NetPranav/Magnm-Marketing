@@ -1,0 +1,28 @@
+{
+  "repositories": [
+    {
+      "id": "cero",
+      "product_id": "cero",
+      "name": "Cero Terminal",
+      "product": "Cero",
+      "status": "released",
+      "version": "2.2.3",
+      "local_path": "/home/overxpowered/padhai_in_linux/Projects/Cero",
+      "remote_url": "https://github.com/NetPranav/Cero-Terminal",
+      "primary_branch": "linux-v2-update",
+      "marketing_angle": "Product Education & Safe AI Shell. Showcase asks-first execution, local SLM inference, .flow workflows."
+    },
+    {
+      "id": "lazylayout",
+      "product_id": "lazylayout",
+      "name": "LazyLayout",
+      "product": "LazyLayout",
+      "status": "in_development",
+      "version": "Phase 77",
+      "local_path": "/home/overxpowered/padhai_in_linux/Projects/lazylayouts",
+      "remote_url": "https://github.com/NetPranav/LazyLayout.git",
+      "primary_branch": "b/phase-77-expressions",
+      "marketing_angle": "Builder-in-public & founder journey only. STRICT RULE: Never show fake demos or unbuilt features."
+    }
+  ]
+}

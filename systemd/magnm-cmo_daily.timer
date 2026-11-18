@@ -1,0 +1,9 @@
+[Unit]
+Description=Timer for Magnm Marketing Job - Daily CMO Cycle
+
+[Timer]
+OnCalendar=*-*-* 08:46:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,36 @@
+{
+  "id": "20261112-cero-asks-first",
+  "created_at": "2026-11-12T06:09:47.978122+00:00",
+  "status": "draft",
+  "target_platforms": [
+    "x",
+    "linkedin",
+    "instagram"
+  ],
+  "assets": {
+    "images": [
+      "outputs/posts/20261112-cero-asks-first/cero-asks-first-card_9x16.png",
+      "outputs/posts/20261112-cero-asks-first/cero-asks-first-card_16x9.png",
+      "outputs/posts/20261112-cero-asks-first/cero-asks-first-card_4x5.png",
+      "outputs/posts/20261112-cero-asks-first/cero-asks-first-card_1x1.png"
+    ]
+  },
+  "review": {
+    "verdict": "pending",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "report_file": null
+  },
+  "approval": {
+    "approved": false,
+    "approved_by": null,
+    "approved_at": null
+  },
+  "publication": {
+    "published": false,
+    "published_at": null,
+    "platform_urls": {}
+  },
+  "updated_at": "2026-11-12T06:09:47.978444+00:00",
+  "posting_kit": "outputs/posts/20261112-cero-asks-first/POSTING-KIT.md"
+}

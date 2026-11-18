@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""Magnm CMO Runtime Orchestrator
+Deterministic runtime for managing marketing cycles, task queues,
+approval state machines, delivery packages, manifest generation, and job execution.
+"""
+
+import argparse
+import glob
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+QUEUE_DIR = os.path.join(ROOT, "queue", "agy")
+POSTS_DIR = os.path.join(ROOT, "outputs", "posts")
+BLOGS_DIR = os.path.join(ROOT, "outputs", "blogs")
+STATE_DIR = os.path.join(ROOT, "state")
+LOGS_DIR = os.path.join(ROOT, "logs")
+JOBS_LOG_DIR = os.path.join(LOGS_DIR, "jobs")
+os.makedirs(JOBS_LOG_DIR, exist_ok=True)
+
+LOCK_FILE = os.path.join(STATE_DIR, ".runtime_job.lock")
+
+VALID_STATES = ["draft", "generated", "under_review", "revision_required", "approved", "published"]
+ALLOWED_JOBS = {
+    "daily_cycle": "Daily CMO Cycle (Digest, Board & Plan Check)",
+    "market_scan": "Live Developer & Market Opportunity Scanner",
+    "repo_sync": "Codebase & GitHub Intelligence Sync",
+    "generate_blog": "Generate Technical Blog & Repurposed Assets",
+    "render_cards": "Render Visual Social Cards"
+}
+
+def log_activity(actor, target_role, task_name, output_file):
+    """Append audit line to state/activity.log."""
+    log_path = os.path.join(STATE_DIR, "activity.log")
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    line = f"{ts} | {actor} -> {target_role} | {task_name} | {output_file}\n"
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(line)
+
+def run_digest():
+    """Execute CMO daily digest."""
+    digest_script = os.path.join(ROOT, "scripts", "cmo-digest.sh")
+    if os.path.exists(digest_script):
+        res = subprocess.run(["bash", digest_script], capture_output=True, text=True)
+        return res.stdout
+    return "Digest script not found."
+
+def run_research():
+    """Execute live research scanner."""
+    scanner_path = os.path.join(ROOT, "engine", "research_scanner.py")
+    res = subprocess.run([sys.executable, scanner_path], capture_output=True, text=True)
+    return res.stdout
+
+def run_repo_sync():
+    """Execute repo sync."""
+    sync_path = os.path.join(ROOT, "engine", "repo_sync.py")
+    res = subprocess.run([sys.executable, sync_path], capture_output=True, text=True)
+    return res.stdout
+
+def execute_job(job_name, actor="UI"):
+    """Execute an allowed marketing job safely with concurrency lock."""
+    if job_name not in ALLOWED_JOBS:
+        raise ValueError(f"Unknown job '{job_name}'. Allowed jobs: {list(ALLOWED_JOBS.keys())}")
+
+    if os.path.exists(LOCK_FILE):
+        return {"success": False, "error": "Another job is currently running. Concurrency lock active."}
+
+    # Acquire lock
+    job_id = f"{job_name}_{int(time.time())}"
+    with open(LOCK_FILE, "w") as f:
+        f.write(job_id)
+
+    log_file = os.path.join(JOBS_LOG_DIR, f"{job_id}.log")
+    start_ts = datetime.now(timezone.utc).isoformat()
+
+    try:
+        log_activity(actor, "CMO", f"start_job:{job_name}", log_file)
+        output = ""
+
+        if job_name == "daily_cycle":
+            output += "=== RUNNING DAILY CMO CYCLE ===\n"
+            output += run_repo_sync() + "\n"
+            output += run_digest() + "\n"
+        elif job_name == "market_scan":
+            output += "=== RUNNING MARKET RESEARCH SCAN ===\n"
+            output += run_research() + "\n"
+        elif job_name == "repo_sync":
+            output += "=== RUNNING CODEBASE & GITHUB SYNC ===\n"
+            output += run_repo_sync() + "\n"
+
+        with open(log_file, "w", encoding="utf-8") as f:
+            f.write(output)
+
+        log_activity("CMO", actor, f"finish_job:{job_name}", log_file)
+        return {
+            "success": True,
+            "job_id": job_id,
+            "job_name": job_name,
+            "started_at": start_ts,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "output": output
+        }
+    except Exception as e:
+        err_msg = f"Job failed: {e}"
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write("\n" + err_msg)
+        return {"success": False, "error": err_msg}
+    finally:
+        if os.path.exists(LOCK_FILE):
+            os.remove(LOCK_FILE)
+
+def get_post_manifest(post_id):
+    """Load or initialize manifest.json for a post package."""
+    post_dir = os.path.join(POSTS_DIR, post_id)
+    os.makedirs(post_dir, exist_ok=True)
+    manifest_path = os.path.join(post_dir, "manifest.json")
+
+    if os.path.exists(manifest_path):
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    manifest = {
+        "id": post_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": "draft",
+        "target_platforms": ["x", "linkedin", "instagram"],
+        "assets": {},
+        "review": {
+            "verdict": "pending",
+            "reviewed_by": None,
+            "reviewed_at": None
+        },
+        "approval": {
+            "approved": False,
+            "approved_by": None,
+            "approved_at": None
+        },
+        "publication": {
+            "published": False,
+            "published_at": None
+        }
+    }
+    save_post_manifest(post_id, manifest)
+    return manifest
+
+def save_post_manifest(post_id, manifest):
+    """Save manifest.json atomically."""
+    post_dir = os.path.join(POSTS_DIR, post_id)
+    manifest_path = os.path.join(post_dir, "manifest.json")
+    manifest["updated_at"] = datetime.now(timezone.utc).isoformat()
+    tmp_path = manifest_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+    os.replace(tmp_path, manifest_path)
+
+def set_post_state(post_id, new_state, actor="CEO"):
+    """Enforce state machine transition."""
+    if new_state not in VALID_STATES:
+        raise ValueError(f"Invalid state: {new_state}. Must be one of {VALID_STATES}")
+
+    manifest = get_post_manifest(post_id)
+    old_state = manifest.get("status", "draft")
+    manifest["status"] = new_state
+
+    if new_state == "approved":
+        manifest["approval"]["approved"] = True
+        manifest["approval"]["approved_by"] = actor
+        manifest["approval"]["approved_at"] = datetime.now(timezone.utc).isoformat()
+    elif new_state == "published":
+        manifest["publication"]["published"] = True
+        manifest["publication"]["published_at"] = datetime.now(timezone.utc).isoformat()
+
+    save_post_manifest(post_id, manifest)
+    log_activity(actor, "CMO", f"state_change:{old_state}->{new_state}", f"outputs/posts/{post_id}/manifest.json")
+    return manifest
+
+def build_delivery_package(post_id):
+    """Package all drafts, cards, videos, and posting kits into a structured bundle."""
+    post_dir = os.path.join(POSTS_DIR, post_id)
+    manifest = get_post_manifest(post_id)
+
+    cards = glob.glob(os.path.join(post_dir, "*.png")) + glob.glob(os.path.join(post_dir, "*.jpg"))
+    manifest["assets"]["images"] = [os.path.relpath(c, ROOT) for c in cards]
+
+    video_dir = os.path.join(ROOT, "outputs", "video", post_id)
+    if os.path.exists(video_dir):
+        videos = glob.glob(os.path.join(video_dir, "*.mp4"))
+        manifest["assets"]["videos"] = [os.path.relpath(v, ROOT) for v in videos]
+
+    kit_path = os.path.join(post_dir, "POSTING-KIT.md")
+    if not os.path.exists(kit_path) and os.path.exists(os.path.join(video_dir, "POSTING-KIT.md")):
+        shutil.copy(os.path.join(video_dir, "POSTING-KIT.md"), kit_path)
+
+    manifest["posting_kit"] = os.path.relpath(kit_path, ROOT) if os.path.exists(kit_path) else None
+    save_post_manifest(post_id, manifest)
+    return manifest
+
+def get_system_status():
+    """Return dictionary of full system state for UI/API."""
+    queue_status = {}
+    for folder in ["inbox", "running", "done", "failed"]:
+        p = os.path.join(QUEUE_DIR, folder)
+        queue_status[folder] = len(glob.glob(os.path.join(p, "*.md")))
+
+    packages = []
+    if os.path.exists(POSTS_DIR):
+        for p_id in sorted(os.listdir(POSTS_DIR)):
+            p_path = os.path.join(POSTS_DIR, p_id)
+            if os.path.isdir(p_path):
+                manifest = get_post_manifest(p_id)
+                kit_file = os.path.join(p_path, "POSTING-KIT.md")
+                kit_content = ""
+                if os.path.exists(kit_file):
+                    with open(kit_file, "r", encoding="utf-8") as kf:
+                        kit_content = kf.read()
+
+                packages.append({
+                    "id": p_id,
+                    "manifest": manifest,
+                    "posting_kit_content": kit_content,
+                    "images": [os.path.basename(img) for img in manifest.get("assets", {}).get("images", [])],
+                    "videos": [os.path.basename(v) for v in manifest.get("assets", {}).get("videos", [])]
+                })
+
+    # Read activity log
+    activity_lines = []
+    act_path = os.path.join(STATE_DIR, "activity.log")
+    if os.path.exists(act_path):
+        with open(act_path, "r", encoding="utf-8") as f:
+            activity_lines = [line.strip() for line in f.readlines() if line.strip()][-10:]
+
+    # Read repo sync
+    repo_sync_data = {}
+    sync_json = os.path.join(ROOT, "research", "repo-sync.json")
+    if os.path.exists(sync_json):
+        try:
+            with open(sync_json, "r", encoding="utf-8") as f:
+                repo_sync_data = json.load(f)
+        except Exception:
+            pass
+
+    # Read schedules
+    schedules_data = []
+    sched_file = os.path.join(STATE_DIR, "schedules.json")
+    if os.path.exists(sched_file):
+        try:
+            with open(sched_file, "r", encoding="utf-8") as f:
+                schedules_data = json.load(f).get("schedules", [])
+        except Exception:
+            pass
+
+    return {
+        "status": "ready",
+        "lock_active": os.path.exists(LOCK_FILE),
+        "queue": queue_status,
+        "packages": packages,
+        "activity_log": activity_lines,
+        "repos": repo_sync_data,
+        "schedules": schedules_data,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+def main():
+    parser = argparse.ArgumentParser(description="Magnm Marketing CMO Runtime")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    subparsers.add_parser("status", help="Show system status and packages")
+    subparsers.add_parser("digest", help="Run CMO daily digest")
+    subparsers.add_parser("research", help="Run live research scanner")
+    subparsers.add_parser("repo-sync", help="Run codebase intelligence sync")
+
+    run_job_p = subparsers.add_parser("run-job", help="Run allowed job safely")
+    run_job_p.add_argument("job_name", choices=list(ALLOWED_JOBS.keys()))
+
+    pkg_p = subparsers.add_parser("package", help="Build or refresh delivery package")
+    pkg_p.add_argument("post_id")
+
+    appr_p = subparsers.add_parser("approve", help="Mark a post package approved")
+    appr_p.add_argument("post_id")
+    appr_p.add_argument("--actor", default="CEO")
+
+    pub_p = subparsers.add_parser("publish", help="Mark a post package published")
+    pub_p.add_argument("post_id")
+
+    args = parser.parse_args()
+
+    if args.command == "status":
+        state = get_system_status()
+        print(json.dumps(state, indent=2))
+    elif args.command == "digest":
+        print(run_digest())
+    elif args.command == "research":
+        print(run_research())
+    elif args.command == "repo-sync":
+        print(run_repo_sync())
+    elif args.command == "run-job":
+        res = execute_job(args.job_name)
+        print(json.dumps(res, indent=2))
+    elif args.command == "package":
+        m = build_delivery_package(args.post_id)
+        print(f"[OK] Packaged {args.post_id}: {m['status']}")
+    elif args.command == "approve":
+        m = set_post_state(args.post_id, "approved", actor=args.actor)
+        print(f"[OK] Approved {args.post_id}")
+    elif args.command == "publish":
+        m = set_post_state(args.post_id, "published")
+        print(f"[OK] Published {args.post_id}")
+
+if __name__ == "__main__":
+    main()

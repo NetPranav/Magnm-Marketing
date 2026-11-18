@@ -18,4 +18,4 @@ Rule: the Writer, Video Producer and Reviewer may only claim what is listed here
 - NOT verified (do not claim): "builds animations from wireframes", manual wiring. Confirm with CEO.
 
 ## LazyLayout rule
-HARD RULE (CEO, 2026-10-17): LazyLayout is NOT built. Never show, demo, describe features of, or put LazyLayout visuals in any post or video. At most a text-only "something else is coming" line, and only if the CEO approves it per post. All content is about Cero (finished) or Magnm the team.
+Product rules now live in `config/product_rules.json` (CEO rule 2026-10-17; LazyLayout: in development, teasers only).

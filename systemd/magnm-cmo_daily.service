@@ -1,0 +1,10 @@
+[Unit]
+Description=Magnm Marketing Job - Daily CMO Cycle
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/overxpowered/padhai_in_linux/Projects/Magnm-Marketing
+ExecStart=/usr/bin/python3 /home/overxpowered/padhai_in_linux/Projects/Magnm-Marketing/engine/cmo_runtime.py run-job daily_cycle
+StandardOutput=journal
+StandardError=journal

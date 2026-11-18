@@ -3,5 +3,23 @@
 .tmp.drivedownload/
 .tmp.driveupload/
 
+# Secrets & environment
+.env
+.env.*
+!.env.example
+
+# Python caches & virtualenvs
+__pycache__/
+*.pyc
+.venv/
+
+# Node dependencies
+node_modules/
+
+# Runtime logs, locks & temp files
+logs/jobs/
+state/.runtime_job.lock
+*.tmp
+
 # Temporary / scratch directory
 _to_delete/

@@ -1,0 +1,34 @@
+{
+  "schedules": [
+    {
+      "id": "cmo_daily",
+      "name": "Daily CMO Cycle",
+      "command": "daily_cycle",
+      "cron": "46 8 * * *",
+      "description": "Runs daily CMO digest, metrics, and plan checks at 08:46 IST",
+      "enabled": true,
+      "last_run": null,
+      "last_status": "idle"
+    },
+    {
+      "id": "market_scan",
+      "name": "Market & Hacker News Scanner",
+      "command": "market_scan",
+      "interval_hours": 6,
+      "description": "Scans HN Algolia API for CLI and terminal developer discussions",
+      "enabled": true,
+      "last_run": "2026-11-12T05:58:13Z",
+      "last_status": "success"
+    },
+    {
+      "id": "repo_sync",
+      "name": "Codebase & GitHub Intelligence Sync",
+      "command": "repo_sync",
+      "interval_hours": 2,
+      "description": "Syncs local Git commits, branches, and versions for Cero & LazyLayout",
+      "enabled": true,
+      "last_run": "2026-11-12T06:26:43Z",
+      "last_status": "success"
+    }
+  ]
+}

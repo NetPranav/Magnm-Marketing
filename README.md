@@ -3,7 +3,10 @@
 A CMO agent that checks our social profiles on a schedule, plans the next posts, and hands work to specialist agents through files in this folder. Every handoff and every output is a file, so you can open anything any agent made.
 
 ## Start here
+- ROADMAP.md        Magnm Studio plan and phases
+- AGENTS.md         rules for coding agents working in this repo
 - RUNBOOK.md        how to run the team (scheduled or manually)
+- engine/           Python engine (server, AI gateway, agents, jobs, scheduler)
 - config.md         accounts, products, audience, cadence, voice (edit this to tailor the team)
 - agents/           one prompt file per role
 - templates/        formats for briefs, outputs, reviews, logs
