@@ -18,9 +18,10 @@ _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
 
+import events
 import paths
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -336,11 +337,60 @@ def _apply_migration_v4(conn):
         conn.execute("ALTER TABLE agent_sessions ADD COLUMN fallback_used INTEGER NOT NULL DEFAULT 0")
 
 
+def _apply_migration_v5(conn):
+    job_cols = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    if "params_json" not in job_cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN params_json TEXT")
+
+    content_cols = {r["name"] for r in conn.execute("PRAGMA table_info(content_items)").fetchall()}
+    if "posted_url" not in content_cols:
+        conn.execute("ALTER TABLE content_items ADD COLUMN posted_url TEXT")
+    if "posted_at" not in content_cols:
+        conn.execute("ALTER TABLE content_items ADD COLUMN posted_at TEXT")
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS workflow_runs (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            current_step INTEGER NOT NULL DEFAULT 0,
+            inputs_json TEXT NOT NULL,
+            state_json TEXT NOT NULL,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_workflow_runs_status_updated
+            ON workflow_runs(status, updated_at);
+
+        CREATE TABLE IF NOT EXISTS gates (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            step INTEGER NOT NULL,
+            question TEXT NOT NULL,
+            options_json TEXT NOT NULL,
+            answer TEXT,
+            feedback TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            answered_at TEXT,
+            FOREIGN KEY (run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_gates_run_step
+            ON gates(run_id, step);
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
     (3, _apply_migration_v3),
     (4, _apply_migration_v4),
+    (5, _apply_migration_v5),
 )
 
 
@@ -1010,13 +1060,15 @@ def get_recent_runs(limit=50):
 
 _JOB_SELECT_COLS = (
     "id, name, status, progress, message, attempts, max_attempts, "
-    "created_at, started_at, finished_at, output_path, error, actor, cancel_requested"
+    "created_at, started_at, finished_at, output_path, error, actor, cancel_requested, params_json"
 )
 
 
 def _deserialize_job(row):
     if row is None:
         return None
+    raw_params = row["params_json"] if "params_json" in row.keys() else None
+    params = json.loads(raw_params) if raw_params else {}
     return {
         "id": row["id"],
         "name": row["name"],
@@ -1032,6 +1084,8 @@ def _deserialize_job(row):
         "error": row["error"],
         "actor": row["actor"],
         "cancel_requested": bool(row["cancel_requested"]),
+        "params": params,
+        "params_json": raw_params,
     }
 
 
@@ -1039,13 +1093,17 @@ def create_job(job):
     """Insert a new job row and return the persisted job dictionary."""
     ensure_init()
     conn = connect()
+    if job.get("params") is not None:
+        params_json = json.dumps(job["params"], ensure_ascii=False)
+    else:
+        params_json = job.get("params_json")
     with conn:
         conn.execute(
             """
             INSERT INTO jobs (
                 id, name, status, progress, message, attempts, max_attempts,
-                created_at, started_at, finished_at, output_path, error, actor, cancel_requested
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, started_at, finished_at, output_path, error, actor, cancel_requested, params_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(job["id"]),
@@ -1062,6 +1120,7 @@ def create_job(job):
                 job.get("error"),
                 job.get("actor", "UI"),
                 1 if job.get("cancel_requested") else 0,
+                params_json,
             ),
         )
     return get_job(job["id"])
@@ -1592,6 +1651,7 @@ def _deserialize_content_item(row):
     if row is None:
         return None
     files = json.loads(row["files_json"]) if row["files_json"] else []
+    keys = row.keys()
     return {
         "id": row["id"],
         "type": row["type"],
@@ -1605,6 +1665,8 @@ def _deserialize_content_item(row):
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "files": files,
+        "posted_url": row["posted_url"] if "posted_url" in keys else None,
+        "posted_at": row["posted_at"] if "posted_at" in keys else None,
     }
 
 
@@ -1907,3 +1969,328 @@ def list_metrics(content_id=None, limit=20):
         }
         for r in rows
     ]
+
+
+def mark_ready(content_id):
+    """Transition a content item from draft to ready and return the updated item."""
+    ensure_init()
+    item = get_content_item(content_id)
+    if item is None:
+        raise ValueError(f"Content item '{content_id}' not found")
+    if item["status"] == "posted":
+        raise ValueError(f"Content item '{content_id}' is already posted")
+    now = datetime.now(timezone.utc).isoformat()
+    conn = connect()
+    with conn:
+        conn.execute(
+            "UPDATE content_items SET status = 'ready', updated_at = ? WHERE id = ?",
+            (now, str(content_id)),
+        )
+    events.publish("content_status", {"content_id": str(content_id), "status": "ready"})
+    return get_content_item(content_id, include_versions=True)
+
+
+def mark_posted(content_id, url=None, platform=None, posted_at=None):
+    """Mark a content item as posted, record URL/timestamp, log activity, and publish event."""
+    ensure_init()
+    item = get_content_item(content_id)
+    if item is None:
+        raise ValueError(f"Content item '{content_id}' not found")
+    now = datetime.now(timezone.utc).isoformat()
+    posted_ts = str(posted_at or now)
+    target_platform = str(platform) if platform is not None and str(platform).strip() else item.get("platform")
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            UPDATE content_items
+            SET status = 'posted', posted_url = ?, posted_at = ?, platform = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (url, posted_ts, target_platform, now, str(content_id)),
+        )
+    log_activity(
+        "CEO",
+        str(target_platform or "social"),
+        f"mark_posted:{content_id}",
+        str(url or content_id),
+    )
+    events.publish(
+        "content_status",
+        {
+            "content_id": str(content_id),
+            "status": "posted",
+            "url": url,
+            "platform": target_platform,
+            "posted_at": posted_ts,
+        },
+    )
+    return get_content_item(content_id, include_versions=True)
+
+
+def _deserialize_workflow_run(row):
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "kind": row["kind"],
+        "status": row["status"],
+        "current_step": int(row["current_step"] or 0),
+        "inputs": json.loads(row["inputs_json"]) if row["inputs_json"] else {},
+        "state": json.loads(row["state_json"]) if row["state_json"] else {},
+        "error": row["error"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def create_workflow_run(run):
+    """Insert a new workflow_runs row and return the deserialized dict."""
+    ensure_init()
+    conn = connect()
+    now = datetime.now(timezone.utc).isoformat()
+    created_at = str(run.get("created_at") or now)
+    updated_at = str(run.get("updated_at") or created_at)
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO workflow_runs (
+                id, kind, status, current_step, inputs_json, state_json, error, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(run["id"]),
+                str(run["kind"]),
+                str(run.get("status", "queued")),
+                int(run.get("current_step", 0)),
+                json.dumps(run.get("inputs") or {}, ensure_ascii=False),
+                json.dumps(run.get("state") or {}, ensure_ascii=False),
+                run.get("error"),
+                created_at,
+                updated_at,
+            ),
+        )
+    return get_workflow_run(run["id"])
+
+
+def get_workflow_run(run_id):
+    """Return a single workflow_runs row by ID, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM workflow_runs WHERE id = ?",
+        (str(run_id),),
+    ).fetchone()
+    return _deserialize_workflow_run(row)
+
+
+def list_workflow_runs(limit=20, status=None):
+    """Return recent workflow runs ordered newest-first, optionally filtered by status."""
+    ensure_init()
+    conn = connect()
+    max_rows = max(1, min(int(limit or 20), 500))
+    if status:
+        rows = conn.execute(
+            "SELECT * FROM workflow_runs WHERE status = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (str(status), max_rows),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM workflow_runs ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (max_rows,),
+        ).fetchall()
+    return [_deserialize_workflow_run(r) for r in rows]
+
+
+_UPDATABLE_WORKFLOW_FIELDS = {"status", "current_step", "inputs", "state", "error", "updated_at"}
+
+
+def update_workflow_run(run_id, **fields):
+    """Update selected columns on a workflow_runs row and return the updated dict."""
+    ensure_init()
+    updates = []
+    params = []
+    for k, v in fields.items():
+        if k not in _UPDATABLE_WORKFLOW_FIELDS:
+            raise ValueError(f"Unsupported workflow_run field: {k}")
+        if k == "inputs":
+            updates.append("inputs_json = ?")
+            params.append(json.dumps(v or {}, ensure_ascii=False))
+        elif k == "state":
+            updates.append("state_json = ?")
+            params.append(json.dumps(v or {}, ensure_ascii=False))
+        elif k == "current_step":
+            updates.append("current_step = ?")
+            params.append(int(v))
+        else:
+            updates.append(f"{k} = ?")
+            params.append(v)
+
+    if "updated_at" not in fields:
+        updates.append("updated_at = ?")
+        params.append(datetime.now(timezone.utc).isoformat())
+
+    params.append(str(run_id))
+    conn = connect()
+    with conn:
+        conn.execute(
+            f"UPDATE workflow_runs SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+    return get_workflow_run(run_id)
+
+
+def _deserialize_gate(row):
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "run_id": row["run_id"],
+        "step": int(row["step"]),
+        "question": row["question"],
+        "options": json.loads(row["options_json"]) if row["options_json"] else [],
+        "answer": row["answer"],
+        "feedback": row["feedback"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "answered_at": row["answered_at"],
+    }
+
+
+def create_gate(run_id, step, question, options=None, gate_id=None):
+    """Create a pending human decision gate row and return it."""
+    ensure_init()
+    gid = str(gate_id or f"gate_{uuid.uuid4().hex[:12]}")
+    now = datetime.now(timezone.utc).isoformat()
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO gates (
+                id, run_id, step, question, options_json, answer, feedback, status, created_at, answered_at
+            ) VALUES (?, ?, ?, ?, ?, NULL, NULL, 'pending', ?, NULL)
+            """,
+            (
+                gid,
+                str(run_id),
+                int(step),
+                str(question),
+                json.dumps(list(options or []), ensure_ascii=False),
+                now,
+            ),
+        )
+    return get_gate(gid)
+
+
+def get_gate(gate_id):
+    """Return a single gate dict by ID, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute("SELECT * FROM gates WHERE id = ?", (str(gate_id),)).fetchone()
+    return _deserialize_gate(row)
+
+
+def list_gates_for_run(run_id):
+    """Return all gates for a workflow run in creation order."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT * FROM gates WHERE run_id = ? ORDER BY rowid ASC",
+        (str(run_id),),
+    ).fetchall()
+    return [_deserialize_gate(r) for r in rows]
+
+
+def answer_gate_record(gate_id, answer, feedback=None, answered_at=None):
+    """Persist an answer on a pending gate and return the updated gate dict."""
+    ensure_init()
+    now = str(answered_at or datetime.now(timezone.utc).isoformat())
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            UPDATE gates
+            SET answer = ?, feedback = ?, status = 'answered', answered_at = ?
+            WHERE id = ?
+            """,
+            (str(answer), feedback, now, str(gate_id)),
+        )
+    return get_gate(gate_id)
+
+
+def cancel_pending_gates(run_id):
+    """Mark all pending gates for run_id as cancelled."""
+    ensure_init()
+    now = datetime.now(timezone.utc).isoformat()
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            UPDATE gates
+            SET status = 'cancelled', answered_at = COALESCE(answered_at, ?)
+            WHERE run_id = ? AND status = 'pending'
+            """,
+            (now, str(run_id)),
+        )
+
+
+def find_waiting_workflow_for_session(session_id):
+    """Return workflow runs currently waiting_user on the given agent session_id."""
+    if not session_id:
+        return []
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT * FROM workflow_runs WHERE status = 'waiting_user' ORDER BY rowid ASC"
+    ).fetchall()
+    matches = []
+    for r in rows:
+        run = _deserialize_workflow_run(r)
+        if (run.get("state") or {}).get("waiting_session_id") == str(session_id):
+            matches.append(run)
+    return matches
+
+
+def list_stale_running_workflows():
+    """Return workflow runs in 'running' status (or 'queued' with no active job) for crash recovery."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT * FROM workflow_runs WHERE status = 'running' ORDER BY created_at ASC, rowid ASC"
+    ).fetchall()
+    return [_deserialize_workflow_run(r) for r in rows]
+
+
+def has_active_workflow_job(run_id):
+    """Return True if a queued or running workflow_step job already exists for run_id."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT params_json FROM jobs WHERE name = 'workflow_step' AND status IN ('queued', 'running')"
+    ).fetchall()
+    for r in rows:
+        if not r["params_json"]:
+            continue
+        try:
+            p = json.loads(r["params_json"])
+        except Exception:
+            continue
+        if p.get("run_id") == str(run_id):
+            return True
+    return False
+
+
+def cancel_workflow_jobs(run_id, finished_at):
+    """Cancel any queued or running workflow_step jobs belonging to run_id."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT id, status, params_json FROM jobs WHERE name = 'workflow_step' AND status IN ('queued', 'running')"
+    ).fetchall()
+    for r in rows:
+        try:
+            p = json.loads(r["params_json"]) if r["params_json"] else {}
+        except Exception:
+            p = {}
+        if p.get("run_id") == str(run_id):
+            cancel_job_record(r["id"], finished_at)

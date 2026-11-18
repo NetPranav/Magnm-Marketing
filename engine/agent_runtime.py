@@ -234,9 +234,20 @@ class AgentRuntime:
                     "status": "cancelled",
                 },
             )
+            self._notify_session_finished(updated)
             return updated
 
         return session
+
+    def _notify_session_finished(self, session):
+        """Notify workflow engine when a session reaches a terminal state."""
+        if not session:
+            return
+        try:
+            import workflows
+            workflows.on_session_finished(session)
+        except Exception:
+            pass
 
     def get_session(self, session_id):
         """Return a session dict by ID, or None if missing."""
@@ -281,6 +292,7 @@ class AgentRuntime:
             },
         )
         self._clear_cancel_event(session_id)
+        self._notify_session_finished(updated)
         return updated
 
     def _mark_cancelled(self, session_id, agent_id):
@@ -299,6 +311,7 @@ class AgentRuntime:
             },
         )
         self._clear_cancel_event(session_id)
+        self._notify_session_finished(updated)
         return updated
 
     def run_session(self, session_id):
@@ -506,6 +519,7 @@ class AgentRuntime:
                 },
             )
             self._clear_cancel_event(session_id)
+            self._notify_session_finished(done_sess)
             return done_sess
 
 

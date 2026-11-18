@@ -43,6 +43,7 @@ import repo_sync
 import scheduler
 import setup_check
 import team_room
+import workflows
 
 ROOT = paths.DATA_ROOT
 PORT = 5050
@@ -457,6 +458,26 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.send_json(product_rules.load_rules())
             except Exception as e:
                 self.send_json({"error": str(e)}, status=500)
+
+        elif url.path == "/api/workflows":
+            qs = urllib.parse.parse_qs(url.query)
+            try:
+                limit = int(qs.get("limit", ["20"])[0])
+            except (TypeError, ValueError):
+                limit = 20
+            limit = max(1, min(limit, 500))
+            self.send_json(workflows.list_runs(limit=limit))
+
+        elif url.path.startswith("/api/workflows/"):
+            run_id = url.path[len("/api/workflows/"):].strip("/")
+            if not run_id or "/" in run_id:
+                self.send_json({"error": "Not found"}, status=404)
+                return
+            run = workflows.get_run(run_id)
+            if run is None:
+                self.send_json({"error": "Workflow run not found"}, status=404)
+                return
+            self.send_json(run)
 
         elif url.path == "/api/sessions":
             qs = urllib.parse.parse_qs(url.query)
@@ -932,6 +953,70 @@ Hard Rules:
                 self.send_json({"error": "Session not found"}, status=404)
                 return
             self.send_json({"success": True, "session": sess})
+
+        elif url.path == "/api/workflows/start":
+            kind = (params.get("kind") or "").strip()
+            inputs = params.get("inputs")
+            if inputs is None:
+                inputs = {k: v for k, v in params.items() if k not in ("kind", "actor")}
+            if not isinstance(inputs, dict):
+                self.send_json({"error": "inputs must be an object"}, status=400)
+                return
+            try:
+                run = workflows.start(kind, inputs, actor=params.get("actor", "UI"))
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=400)
+                return
+            self.send_json(run)
+
+        elif re.match(r"^/api/workflows/[^/]+/cancel$", url.path):
+            run_id = url.path.split("/")[3]
+            run = workflows.cancel(run_id)
+            if run is None:
+                self.send_json({"error": "Workflow run not found"}, status=404)
+                return
+            self.send_json(run)
+
+        elif re.match(r"^/api/gates/[^/]+/answer$", url.path):
+            gate_id = url.path.split("/")[3]
+            if "answer" not in params:
+                self.send_json({"error": "answer is required"}, status=400)
+                return
+            try:
+                res = workflows.answer_gate(
+                    gate_id,
+                    params.get("answer"),
+                    feedback=params.get("feedback"),
+                )
+            except ValueError as exc:
+                msg = str(exc)
+                status = 404 if "not found" in msg.lower() else 400
+                self.send_json({"error": msg}, status=status)
+                return
+            self.send_json(res)
+
+        elif re.match(r"^/api/content/[^/]+/status$", url.path):
+            content_id = url.path.split("/")[3]
+            status_val = (params.get("status") or "").strip().lower()
+            if status_val not in ("ready", "posted"):
+                self.send_json({"error": "status must be 'ready' or 'posted'"}, status=400)
+                return
+            try:
+                if status_val == "ready":
+                    updated = db.mark_ready(content_id)
+                else:
+                    updated = db.mark_posted(
+                        content_id,
+                        url=params.get("url"),
+                        platform=params.get("platform"),
+                        posted_at=params.get("posted_at"),
+                    )
+            except ValueError as exc:
+                msg = str(exc)
+                status = 404 if "not found" in msg.lower() else 400
+                self.send_json({"error": msg}, status=status)
+                return
+            self.send_json(updated)
 
         else:
             self.send_error(404, "Unknown endpoint")
@@ -1840,6 +1925,61 @@ FIRST.</textarea>
             </div>
           </div>
         </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title"><svg class="icon"><use href="#icon-zap"/></svg> Workflows</span>
+            <span class="panel-meta">Multi-step agent pipelines &amp; approval gates</span>
+          </div>
+          <div class="grid-2" style="gap:16px; align-items:start;">
+            <div style="display:flex; flex-direction:column; gap:10px;">
+              <div class="grid-2" style="gap:10px;">
+                <div>
+                  <label class="field-label">Workflow Kind</label>
+                  <select id="wfKind">
+                    <option value="post">post</option>
+                    <option value="blog">blog</option>
+                    <option value="repurpose">repurpose</option>
+                    <option value="weekly_plan">weekly_plan</option>
+                    <option value="video_script">video_script</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="field-label">Product ID (optional)</label>
+                  <input type="text" id="wfProductId" placeholder="cero">
+                </div>
+              </div>
+              <div>
+                <label class="field-label">Brief / Topic / Source Content ID</label>
+                <textarea id="wfBriefOrTopic" rows="2" placeholder="Describe the brief or blog/video topic (or content_id for repurpose)"></textarea>
+              </div>
+              <div>
+                <label class="field-label">Platforms</label>
+                <div style="display:flex; gap:12px; flex-wrap:wrap; font-size:12px; color:var(--ink);">
+                  <label><input type="checkbox" class="wf-platform-cb" value="linkedin" checked> linkedin</label>
+                  <label><input type="checkbox" class="wf-platform-cb" value="x" checked> x</label>
+                  <label><input type="checkbox" class="wf-platform-cb" value="instagram"> instagram</label>
+                  <label><input type="checkbox" class="wf-platform-cb" value="youtube"> youtube</label>
+                </div>
+              </div>
+              <div>
+                <label style="font-size:12px; color:var(--ink); display:flex; align-items:center; gap:6px;">
+                  <input type="checkbox" id="wfWithImage"> With Image (cards / illustration)
+                </label>
+              </div>
+              <button class="btn btn-lime" onclick="startWorkflowFromForm()">
+                <svg class="icon"><use href="#icon-zap"/></svg> Start Workflow
+              </button>
+            </div>
+            <div>
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <span class="field-label" style="margin:0;">Recent Workflow Runs</span>
+                <button class="btn btn-sm" onclick="loadWorkflows()">Refresh</button>
+              </div>
+              <div id="workflowsList" style="display:flex; flex-direction:column; gap:10px; max-height:420px; overflow-y:auto;"></div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- 04. PR & CRISIS COMMUNICATIONS -->
@@ -2263,6 +2403,7 @@ FIRST.</textarea>
       document.getElementById('headerPageTitle').innerText = title;
 
       if (tabId === 'tab-assets' || tabId === 'tab-campaigns' || tabId === 'tab-room') loadAssets();
+      if (tabId === 'tab-campaigns') loadWorkflows();
       if (tabId === 'tab-room') loadGlobalMessages();
       if (tabId === 'tab-team') loadRoster();
       if (tabId === 'tab-models') {
@@ -3184,6 +3325,118 @@ FIRST.</textarea>
       fetchStatus();
     }
 
+    async function loadWorkflows() {
+      const container = document.getElementById('workflowsList');
+      if (!container) return;
+      try {
+        const res = await fetch('/api/workflows?limit=20');
+        const runs = await res.json();
+        if (!Array.isArray(runs) || runs.length === 0) {
+          container.innerHTML = '<div class="panel-meta">No workflow runs yet.</div>';
+          return;
+        }
+        container.innerHTML = runs.map(r => {
+          const pendingGates = (r.gates || []).filter(g => g.status === 'pending');
+          const gatesHtml = pendingGates.map(g => {
+            const btns = (g.options || []).map(opt => {
+              const needsFeedback = (opt === 'Revise' || opt === 'Change');
+              return `<button class="btn btn-sm ${opt === 'Approve' || opt === 'Keep' ? 'btn-lime' : ''}" onclick="answerWorkflowGate('${escapeHtml(g.id)}', '${escapeHtml(opt)}', ${needsFeedback})">${escapeHtml(opt)}</button>`;
+            }).join(' ');
+            return `
+              <div style="margin-top:8px; padding:8px; background:var(--bg-elevated); border:1px solid var(--border-strong); border-radius:6px;">
+                <div style="font-size:12px; font-weight:600; margin-bottom:6px;">Gate: ${escapeHtml(g.question)}</div>
+                <input type="text" id="gateFeedback_${escapeHtml(g.id)}" placeholder="Feedback (required for Revise / Change)" style="margin-bottom:6px;">
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">${btns}</div>
+              </div>
+            `;
+          }).join('');
+          const canCancel = ['queued', 'running', 'waiting_user'].includes(r.status);
+          const cancelBtn = canCancel
+            ? `<button class="btn btn-sm" onclick="cancelWorkflowRun('${escapeHtml(r.id)}')">Cancel</button>`
+            : '';
+          const cids = (r.content_ids || []).join(', ');
+          return `
+            <div style="padding:10px; background:var(--bg-canvas); border:1px solid var(--border); border-radius:6px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                <div>
+                  <b style="font-size:12px;">${escapeHtml(r.kind)}</b>
+                  <span class="panel-meta" style="margin-left:6px;">${escapeHtml(r.id)}</span>
+                </div>
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <span class="badge badge-info">${escapeHtml(r.status)} (step ${r.current_step})</span>
+                  ${cancelBtn}
+                </div>
+              </div>
+              ${cids ? `<div class="panel-meta" style="margin-top:4px;">Content: ${escapeHtml(cids)}</div>` : ''}
+              ${r.error ? `<div class="panel-meta" style="margin-top:4px; color:var(--danger);">Error: ${escapeHtml(r.error)}</div>` : ''}
+              ${gatesHtml}
+            </div>
+          `;
+        }).join('');
+      } catch (e) {}
+    }
+
+    async function startWorkflowFromForm() {
+      const kind = document.getElementById('wfKind').value;
+      const text = document.getElementById('wfBriefOrTopic').value.trim();
+      const productId = document.getElementById('wfProductId').value.trim();
+      const withImage = document.getElementById('wfWithImage').checked;
+      const platforms = Array.from(document.querySelectorAll('.wf-platform-cb:checked')).map(el => el.value);
+
+      const inputs = {};
+      if (productId) inputs.product_id = productId;
+      if (kind === 'post') {
+        inputs.brief = text;
+        inputs.platforms = platforms.length ? platforms : ['linkedin', 'x'];
+        inputs.with_image = withImage;
+      } else if (kind === 'blog' || kind === 'video_script') {
+        inputs.topic = text;
+      } else if (kind === 'repurpose') {
+        inputs.content_id = text;
+        inputs.targets = platforms.map(p => p === 'x' ? 'x_thread' : (p === 'youtube' ? 'youtube_description' : p));
+      } else if (kind === 'weekly_plan') {
+        inputs.platforms = platforms.length ? platforms : ['linkedin', 'x'];
+        inputs.posts_per_week = 2;
+      }
+
+      const res = await fetch('/api/workflows/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ kind, inputs })
+      });
+      const data = await res.json();
+      if (!res.ok && data.error) {
+        alert(data.error);
+      }
+      loadWorkflows();
+    }
+
+    async function answerWorkflowGate(gateId, answer, needsFeedback) {
+      const fbInput = document.getElementById('gateFeedback_' + gateId);
+      const feedback = fbInput ? fbInput.value.trim() : '';
+      if (needsFeedback && !feedback) {
+        alert('Please enter feedback before choosing ' + answer + '.');
+        return;
+      }
+      const res = await fetch('/api/gates/' + encodeURIComponent(gateId) + '/answer', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ answer, feedback: feedback || null })
+      });
+      const data = await res.json();
+      if (!res.ok && data.error) alert(data.error);
+      loadWorkflows();
+    }
+
+    async function cancelWorkflowRun(runId) {
+      await fetch('/api/workflows/' + encodeURIComponent(runId) + '/cancel', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({})
+      });
+      loadWorkflows();
+    }
+
     let pollTimer = null;
     function startPollingFallback() {
       if (!pollTimer) {
@@ -3212,6 +3465,11 @@ FIRST.</textarea>
         es.addEventListener('message', () => {
           loadGlobalMessages();
         });
+        ['workflow_step', 'workflow_waiting', 'workflow_done', 'workflow_failed'].forEach(evtName => {
+          es.addEventListener(evtName, () => {
+            loadWorkflows();
+          });
+        });
         es.onerror = () => {
           startPollingFallback();
         };
@@ -3225,6 +3483,7 @@ FIRST.</textarea>
     loadRoster();
     loadAssets();
     loadGlobalMessages();
+    loadWorkflows();
   </script>
 </body>
 </html>

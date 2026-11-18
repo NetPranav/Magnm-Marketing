@@ -43,7 +43,7 @@ def _publish_job(job):
     return job
 
 
-def enqueue(name, actor="UI", max_attempts=2):
+def enqueue(name, actor="UI", max_attempts=2, params=None):
     """Validate and enqueue a job in FIFO order, returning the job dictionary."""
     if name not in cmo_runtime.ALLOWED_JOBS:
         raise ValueError(f"Unknown job '{name}'. Allowed jobs: {list(cmo_runtime.ALLOWED_JOBS.keys())}")
@@ -66,6 +66,7 @@ def enqueue(name, actor="UI", max_attempts=2):
             "error": None,
             "actor": actor,
             "cancel_requested": False,
+            "params": params,
         }
     )
     _publish_job(job)
@@ -165,16 +166,23 @@ def _invoke_job_body(job):
         "actor": job.get("actor") or "UI",
         "log_file": job.get("output_path"),
     }
+    if job.get("params") or job["name"] == "workflow_step":
+        kwargs["params"] = job.get("params") or {}
+    call_kwargs = None
     try:
         sig = inspect.signature(fn)
         params = sig.parameters
         accepts_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
         if accepts_var_kw:
-            result = fn(job["name"], **kwargs)
+            call_kwargs = kwargs
         else:
-            filtered = {k: v for k, v in kwargs.items() if k in params}
-            result = fn(job["name"], **filtered)
+            call_kwargs = {k: v for k, v in kwargs.items() if k in params}
     except (TypeError, ValueError):
+        call_kwargs = None
+
+    if call_kwargs is not None:
+        result = fn(job["name"], **call_kwargs)
+    else:
         result = fn(job["name"])
 
     out_path = job.get("output_path")
@@ -317,6 +325,11 @@ def start_worker(sleep_fn=None):
             return _worker_thread
 
         recover_stale_jobs()
+        try:
+            import workflows
+            workflows.recover_stale_runs(start_worker=False)
+        except Exception:
+            pass
         _stop_event.clear()
         _wake_event.clear()
         _worker_thread = threading.Thread(

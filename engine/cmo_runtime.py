@@ -38,7 +38,8 @@ ALLOWED_JOBS = {
     "market_scan": "Live Developer & Market Opportunity Scanner",
     "repo_sync": "Codebase & GitHub Intelligence Sync",
     "generate_blog": "Generate Technical Blog & Repurposed Assets",
-    "render_cards": "Render Visual Social Cards"
+    "render_cards": "Render Visual Social Cards",
+    "workflow_step": "Execute Workflow Step",
 }
 
 def log_activity(actor, target_role, task_name, output_file):
@@ -76,7 +77,7 @@ def run_repo_sync():
         return json.dumps(res, indent=2) if isinstance(res, dict) else str(res)
     return out
 
-def run_job_body(job_name, job_id=None, actor="UI", log_file=None):
+def run_job_body(job_name, job_id=None, actor="UI", log_file=None, params=None):
     """Run the body of an allowed marketing job and write its log output."""
     if job_name not in ALLOWED_JOBS:
         raise ValueError(f"Unknown job '{job_name}'. Allowed jobs: {list(ALLOWED_JOBS.keys())}")
@@ -111,6 +112,10 @@ def run_job_body(job_name, job_id=None, actor="UI", log_file=None):
         _checkpoint(20, "Running codebase and GitHub sync...")
         output += "=== RUNNING CODEBASE & GITHUB SYNC ===\n"
         output += run_repo_sync() + "\n"
+    elif job_name == "workflow_step":
+        import workflows
+        res = workflows.execute_workflow_job(params or {}, job_id=job_id, log_file=log_file)
+        output += json.dumps(res, indent=2, default=str) + "\n"
 
     with open(log_file, "w", encoding="utf-8") as f:
         f.write(output)
