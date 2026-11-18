@@ -296,3 +296,6 @@ def run_tool(name, ctx, args, allowed_names):
 
 
 from . import core  # noqa: E402, F401
+from . import content  # noqa: E402, F401
+from . import design  # noqa: E402, F401
+from . import delegation  # noqa: E402, F401

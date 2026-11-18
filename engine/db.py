@@ -20,7 +20,7 @@ if _ENGINE_DIR not in sys.path:
 
 import paths
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -271,10 +271,76 @@ def _apply_migration_v3(conn):
     )
 
 
+def _apply_migration_v4(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS content_items (
+            id TEXT PRIMARY KEY,
+            type TEXT NOT NULL,
+            platform TEXT,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft',
+            product_id TEXT,
+            created_by TEXT,
+            session_id TEXT,
+            current_version INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            files_json TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_content_items_status_updated
+            ON content_items(status, updated_at);
+
+        CREATE INDEX IF NOT EXISTS idx_content_items_type_updated
+            ON content_items(type, updated_at);
+
+        CREATE INDEX IF NOT EXISTS idx_content_items_session
+            ON content_items(session_id);
+
+        CREATE TABLE IF NOT EXISTS content_versions (
+            id TEXT PRIMARY KEY,
+            content_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            body TEXT NOT NULL,
+            notes TEXT,
+            created_by TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (content_id) REFERENCES content_items(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_content_versions_content_ver
+            ON content_versions(content_id, version);
+
+        CREATE TABLE IF NOT EXISTS metrics (
+            id TEXT PRIMARY KEY,
+            content_id TEXT,
+            platform TEXT NOT NULL,
+            metrics_json TEXT NOT NULL,
+            source TEXT NOT NULL,
+            captured_at TEXT NOT NULL,
+            created_by TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_metrics_content_captured
+            ON metrics(content_id, captured_at);
+        """
+    )
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(agent_sessions)").fetchall()}
+    if "model_used" not in cols:
+        conn.execute("ALTER TABLE agent_sessions ADD COLUMN model_used TEXT")
+    if "provider" not in cols:
+        conn.execute("ALTER TABLE agent_sessions ADD COLUMN provider TEXT")
+    if "fallback_used" not in cols:
+        conn.execute("ALTER TABLE agent_sessions ADD COLUMN fallback_used INTEGER NOT NULL DEFAULT 0")
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
     (3, _apply_migration_v3),
+    (4, _apply_migration_v4),
 )
 
 
@@ -1289,7 +1355,8 @@ def search_research_notes(query, limit=20):
 _SESSION_SELECT_COLS = (
     "id, agent_id, status, messages_json, pending_question_json, "
     "parent_session_id, depth, title, result_text, error, "
-    "allowed_tools_json, confidential, steps, created_at, updated_at"
+    "allowed_tools_json, confidential, steps, model_used, provider, fallback_used, "
+    "created_at, updated_at"
 )
 
 
@@ -1313,6 +1380,9 @@ def _deserialize_session(row):
         "allowed_tools": allowed_tools,
         "confidential": bool(row["confidential"]),
         "steps": int(row["steps"] or 0),
+        "model_used": row["model_used"],
+        "provider": row["provider"],
+        "fallback_used": bool(row["fallback_used"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -1331,8 +1401,9 @@ def create_agent_session(session):
             INSERT INTO agent_sessions (
                 id, agent_id, status, messages_json, pending_question_json,
                 parent_session_id, depth, title, result_text, error,
-                allowed_tools_json, confidential, steps, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                allowed_tools_json, confidential, steps, model_used, provider, fallback_used,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(session["id"]),
@@ -1350,6 +1421,9 @@ def create_agent_session(session):
                 json.dumps(list(session.get("allowed_tools") or []), ensure_ascii=False),
                 1 if session.get("confidential") else 0,
                 int(session.get("steps", 0)),
+                session.get("model_used"),
+                session.get("provider"),
+                1 if session.get("fallback_used") else 0,
                 str(created_at),
                 str(updated_at),
             ),
@@ -1406,6 +1480,9 @@ _UPDATABLE_SESSION_FIELDS = {
     "allowed_tools",
     "confidential",
     "steps",
+    "model_used",
+    "provider",
+    "fallback_used",
     "updated_at",
 }
 
@@ -1427,8 +1504,8 @@ def update_agent_session(session_id, **fields):
         elif k == "allowed_tools":
             updates.append("allowed_tools_json = ?")
             params.append(json.dumps(list(v or []), ensure_ascii=False))
-        elif k == "confidential":
-            updates.append("confidential = ?")
+        elif k in ("confidential", "fallback_used"):
+            updates.append(f"{k} = ?")
             params.append(1 if v else 0)
         elif k == "steps":
             updates.append("steps = ?")
@@ -1470,3 +1547,363 @@ def fail_stale_running_sessions(updated_at, error="engine restarted"):
                 (str(error), str(updated_at)),
             )
     return [get_agent_session(sid) for sid in stale_ids]
+
+
+def get_latest_waiting_session(agent_id, top_level_only=True):
+    """Return the most recent waiting_user session for agent_id, or None."""
+    ensure_init()
+    conn = connect()
+    where_parent = "AND parent_session_id IS NULL" if top_level_only else ""
+    row = conn.execute(
+        f"""
+        SELECT {_SESSION_SELECT_COLS}
+        FROM agent_sessions
+        WHERE agent_id = ? AND status = 'waiting_user' {where_parent}
+        ORDER BY updated_at DESC, rowid DESC
+        LIMIT 1
+        """,
+        (str(agent_id),),
+    ).fetchone()
+    return _deserialize_session(row)
+
+
+def get_agent_live_statuses():
+    """Return a mapping {agent_id: 'working' | 'waiting_user'} for active sessions."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT agent_id, status
+        FROM agent_sessions
+        WHERE status IN ('running', 'waiting_user')
+        """
+    ).fetchall()
+    statuses = {}
+    for r in rows:
+        aid = r["agent_id"]
+        st = "working" if r["status"] == "running" else "waiting_user"
+        if statuses.get(aid) == "working":
+            continue
+        statuses[aid] = st
+    return statuses
+
+
+def _deserialize_content_item(row):
+    if row is None:
+        return None
+    files = json.loads(row["files_json"]) if row["files_json"] else []
+    return {
+        "id": row["id"],
+        "type": row["type"],
+        "platform": row["platform"],
+        "title": row["title"],
+        "status": row["status"],
+        "product_id": row["product_id"],
+        "created_by": row["created_by"],
+        "session_id": row["session_id"],
+        "current_version": int(row["current_version"] or 1),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "files": files,
+    }
+
+
+def _deserialize_content_version(row):
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "content_id": row["content_id"],
+        "version": int(row["version"]),
+        "body": row["body"],
+        "notes": row["notes"],
+        "created_by": row["created_by"],
+        "created_at": row["created_at"],
+    }
+
+
+def create_content_item(
+    content_id,
+    content_type,
+    platform,
+    title,
+    body,
+    notes=None,
+    status="draft",
+    product_id=None,
+    created_by=None,
+    session_id=None,
+    files=None,
+    created_at=None,
+):
+    """Insert a new content_items row and version 1 in content_versions."""
+    ensure_init()
+    conn = connect()
+    now = created_at or datetime.now(timezone.utc).isoformat()
+    ver_id = f"ver_{uuid.uuid4().hex[:12]}"
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO content_items (
+                id, type, platform, title, status, product_id, created_by,
+                session_id, current_version, created_at, updated_at, files_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(content_id),
+                str(content_type),
+                platform,
+                str(title),
+                str(status or "draft"),
+                product_id,
+                created_by,
+                session_id,
+                1,
+                str(now),
+                str(now),
+                json.dumps(list(files or []), ensure_ascii=False),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO content_versions (
+                id, content_id, version, body, notes, created_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ver_id,
+                str(content_id),
+                1,
+                str(body),
+                notes,
+                created_by,
+                str(now),
+            ),
+        )
+    return get_content_item(content_id, include_versions=True)
+
+
+def add_content_version(
+    content_id,
+    body,
+    notes=None,
+    created_by=None,
+    title=None,
+    platform=None,
+    product_id=None,
+    created_at=None,
+):
+    """Append the next version to an existing content item and return it."""
+    ensure_init()
+    conn = connect()
+    now = created_at or datetime.now(timezone.utc).isoformat()
+    with conn:
+        row = conn.execute(
+            "SELECT current_version, title, platform, product_id FROM content_items WHERE id = ?",
+            (str(content_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        next_ver = int(row["current_version"] or 0) + 1
+        ver_id = f"ver_{uuid.uuid4().hex[:12]}"
+        conn.execute(
+            """
+            INSERT INTO content_versions (
+                id, content_id, version, body, notes, created_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ver_id,
+                str(content_id),
+                next_ver,
+                str(body),
+                notes,
+                created_by,
+                str(now),
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE content_items
+            SET current_version = ?, title = ?, platform = ?, product_id = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                next_ver,
+                str(title) if title else row["title"],
+                platform if platform is not None else row["platform"],
+                product_id if product_id is not None else row["product_id"],
+                str(now),
+                str(content_id),
+            ),
+        )
+    return get_content_item(content_id, version=next_ver, include_versions=True)
+
+
+def append_content_files(content_id, new_entries):
+    """Append file metadata entries to content_items.files_json."""
+    ensure_init()
+    conn = connect()
+    now = datetime.now(timezone.utc).isoformat()
+    with conn:
+        row = conn.execute(
+            "SELECT files_json FROM content_items WHERE id = ?",
+            (str(content_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        existing = json.loads(row["files_json"]) if row["files_json"] else []
+        existing.extend(new_entries or [])
+        conn.execute(
+            "UPDATE content_items SET files_json = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(existing, ensure_ascii=False), now, str(content_id)),
+        )
+    return get_content_item(content_id)
+
+
+def get_content_item(content_id, version=None, include_versions=False):
+    """Fetch a content item with its selected version (default current) and optional all versions."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM content_items WHERE id = ?",
+        (str(content_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    item = _deserialize_content_item(row)
+    target_ver = int(version) if version is not None else item["current_version"]
+    ver_row = conn.execute(
+        "SELECT * FROM content_versions WHERE content_id = ? AND version = ?",
+        (str(content_id), target_ver),
+    ).fetchone()
+    if ver_row is not None:
+        v_dict = _deserialize_content_version(ver_row)
+        item["version"] = v_dict["version"]
+        item["body"] = v_dict["body"]
+        item["notes"] = v_dict["notes"]
+    else:
+        item["version"] = target_ver
+        item["body"] = ""
+        item["notes"] = None
+    if include_versions:
+        v_rows = conn.execute(
+            "SELECT * FROM content_versions WHERE content_id = ? ORDER BY version ASC",
+            (str(content_id),),
+        ).fetchall()
+        item["versions"] = [_deserialize_content_version(vr) for vr in v_rows]
+    return item
+
+
+def list_content_items(status=None, content_type=None, limit=20):
+    """List content items ordered newest-updated first."""
+    ensure_init()
+    conn = connect()
+    clauses = []
+    params = []
+    if status:
+        clauses.append("status = ?")
+        params.append(str(status))
+    if content_type:
+        clauses.append("type = ?")
+        params.append(str(content_type))
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(max(1, min(int(limit or 20), 500)))
+    rows = conn.execute(
+        f"""
+        SELECT * FROM content_items
+        {where}
+        ORDER BY updated_at DESC, rowid DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    return [_deserialize_content_item(r) for r in rows]
+
+
+def list_content_ids_for_session(session_id):
+    """Return content_item IDs created during session_id in creation order."""
+    if not session_id:
+        return []
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT id FROM content_items WHERE session_id = ? ORDER BY rowid ASC",
+        (str(session_id),),
+    ).fetchall()
+    return [r["id"] for r in rows]
+
+
+def record_metric(metric_id, content_id, platform, metrics, source, captured_at=None, created_by=None):
+    """Insert a metrics row and return its deserialized dict."""
+    ensure_init()
+    conn = connect()
+    now = datetime.now(timezone.utc).isoformat()
+    cap = str(captured_at or now)
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO metrics (
+                id, content_id, platform, metrics_json, source, captured_at, created_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(metric_id),
+                content_id,
+                str(platform),
+                json.dumps(dict(metrics or {}), ensure_ascii=False),
+                str(source),
+                cap,
+                created_by,
+                now,
+            ),
+        )
+    return {
+        "id": str(metric_id),
+        "content_id": content_id,
+        "platform": str(platform),
+        "metrics": dict(metrics or {}),
+        "source": str(source),
+        "captured_at": cap,
+        "created_by": created_by,
+        "created_at": now,
+    }
+
+
+def list_metrics(content_id=None, limit=20):
+    """List recorded metrics ordered by captured_at DESC."""
+    ensure_init()
+    conn = connect()
+    max_rows = max(1, min(int(limit or 20), 500))
+    if content_id:
+        rows = conn.execute(
+            """
+            SELECT * FROM metrics
+            WHERE content_id = ?
+            ORDER BY captured_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            (str(content_id), max_rows),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT * FROM metrics
+            ORDER BY captured_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            (max_rows,),
+        ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "content_id": r["content_id"],
+            "platform": r["platform"],
+            "metrics": json.loads(r["metrics_json"]) if r["metrics_json"] else {},
+            "source": r["source"],
+            "captured_at": r["captured_at"],
+            "created_by": r["created_by"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]

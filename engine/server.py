@@ -378,8 +378,64 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         elif url.path == "/api/key_pool":
             self.send_json(key_pool.status())
 
-        elif url.path == "/api/roster":
+        elif url.path == "/api/roster" or url.path == "/api/agents":
             self.send_json(agent_chat.get_roster_status())
+
+        elif url.path == "/api/content":
+            qs = urllib.parse.parse_qs(url.query)
+            status_filter = qs.get("status", [None])[0] or None
+            type_filter = qs.get("type", [None])[0] or None
+            try:
+                limit = int(qs.get("limit", ["20"])[0])
+            except (TypeError, ValueError):
+                limit = 20
+            limit = max(1, min(limit, 500))
+            self.send_json(
+                db.list_content_items(status=status_filter, content_type=type_filter, limit=limit)
+            )
+
+        elif url.path.startswith("/api/content/"):
+            rest = url.path[len("/api/content/"):].strip("/")
+            parts = rest.split("/") if rest else []
+            if len(parts) == 1:
+                item = db.get_content_item(parts[0], include_versions=True)
+                if item is None:
+                    self.send_json({"error": "Content not found"}, status=404)
+                    return
+                self.send_json(item)
+            elif len(parts) == 2 and parts[1] == "file":
+                item = db.get_content_item(parts[0])
+                if item is None:
+                    self.send_json({"error": "Content not found"}, status=404)
+                    return
+                qs = urllib.parse.parse_qs(url.query)
+                req_path = (qs.get("path", [""])[0] or "").strip()
+                if not req_path:
+                    self.send_json({"error": "path query parameter required"}, status=400)
+                    return
+                norm_req = os.path.normpath(req_path).replace("\\", "/")
+                allowed_paths = set()
+                for entry in item.get("files") or []:
+                    p = entry.get("path") if isinstance(entry, dict) else (entry if isinstance(entry, str) else "")
+                    if p:
+                        allowed_paths.add(os.path.normpath(p).replace("\\", "/"))
+                if norm_req not in allowed_paths:
+                    self.send_json({"error": "File is not listed in content files_json"}, status=403)
+                    return
+                real_root = os.path.realpath(paths.DATA_ROOT)
+                full_path = os.path.realpath(os.path.join(paths.DATA_ROOT, norm_req))
+                try:
+                    inside = os.path.commonpath([real_root, full_path]) == real_root
+                except ValueError:
+                    inside = False
+                if not inside or not os.path.isfile(full_path):
+                    self.send_json({"error": "File not found"}, status=404)
+                    return
+                mime, _ = mimetypes.guess_type(full_path)
+                mime = mime or "application/octet-stream"
+                self._serve_file_with_range(full_path, mime)
+            else:
+                self.send_json({"error": "Not found"}, status=404)
 
         elif url.path == "/api/assets":
             self.send_json(assets_manager.get_assets())

@@ -261,7 +261,7 @@ class AgentRuntime:
             )
         return recovered
 
-    def _mark_failed(self, session_id, agent_id, error_msg):
+    def _mark_failed(self, session_id, agent_id, error_msg, error_code=None):
         updated = db.update_agent_session(
             session_id,
             status="failed",
@@ -269,6 +269,8 @@ class AgentRuntime:
             pending_question=None,
             updated_at=_now_iso(),
         )
+        if updated is not None and error_code:
+            updated["error_code"] = error_code
         events.publish(
             "agent_failed",
             {
@@ -333,14 +335,19 @@ class AgentRuntime:
                     agent_role=agent_id,
                     confidential=confidential,
                 )
-            except (ai_gateway.AINotConnected, ai_gateway.AIAuthError) as exc:
-                return self._mark_failed(session_id, agent_id, str(exc))
+            except ai_gateway.AIAuthError as exc:
+                return self._mark_failed(session_id, agent_id, str(exc), error_code="ai_auth_error")
+            except ai_gateway.AINotConnected as exc:
+                return self._mark_failed(session_id, agent_id, str(exc), error_code="ai_not_connected")
             except Exception as exc:
                 return self._mark_failed(session_id, agent_id, str(exc))
 
             steps += 1
             text = resp.get("text") or ""
             tool_calls = resp.get("tool_calls") or []
+            model_used = resp.get("model_used")
+            provider = resp.get("provider")
+            fallback_used = bool(resp.get("fallback_used"))
 
             if cancel_ev.is_set():
                 return self._mark_cancelled(session_id, agent_id)
@@ -408,6 +415,9 @@ class AgentRuntime:
                             messages=messages,
                             pending_question=pending,
                             steps=steps,
+                            model_used=model_used,
+                            provider=provider,
+                            fallback_used=fallback_used,
                             updated_at=_now_iso(),
                         )
                         events.publish(
@@ -444,6 +454,9 @@ class AgentRuntime:
                     session_id,
                     messages=messages,
                     steps=steps,
+                    model_used=model_used,
+                    provider=provider,
+                    fallback_used=fallback_used,
                     updated_at=_now_iso(),
                 )
                 events.publish(
@@ -468,6 +481,9 @@ class AgentRuntime:
                 pending_question=None,
                 error=None,
                 steps=steps,
+                model_used=model_used,
+                provider=provider,
+                fallback_used=fallback_used,
                 updated_at=_now_iso(),
             )
             events.publish(

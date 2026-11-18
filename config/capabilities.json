@@ -1,4 +1,5 @@
 {
+  "_note": "superseded by config/agents.json",
   "agents": {
     "cmo": {
       "name": "CMO (Chief Marketing Officer)",

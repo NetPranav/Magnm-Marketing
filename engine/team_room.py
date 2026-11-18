@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""Magnm Global Team Room & Swarm Messaging Service
-Powers shared PR & Marketing team chat, @mentions across all 13 roles,
-deterministic capability guardrails, asset attachments, and CMO orchestration.
+"""Magnm Global Team Room & Swarm Messaging Service.
 
-Zero emojis; uniform role identifiers.
+Routes @mentions (and unmentioned CEO messages to @cmo) through agent_runtime
+sessions with per-agent prompts and tool allow-lists.
 """
 
+from datetime import datetime, timezone
 import json
 import os
 import re
 import sys
-import time
-from datetime import datetime, timezone
+import uuid
 
 _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
 
-import ai_gateway
+import agent_runtime
+import agents
 import assets_manager
 import db
 import events
@@ -26,17 +26,7 @@ import product_rules
 
 ROOT = paths.DATA_ROOT
 MESSAGES_FILE = paths.data("state", "global_messages.json")
-CAPABILITIES_FILE = paths.data("config", "capabilities.json")
-
-
-def load_capabilities():
-    if not os.path.exists(CAPABILITIES_FILE):
-        return {}
-    try:
-        with open(CAPABILITIES_FILE, "r", encoding="utf-8") as f:
-            return json.load(f).get("agents", {})
-    except Exception:
-        return {}
+MAX_MENTIONS_PER_MESSAGE = 3
 
 
 def load_messages(limit=80):
@@ -51,7 +41,7 @@ def save_message(msg):
 
 
 def extract_mentions(text):
-    """Find @agent_id mentions in text."""
+    """Find unique @agent_id mentions in text in order of appearance."""
     matches = re.findall(r"@([a-zA-Z0-9_-]+)", text or "")
     seen = []
     for m in matches:
@@ -61,317 +51,183 @@ def extract_mentions(text):
     return seen
 
 
-def _facts_excerpt(limit=1800):
-    """Return the start of research/product-facts.md (verified claims only), or a note if missing."""
-    path = paths.data("research", "product-facts.md")
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read(limit).strip()
-    except OSError:
-        return "(research/product-facts.md not found: make no product claims)"
-
-
-def build_asset_context(asset_ids):
-    """Retrieve metadata and excerpts for attached assets."""
+def _prepare_attachments(asset_ids):
+    """Build text context and image file paths from attached asset IDs or paths."""
     if not asset_ids:
-        return ""
+        return "", []
     all_assets = assets_manager.get_assets()
-    ctx_parts = ["\n[ATTACHED ASSETS]:"]
-    for aid in asset_ids:
-        a = next((x for x in all_assets if x["id"] == aid), None)
-        if a:
-            ctx_parts.append(f"- Asset ID: {a['id']} ({a['name']}) | Type: {a['mime_type']} | Size: {a['size']}")
-            ctx_parts.append(f"  Description: {a.get('description', 'None')}")
-            if a["mime_type"].startswith("text/") or a["name"].endswith((".md", ".txt")):
-                full_path = paths.data(a["relative_path"])
-                if os.path.exists(full_path):
+    ctx_parts = ["[ATTACHED ASSETS]:"]
+    image_paths = []
+    for item in asset_ids:
+        if isinstance(item, str):
+            a = next((x for x in all_assets if x["id"] == item), None)
+            if a:
+                ctx_parts.append(
+                    f"- Asset ID: {a['id']} ({a['name']}) | Type: {a['mime_type']} | Size: {a['size']}"
+                )
+                ctx_parts.append(f"  Description: {a.get('description', 'None')}")
+                full_p = paths.data(a["relative_path"])
+                if a.get("file_group") == "image" and os.path.exists(full_p):
+                    image_paths.append(full_p)
+                    ctx_parts.append(f"  Path: {a['relative_path']}")
+                elif a.get("file_group") == "document" and os.path.exists(full_p):
                     try:
-                        with open(full_path, "r", encoding="utf-8", errors="ignore") as tf:
-                            preview = tf.read(500)
-                            ctx_parts.append(f"  Preview: {preview}...")
+                        with open(full_p, "r", encoding="utf-8", errors="ignore") as tf:
+                            ctx_parts.append(f"  Preview: {tf.read(500)}...")
                     except Exception:
                         pass
-    return "\n".join(ctx_parts)
+            elif os.path.isfile(item):
+                image_paths.append(item)
+                ctx_parts.append(f"- File: {item}")
+        elif isinstance(item, dict):
+            image_paths.append(item)
 
-
-def _get_image_paths(asset_ids):
-    if not asset_ids:
-        return None
-    all_assets = assets_manager.get_assets()
-    paths = []
-    for aid in asset_ids:
-        a = next((x for x in all_assets if x["id"] == aid), None)
-        if a and a.get("file_group") == "image":
-            fp = paths.data(a["relative_path"])
-            if os.path.exists(fp):
-                paths.append(fp)
-    return paths or None
+    text_ctx = "\n".join(ctx_parts) if len(ctx_parts) > 1 else ""
+    return text_ctx, image_paths
 
 
 def _post_system_error(error_text):
     """Persist and return a single system message when AI inference cannot proceed."""
     sys_msg = {
-        "id": f"msg_{int(time.time()*1000)+6}",
+        "id": f"msg_{uuid.uuid4().hex[:12]}",
         "sender": "system",
         "sender_name": "System",
         "sender_code": "SYS",
         "text": str(error_text),
         "mentions": [],
-        "timestamp": datetime.now(timezone.utc).isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     save_message(sys_msg)
     return sys_msg
 
 
+def _rules_path():
+    cand = paths.data("config", "product_rules.json")
+    if os.path.exists(cand):
+        return cand
+    fb = paths.resource("config", "product_rules.json")
+    return fb if os.path.exists(fb) else cand
+
+
+def _resolve_targets(sender, mentions):
+    """Resolve up to MAX_MENTIONS_PER_MESSAGE unique target agents; default CEO unmentioned to CMO."""
+    sender_agent = agents.get_agent(sender)
+    sender_canon = sender_agent["id"] if sender_agent else (sender or "").strip().lower()
+
+    targets = []
+    seen_ids = set()
+    for raw_mention in mentions:
+        agent_info = agents.get_agent(raw_mention)
+        if agent_info is None:
+            continue
+        cid = agent_info["id"]
+        if cid == sender_canon or cid in seen_ids:
+            continue
+        seen_ids.add(cid)
+        targets.append(agent_info)
+        if len(targets) >= MAX_MENTIONS_PER_MESSAGE:
+            break
+
+    if not targets and (sender or "").strip().upper() == "CEO":
+        cmo = agents.get_agent("cmo")
+        if cmo is not None:
+            targets.append(cmo)
+
+    return targets
+
+
 def post_message(sender, text, attached_assets=None, depth=0):
-    """Post a message to the Global Team Room.
-    Handles @mentions across all 13 roles, capability checks, task escalation to CMO, and replies.
-    """
+    """Post a message to the team room and sequentially run up to 3 mentioned agent sessions."""
     if attached_assets is None:
         attached_assets = []
 
-    capabilities = load_capabilities()
     mentions = extract_mentions(text)
-
-    if sender == "CEO":
+    if (sender or "").strip().upper() == "CEO":
         sender_name = "CEO (Founder)"
         sender_code = "CEO"
     else:
-        conf = capabilities.get(sender, {})
-        sender_name = conf.get("name", sender.upper())
-        sender_code = conf.get("code", sender.upper()[:4])
+        sender_conf = agents.get_agent(sender) or {}
+        sender_name = sender_conf.get("name", sender.upper())
+        sender_code = sender_conf.get("code", sender.upper()[:4])
 
-    msg_id = f"msg_{int(time.time()*1000)}"
     new_msg = {
-        "id": msg_id,
+        "id": f"msg_{uuid.uuid4().hex[:12]}",
         "sender": sender,
         "sender_name": sender_name,
         "sender_code": sender_code,
         "text": text,
         "mentions": mentions,
         "attached_assets": attached_assets,
-        "timestamp": datetime.now(timezone.utc).isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     save_message(new_msg)
 
     if depth >= 3:
         return [new_msg]
 
+    targets = _resolve_targets(sender, mentions)
+    if not targets:
+        return [new_msg]
+
+    asset_ctx, attachment_paths = _prepare_attachments(attached_assets)
+    confidential = product_rules.mentions_confidential(text, path=_rules_path())
     replies = [new_msg]
+    prior_context = []
 
-    for agent_id in mentions:
-        if agent_id not in capabilities or agent_id == sender:
-            continue
-        agent_conf = capabilities[agent_id]
-        agent_code = agent_conf.get("code", agent_id.upper()[:4])
+    for target in targets:
+        cid = target["id"]
+        prompt_parts = [f"From {sender}: {text}"]
+        if asset_ctx:
+            prompt_parts.append(asset_ctx)
+        if prior_context:
+            prompt_parts.append("Earlier replies in this thread:\n" + "\n".join(prior_context))
+        user_prompt = "\n\n".join(prompt_parts)
 
-        if agent_id == "cmo":
-            try:
-                cmo_res = handle_cmo_orchestration(text, sender, attached_assets, capabilities)
-            except (ai_gateway.AINotConnected, ai_gateway.AIAuthError) as e:
-                replies.append(_post_system_error(str(e)))
-                break
-            reply_msg = {
-                "id": f"msg_{int(time.time()*1000)+1}",
-                "sender": "cmo",
-                "sender_name": "CMO (Chief Marketing Officer)",
-                "sender_code": "CMO",
-                "text": cmo_res["text"],
-                "mentions": extract_mentions(cmo_res["text"]),
-                "model_used": cmo_res.get("model_used"),
-                "provider": cmo_res.get("provider"),
-                "fallback_used": cmo_res.get("fallback_used", False),
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-            save_message(reply_msg)
-            replies.append(reply_msg)
+        system_prompt = agents.build_system_prompt(cid)
+        sess = agent_runtime.start_session(
+            cid,
+            user_prompt,
+            system_prompt=system_prompt,
+            allowed_tools=target.get("tools") or [],
+            attachments=attachment_paths or None,
+            confidential=confidential,
+            title=str(text or "")[:100],
+        )
+
+        status = sess.get("status")
+        if status == "failed":
+            replies.append(_post_system_error(sess.get("error") or "Agent session failed"))
+            break
+
+        content_ids = db.list_content_ids_for_session(sess["id"])
+        if status == "waiting_user":
+            pending = sess.get("pending_question") or {}
+            reply_text = pending.get("question") or ""
         else:
-            try:
-                spec_res = handle_specialist_response(agent_id, text, sender, attached_assets, capabilities)
-            except (ai_gateway.AINotConnected, ai_gateway.AIAuthError) as e:
-                replies.append(_post_system_error(str(e)))
-                break
-            reply_text = spec_res["text"]
-            reply_msg = {
-                "id": f"msg_{int(time.time()*1000)+2}",
-                "sender": agent_id,
-                "sender_name": agent_conf["name"],
-                "sender_code": agent_code,
-                "text": reply_text,
-                "mentions": extract_mentions(reply_text),
-                "capability_redirect": spec_res.get("capability_redirect", False),
-                "model_used": spec_res.get("model_used"),
-                "provider": spec_res.get("provider"),
-                "fallback_used": spec_res.get("fallback_used", False),
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-            save_message(reply_msg)
-            replies.append(reply_msg)
+            reply_text = sess.get("result_text") or ""
 
-            # Escalate specialist tasks to CMO if not already triggered or redirected
-            if "@cmo" in reply_text.lower() and not spec_res.get("capability_redirect") and "cmo" not in mentions and depth < 2:
-                try:
-                    cmo_res = handle_cmo_orchestration(reply_text, agent_id, attached_assets, capabilities)
-                except (ai_gateway.AINotConnected, ai_gateway.AIAuthError) as e:
-                    replies.append(_post_system_error(str(e)))
-                    break
-                cmo_msg = {
-                    "id": f"msg_{int(time.time()*1000)+3}",
-                    "sender": "cmo",
-                    "sender_name": "CMO (Chief Marketing Officer)",
-                    "sender_code": "CMO",
-                    "text": cmo_res["text"],
-                    "mentions": extract_mentions(cmo_res["text"]),
-                    "model_used": cmo_res.get("model_used"),
-                    "provider": cmo_res.get("provider"),
-                    "fallback_used": cmo_res.get("fallback_used", False),
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-                save_message(cmo_msg)
-                replies.append(cmo_msg)
+        reply_msg = {
+            "id": f"msg_{uuid.uuid4().hex[:12]}",
+            "sender": cid,
+            "sender_name": target.get("name", cid),
+            "sender_code": target.get("code", cid.upper()[:4]),
+            "text": reply_text,
+            "mentions": extract_mentions(reply_text),
+            "session_id": sess["id"],
+            "content_ids": content_ids,
+            "waiting_user": status == "waiting_user",
+            "model_used": sess.get("model_used"),
+            "provider": sess.get("provider"),
+            "fallback_used": bool(sess.get("fallback_used")),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        save_message(reply_msg)
+        replies.append(reply_msg)
+
+        cid_note = f" (created content_ids: {', '.join(content_ids)})" if content_ids else ""
+        prior_context.append(f"- @{cid}{cid_note}: {reply_text[:400]}")
 
     return replies
-
-
-def escalate_from_agent_chat(agent_id, user_message, agent_response="", attached_assets=None):
-    """Mirror a valid 1-on-1 specialist assignment into Global Team Room to inform @cmo
-    and get CMO's central orchestration & team delegation reply.
-    """
-    if attached_assets is None:
-        attached_assets = []
-    capabilities = load_capabilities()
-    agent_conf = capabilities.get(agent_id, {})
-    agent_code = agent_conf.get("code", agent_id.upper()[:4])
-    agent_name = agent_conf.get("name", agent_id)
-
-    esc_text = (
-        f"@cmo Task escalated from 1-on-1 CEO chat with @{agent_id}: "
-        f"\"{user_message}\". Confirming schedule, scope, and cross-team orchestration."
-    )
-    esc_msg = {
-        "id": f"msg_{int(time.time()*1000)+4}",
-        "sender": agent_id,
-        "sender_name": agent_name,
-        "sender_code": agent_code,
-        "text": esc_text,
-        "mentions": ["cmo"],
-        "attached_assets": attached_assets,
-        "model_used": "orchestration-router",
-        "provider": "deterministic",
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    }
-    save_message(esc_msg)
-
-    try:
-        cmo_res = handle_cmo_orchestration(
-            f"CEO assigned task via @{agent_id}: {user_message}\nSpecialist note: {agent_response[:350]}",
-            agent_id,
-            attached_assets,
-            capabilities
-        )
-    except (ai_gateway.AINotConnected, ai_gateway.AIAuthError) as e:
-        return [esc_msg, _post_system_error(str(e))]
-
-    cmo_msg = {
-        "id": f"msg_{int(time.time()*1000)+5}",
-        "sender": "cmo",
-        "sender_name": "CMO (Chief Marketing Officer)",
-        "sender_code": "CMO",
-        "text": cmo_res["text"],
-        "mentions": extract_mentions(cmo_res["text"]),
-        "model_used": cmo_res.get("model_used"),
-        "provider": cmo_res.get("provider"),
-        "fallback_used": cmo_res.get("fallback_used", False),
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    }
-    save_message(cmo_msg)
-    return [esc_msg, cmo_msg]
-
-
-def handle_cmo_orchestration(text, sender, attached_assets, capabilities):
-    asset_ctx = build_asset_context(attached_assets)
-    images = _get_image_paths(attached_assets)
-    system_prompt = f"""You are the CMO (Chief Marketing Officer) of MAGNM PR & Marketing Studio.
-You orchestrate the full PR, social marketing, and business research team. ZERO emojis allowed.
-
-Team Roster:
-- @strategist (Positioning & Roadmap)
-- @advisor (Editorial Counsel & Priorities)
-- @researcher (Market, HN, Reddit & Freelance Opportunity Research)
-- @blog-writer (Long-Form Engineering Deep-Dives)
-- @writer (Social Copy, X threads, LinkedIn, Captions, Video Scripts)
-- @designer (Visuals, Screenshots & Palette v3 Cards via card.py)
-- @video-producer (Remotion / HyperFrames Motion Reels)
-- @reviewer (Fact-Checking & Quality Gate)
-- @analyst (Metrics & Conversion Analysis)
-- @listener (Social Listening & Comment Triage)
-- @community (PR Responses & Crisis L1-L3)
-- @growth (Distribution Experiments & Bounties)
-
-Verified product facts (only claim what is written here):
-{_facts_excerpt()}
-
-{product_rules.prompt_block()}
-
-Hard Rules:
-1. ZERO EMOJIS. Use clean, executive PR agency tone.
-2. Explicitly state your decision (whether to proceed, timeline/priority) and delegate concrete subtasks to relevant specialists using @<agent_id> mentions.
-3. Confirm nothing publishes externally without @reviewer APPROVE and CEO final sign-off.
-"""
-    user_prompt = f"From: {sender}\nMessage: {text}\n{asset_ctx}\n\nProvide your CMO orchestration decision and delegate with @mentions:"
-    return ai_gateway.generate_completion_with_meta(
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        model_tier="reasoning",
-        image_paths=images,
-        agent_role="cmo"
-    )
-
-
-def handle_specialist_response(agent_id, text, sender, attached_assets, capabilities):
-    import agent_chat
-
-    guard = agent_chat.evaluate_capability_guardrail(agent_id, text, attached_assets)
-    if guard.get("violated"):
-        return {
-            "text": guard["response"],
-            "model_used": "capability-guardrail",
-            "provider": "deterministic",
-            "fallback_used": False,
-            "capability_redirect": True
-        }
-
-    agent_conf = capabilities[agent_id]
-    asset_ctx = build_asset_context(attached_assets)
-    images = _get_image_paths(attached_assets)
-
-    system_prompt = f"""You are {agent_conf['name']} ({agent_conf['role']}) at MAGNM. ZERO emojis allowed.
-
-Capabilities:
-CAN: {', '.join(agent_conf.get('can', []))}
-CANNOT: {', '.join(agent_conf.get('cannot', []))}
-Redirection peers: {json.dumps(agent_conf.get('redirect', {}))}
-
-Verified product facts (only claim what is written here):
-{_facts_excerpt()}
-
-{product_rules.prompt_block()}
-
-Hard Rules:
-1. NEVER USE EMOJIS.
-2. CAPABILITY BOUNDARY: If asked to do something outside your capabilities, respond:
-   "I cannot perform this task because [reason]. You should talk to @[agent_id] who specializes in this."
-3. ESCALATION PROTOCOL: If assigned a new production task directly without CMO approval, confirm readiness and tag @cmo to schedule and orchestrate it.
-4. Answer strictly within verified ground truth and the product rules above.
-"""
-    user_prompt = f"From: {sender}\nMessage: {text}\n{asset_ctx}"
-    return ai_gateway.generate_completion_with_meta(
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        model_tier="fast",
-        image_paths=images,
-        agent_role=agent_id
-    )
 
 
 if __name__ == "__main__":

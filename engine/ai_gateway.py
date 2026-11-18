@@ -127,7 +127,7 @@ ROLE_MODEL_SPEC = {
         "env_suffix": "ANALYST",
         "model_env": "NIM_MODEL_ANALYST",
         "key_env": "NVIDIA_NIM_API_KEY_ANALYST",
-        "tier": "research",
+        "tier": "vision",
         "specialization": "Interpreting computed reach, referral clicks, GitHub traffic, and experiment attribution."
     },
     "listener": {

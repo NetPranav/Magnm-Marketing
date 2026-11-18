@@ -333,7 +333,7 @@ class GatewayTests(unittest.TestCase):
             self.assertEqual(agent_chat.get_agent_chat_history("cmo"), [])
 
             with patch(
-                "ai_gateway.generate_completion_with_meta",
+                "ai_gateway.chat_with_tools",
                 side_effect=ai_gateway.AIAuthError("bad key"),
             ):
                 replies = team_room.post_message("CEO", "Check @writer and @cmo")
