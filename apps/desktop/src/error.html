@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Magnm Studio - Engine Error</title>
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      min-height: 100%;
+      background: #ffffff;
+      color: #3b3b3b;
+      -webkit-font-smoothing: antialiased;
+      font-family: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      max-width: 780px;
+      margin: 0 auto;
+      padding: 64px 32px 48px;
+    }
+
+    .wordmark {
+      font-family: 'Instrument Serif', Georgia, serif;
+      font-weight: 400;
+      font-size: 40px;
+      line-height: 1;
+      letter-spacing: -0.02em;
+      color: #0a0a0a;
+      margin-bottom: 32px;
+    }
+
+    .label {
+      font-family: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #3b3b3b;
+      margin-bottom: 8px;
+    }
+
+    h1 {
+      font-family: 'Instrument Serif', Georgia, serif;
+      font-weight: 400;
+      font-size: 32px;
+      line-height: 1.15;
+      color: #0a0a0a;
+      margin-bottom: 16px;
+    }
+
+    .message {
+      font-size: 15px;
+      line-height: 1.6;
+      color: #3b3b3b;
+      padding-bottom: 24px;
+      border-bottom: 1px solid #e3e3df;
+      margin-bottom: 24px;
+      word-break: break-word;
+    }
+
+    .log-card {
+      background: #f5f5f3;
+      border: 1px solid #e3e3df;
+      border-radius: 14px;
+      padding: 20px;
+      margin-bottom: 28px;
+    }
+
+    pre {
+      font-family: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      color: #0a0a0a;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 360px;
+      overflow-y: auto;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    button {
+      appearance: none;
+      border: none;
+      border-radius: 9999px;
+      background: #0a0a0a;
+      color: #ffffff;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 500;
+      padding: 10px 22px;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="wordmark">magnm</div>
+    <p class="label">ENGINE ERROR</p>
+    <h1>Could not start the local engine</h1>
+    <p class="message" id="error-msg">An unexpected error occurred while starting the engine.</p>
+
+    <div class="log-card">
+      <p class="label">LAST 30 LOG LINES</p>
+      <pre id="log-output">Loading logs...</pre>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="retry-btn">Retry</button>
+    </div>
+  </main>
+
+  <script>
+    (function () {
+      const params = new URLSearchParams(window.location.search);
+      const msg = params.get("msg");
+      if (msg) {
+        document.getElementById("error-msg").textContent = msg;
+      }
+
+      const logEl = document.getElementById("log-output");
+      const retryBtn = document.getElementById("retry-btn");
+
+      async function loadLogs() {
+        try {
+          if (window.__TAURI__ && window.__TAURI__.core) {
+            const lines = await window.__TAURI__.core.invoke("get_engine_logs");
+            if (Array.isArray(lines) && lines.length > 0) {
+              logEl.textContent = lines.join("\n");
+              return;
+            }
+          }
+          const qLogs = params.get("logs");
+          logEl.textContent = qLogs || "(No engine stderr output captured.)";
+        } catch (err) {
+          logEl.textContent = "Failed to load logs: " + String(err);
+        }
+      }
+
+      retryBtn.addEventListener("click", async function () {
+        if (!window.__TAURI__ || !window.__TAURI__.core) {
+          return;
+        }
+        retryBtn.disabled = true;
+        retryBtn.textContent = "Restarting...";
+        try {
+          await window.__TAURI__.core.invoke("restart_engine");
+        } catch (err) {
+          document.getElementById("error-msg").textContent = String(err);
+          retryBtn.disabled = false;
+          retryBtn.textContent = "Retry";
+          await loadLogs();
+        }
+      });
+
+      loadLogs();
+    })();
+  </script>
+</body>
+</html>

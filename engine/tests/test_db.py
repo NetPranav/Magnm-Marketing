@@ -97,8 +97,8 @@ class DbTests(unittest.TestCase):
         db.init_db()
 
         conn = db.connect()
-        versions = [r["version"] for r in conn.execute("SELECT version FROM schema_version").fetchall()]
-        self.assertEqual(versions, [db.SCHEMA_VERSION])
+        versions = [r["version"] for r in conn.execute("SELECT version FROM schema_version ORDER BY version ASC").fetchall()]
+        self.assertEqual(versions, list(range(1, db.SCHEMA_VERSION + 1)))
 
         meta_row = conn.execute("SELECT value FROM meta WHERE key = 'files_migrated'").fetchone()
         self.assertIsNotNone(meta_row)

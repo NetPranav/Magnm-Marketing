@@ -31,8 +31,6 @@ LOGS_DIR = paths.data("logs")
 JOBS_LOG_DIR = os.path.join(LOGS_DIR, "jobs")
 os.makedirs(JOBS_LOG_DIR, exist_ok=True)
 
-LOCK_FILE = os.path.join(STATE_DIR, ".runtime_job.lock")
-
 VALID_STATES = ["draft", "generated", "under_review", "revision_required", "approved", "published"]
 ALLOWED_JOBS = {
     "daily_cycle": "Daily CMO Cycle (Digest, Board & Plan Check)",
@@ -70,41 +68,65 @@ def run_repo_sync():
     res = subprocess.run([sys.executable, sync_path], capture_output=True, text=True)
     return res.stdout
 
-def execute_job(job_name, actor="UI"):
-    """Execute an allowed marketing job safely with concurrency lock."""
+def run_job_body(job_name, job_id=None, actor="UI", log_file=None):
+    """Run the body of an allowed marketing job and write its log output."""
     if job_name not in ALLOWED_JOBS:
         raise ValueError(f"Unknown job '{job_name}'. Allowed jobs: {list(ALLOWED_JOBS.keys())}")
 
-    if os.path.exists(LOCK_FILE):
-        return {"success": False, "error": "Another job is currently running. Concurrency lock active."}
+    if job_id is None:
+        job_id = f"{job_name}_{int(time.time())}"
+    if log_file is None:
+        log_file = paths.data("logs", "jobs", f"{job_id}.log")
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
-    # Acquire lock
+    import jobs as jobs_mod
+
+    def _checkpoint(pct, message):
+        if jobs_mod.is_cancel_requested(job_id):
+            raise jobs_mod.JobCancelled(f"Job '{job_name}' cancelled")
+        jobs_mod.progress(job_id, pct, message)
+
+    log_activity(actor, "CMO", f"start_job:{job_name}", log_file)
+    output = ""
+
+    if job_name == "daily_cycle":
+        _checkpoint(10, "Running codebase and GitHub sync...")
+        output += "=== RUNNING DAILY CMO CYCLE ===\n"
+        output += run_repo_sync() + "\n"
+        _checkpoint(60, "Running daily digest...")
+        output += run_digest() + "\n"
+    elif job_name == "market_scan":
+        _checkpoint(15, "Running market research scan...")
+        output += "=== RUNNING MARKET RESEARCH SCAN ===\n"
+        output += run_research() + "\n"
+    elif job_name == "repo_sync":
+        _checkpoint(20, "Running codebase and GitHub sync...")
+        output += "=== RUNNING CODEBASE & GITHUB SYNC ===\n"
+        output += run_repo_sync() + "\n"
+
+    with open(log_file, "w", encoding="utf-8") as f:
+        f.write(output)
+
+    if jobs_mod.is_cancel_requested(job_id):
+        raise jobs_mod.JobCancelled(f"Job '{job_name}' cancelled")
+
+    jobs_mod.progress(job_id, 95, "Finalizing job...")
+    log_activity("CMO", actor, f"finish_job:{job_name}", log_file)
+    return output
+
+
+def execute_job(job_name, actor="UI"):
+    """Execute an allowed marketing job directly and synchronously (CLI / standalone)."""
+    if job_name not in ALLOWED_JOBS:
+        raise ValueError(f"Unknown job '{job_name}'. Allowed jobs: {list(ALLOWED_JOBS.keys())}")
+
     job_id = f"{job_name}_{int(time.time())}"
-    with open(LOCK_FILE, "w") as f:
-        f.write(job_id)
-
-    log_file = os.path.join(JOBS_LOG_DIR, f"{job_id}.log")
+    log_file = paths.data("logs", "jobs", f"{job_id}.log")
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
     start_ts = datetime.now(timezone.utc).isoformat()
 
     try:
-        log_activity(actor, "CMO", f"start_job:{job_name}", log_file)
-        output = ""
-
-        if job_name == "daily_cycle":
-            output += "=== RUNNING DAILY CMO CYCLE ===\n"
-            output += run_repo_sync() + "\n"
-            output += run_digest() + "\n"
-        elif job_name == "market_scan":
-            output += "=== RUNNING MARKET RESEARCH SCAN ===\n"
-            output += run_research() + "\n"
-        elif job_name == "repo_sync":
-            output += "=== RUNNING CODEBASE & GITHUB SYNC ===\n"
-            output += run_repo_sync() + "\n"
-
-        with open(log_file, "w", encoding="utf-8") as f:
-            f.write(output)
-
-        log_activity("CMO", actor, f"finish_job:{job_name}", log_file)
+        output = run_job_body(job_name, job_id=job_id, actor=actor, log_file=log_file)
         return {
             "success": True,
             "job_id": job_id,
@@ -118,9 +140,6 @@ def execute_job(job_name, actor="UI"):
         with open(log_file, "a", encoding="utf-8") as f:
             f.write("\n" + err_msg)
         return {"success": False, "error": err_msg}
-    finally:
-        if os.path.exists(LOCK_FILE):
-            os.remove(LOCK_FILE)
 
 def get_post_manifest(post_id):
     """Load or initialize manifest.json for a post package."""
@@ -253,7 +272,6 @@ def get_system_status():
 
     return {
         "status": "ready",
-        "lock_active": os.path.exists(LOCK_FILE),
         "queue": queue_status,
         "packages": packages,
         "activity_log": activity_lines,

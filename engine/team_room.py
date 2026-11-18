@@ -20,6 +20,7 @@ if _ENGINE_DIR not in sys.path:
 import ai_gateway
 import assets_manager
 import db
+import events
 import paths
 import product_rules
 
@@ -44,8 +45,9 @@ def load_messages(limit=80):
 
 
 def save_message(msg):
-    """Persist a team room message to SQLite."""
+    """Persist a team room message to SQLite and publish a live event."""
     db.save_message(msg)
+    events.publish("message", msg)
 
 
 def extract_mentions(text):

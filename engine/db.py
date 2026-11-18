@@ -20,7 +20,7 @@ if _ENGINE_DIR not in sys.path:
 
 import paths
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -190,8 +190,35 @@ def _apply_migration_v1(conn):
     )
 
 
+def _apply_migration_v2(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS jobs (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            status TEXT NOT NULL,
+            progress INTEGER NOT NULL DEFAULT 0,
+            message TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 2,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            output_path TEXT,
+            error TEXT,
+            actor TEXT,
+            cancel_requested INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_jobs_status_created
+            ON jobs(status, created_at);
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
+    (2, _apply_migration_v2),
 )
 
 
@@ -792,3 +819,204 @@ def get_recent_runs(limit=50):
         }
         for r in rows
     ]
+
+
+_JOB_SELECT_COLS = (
+    "id, name, status, progress, message, attempts, max_attempts, "
+    "created_at, started_at, finished_at, output_path, error, actor, cancel_requested"
+)
+
+
+def _deserialize_job(row):
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "status": row["status"],
+        "progress": int(row["progress"] or 0),
+        "message": row["message"] or "",
+        "attempts": int(row["attempts"] or 0),
+        "max_attempts": int(row["max_attempts"] or 0),
+        "created_at": row["created_at"],
+        "started_at": row["started_at"],
+        "finished_at": row["finished_at"],
+        "output_path": row["output_path"],
+        "error": row["error"],
+        "actor": row["actor"],
+        "cancel_requested": bool(row["cancel_requested"]),
+    }
+
+
+def create_job(job):
+    """Insert a new job row and return the persisted job dictionary."""
+    ensure_init()
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO jobs (
+                id, name, status, progress, message, attempts, max_attempts,
+                created_at, started_at, finished_at, output_path, error, actor, cancel_requested
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(job["id"]),
+                str(job["name"]),
+                str(job.get("status", "queued")),
+                int(job.get("progress", 0)),
+                job.get("message", ""),
+                int(job.get("attempts", 0)),
+                int(job.get("max_attempts", 2)),
+                str(job["created_at"]),
+                job.get("started_at"),
+                job.get("finished_at"),
+                job.get("output_path"),
+                job.get("error"),
+                job.get("actor", "UI"),
+                1 if job.get("cancel_requested") else 0,
+            ),
+        )
+    return get_job(job["id"])
+
+
+def get_job(job_id):
+    """Return a single job dictionary by ID, or None if missing."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        f"SELECT {_JOB_SELECT_COLS} FROM jobs WHERE id = ?",
+        (str(job_id),),
+    ).fetchone()
+    return _deserialize_job(row)
+
+
+def list_jobs(limit=20):
+    """Return recent jobs ordered newest-first."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        f"SELECT {_JOB_SELECT_COLS} FROM jobs ORDER BY rowid DESC LIMIT ?",
+        (int(limit),),
+    ).fetchall()
+    return [_deserialize_job(r) for r in rows]
+
+
+def get_latest_job():
+    """Return the active running job if present, otherwise the most recent job."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        f"""
+        SELECT {_JOB_SELECT_COLS}
+        FROM jobs
+        ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, rowid DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    return _deserialize_job(row)
+
+
+def get_next_queued_job():
+    """Return the oldest queued job in FIFO order, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        f"""
+        SELECT {_JOB_SELECT_COLS}
+        FROM jobs
+        WHERE status = 'queued' AND cancel_requested = 0
+        ORDER BY created_at ASC, rowid ASC
+        LIMIT 1
+        """
+    ).fetchone()
+    return _deserialize_job(row)
+
+
+_UPDATABLE_JOB_FIELDS = {
+    "status",
+    "progress",
+    "message",
+    "attempts",
+    "max_attempts",
+    "started_at",
+    "finished_at",
+    "output_path",
+    "error",
+    "cancel_requested",
+}
+
+
+def update_job(job_id, **fields):
+    """Update selected columns of a job row and return the updated job dict."""
+    ensure_init()
+    updates = []
+    params = []
+    for k, v in fields.items():
+        if k not in _UPDATABLE_JOB_FIELDS:
+            raise ValueError(f"Unsupported job field: {k}")
+        updates.append(f"{k} = ?")
+        if k == "cancel_requested":
+            params.append(1 if v else 0)
+        elif k in ("progress", "attempts", "max_attempts") and v is not None:
+            params.append(int(v))
+        else:
+            params.append(v)
+
+    if not updates:
+        return get_job(job_id)
+
+    params.append(str(job_id))
+    conn = connect()
+    with conn:
+        conn.execute(
+            f"UPDATE jobs SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+    return get_job(job_id)
+
+
+def cancel_job_record(job_id, finished_at):
+    """Cancel a queued job or mark a running job cancel-requested; return updated job or None."""
+    ensure_init()
+    conn = connect()
+    with conn:
+        cur = conn.execute(
+            """
+            UPDATE jobs
+            SET status = 'cancelled', finished_at = ?, message = 'Cancelled', cancel_requested = 1
+            WHERE id = ? AND status = 'queued'
+            """,
+            (finished_at, str(job_id)),
+        )
+        if cur.rowcount == 0:
+            conn.execute(
+                """
+                UPDATE jobs
+                SET cancel_requested = 1, message = 'Cancel requested'
+                WHERE id = ? AND status = 'running'
+                """,
+                (str(job_id),),
+            )
+    return get_job(job_id)
+
+
+def fail_stale_running_jobs(finished_at, error="engine restarted"):
+    """Mark any jobs left in 'running' status as failed and return the updated rows."""
+    ensure_init()
+    conn = connect()
+    with conn:
+        rows = conn.execute(
+            "SELECT id FROM jobs WHERE status = 'running' ORDER BY rowid ASC"
+        ).fetchall()
+        stale_ids = [r["id"] for r in rows]
+        if stale_ids:
+            conn.execute(
+                """
+                UPDATE jobs
+                SET status = 'failed', finished_at = ?, error = ?, message = ?
+                WHERE status = 'running'
+                """,
+                (finished_at, str(error), f"Failed: {error}"),
+            )
+    return [get_job(jid) for jid in stale_ids]

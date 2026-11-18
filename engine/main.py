@@ -62,6 +62,21 @@ def _is_pid_alive(pid):
     return True
 
 
+def _safe_log(message):
+    """Write a line to stderr, ignoring closed or broken pipes (parent app gone)."""
+    try:
+        print(message, file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        # The pipe is gone; send further output to devnull so the interpreter's
+        # final flush at exit doesn't fail too (that would exit with code 120).
+        try:
+            devnull = open(os.devnull, "w")
+            sys.stdout = devnull
+            sys.stderr = devnull
+        except OSError:
+            pass
+
+
 def parse_args(argv=None):
     """Parse launcher CLI arguments."""
     parser = argparse.ArgumentParser(description="Magnm Marketing Engine Launcher")
@@ -87,6 +102,9 @@ def main(argv=None):
     import db
     db.init_db()
 
+    import jobs
+    jobs.start_worker()
+
     import server
 
     httpd = ThreadingHTTPServer((args.host, args.port), server.CommandCenterHandler)
@@ -100,9 +118,15 @@ def main(argv=None):
             return
         shutdown_started.set()
         stop_event.set()
-        if reason:
-            print(f"[magnm-engine] Shutting down: {reason}", file=sys.stderr, flush=True)
+        # Start the server shutdown first: if the desktop app died, its stdout/stderr
+        # pipes are gone and any print() raises BrokenPipeError.
         threading.Thread(target=httpd.shutdown, daemon=True).start()
+        if reason:
+            _safe_log(f"[magnm-engine] Shutting down: {reason}")
+        try:
+            jobs.stop_worker(timeout=1.0)
+        except Exception:
+            pass
 
     def handle_signal(signum, _frame):
         request_shutdown(f"signal {signum}")

@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for Magnm Studio local pages and engine webview",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*"]
+  },
+  "permissions": [
+    "core:default",
+    "allow-list-secrets",
+    "allow-set-secret",
+    "allow-delete-secret",
+    "allow-restart-engine",
+    "allow-get-engine-logs"
+  ]
+}

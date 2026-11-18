@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 import sys
+import threading
 import urllib.request
 
 _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -16,6 +17,13 @@ import paths
 ROOT = paths.DATA_ROOT
 MODELS_CONFIG_PATH = paths.data("config", "models.json")
 CATALOG_CACHE_PATH = paths.data("state", "model_catalog.json")
+
+_catalog_state = threading.local()
+
+
+def get_last_catalog_error():
+    """Return the last exception raised during get_catalog on this thread, if any."""
+    return getattr(_catalog_state, "last_error", None)
 
 
 def load_models_config(config_path=None):
@@ -61,12 +69,13 @@ def _write_cached_catalog(cache_file, model_ids):
     os.replace(tmp_path, cache_file)
 
 
-def get_catalog(api_key, base_url=None, force=False, cache_path=None, ttl_hours=None):
+def get_catalog(api_key, base_url=None, force=False, cache_path=None, ttl_hours=None, timeout=10):
     """Return the set of available NIM model IDs, using a TTL cache in state/.
 
     Returns the cached set if fresh, or refetches from {base_url}/models.
     On any network or HTTP error, returns the existing cached set if present, else None.
     """
+    _catalog_state.last_error = None
     cache_file = cache_path or CATALOG_CACHE_PATH
     if ttl_hours is None:
         try:
@@ -99,7 +108,7 @@ def get_catalog(api_key, base_url=None, force=False, cache_path=None, ttl_hours=
         method="GET",
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
         items = []
         if isinstance(payload, dict):
@@ -114,7 +123,8 @@ def get_catalog(api_key, base_url=None, force=False, cache_path=None, ttl_hours=
                 model_ids.add(item.strip())
         _write_cached_catalog(cache_file, model_ids)
         return model_ids
-    except Exception:
+    except Exception as exc:
+        _catalog_state.last_error = exc
         return cached_models
 
 

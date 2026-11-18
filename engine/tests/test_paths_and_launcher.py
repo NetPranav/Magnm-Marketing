@@ -187,9 +187,9 @@ class PathsAndLauncherTests(unittest.TestCase):
             status, _, _ = _http_request(f"{base}/api/status", headers={"X-Magnm-Token": "abc"})
             self.assertEqual(status, 200)
 
-            # GET /?token=abc -> 302 with Set-Cookie containing HttpOnly
+            # GET /?token=abc -> 200 page with Set-Cookie (HttpOnly) that script-redirects to /
             status, hdrs, _ = _http_request(f"{base}/?token=abc", follow_redirects=False)
-            self.assertEqual(status, 302)
+            self.assertEqual(status, 200)
             set_cookie = hdrs.get("Set-Cookie") or hdrs.get("set-cookie") or ""
             self.assertIn("magnm_token=abc", set_cookie)
             self.assertIn("HttpOnly", set_cookie)
@@ -218,6 +218,23 @@ class PathsAndLauncherTests(unittest.TestCase):
             )
             parent_proc.wait(timeout=5)
             rc = proc.wait(timeout=6)
+            self.assertEqual(rc, 0)
+
+    def test_04b_watchdog_exits_when_parent_pipes_are_closed(self):
+        """Regression: the desktop app died, so its stdout/stderr pipes are closed.
+        Logging the shutdown reason must not kill the watchdog before it stops the server."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            parent_proc = subprocess.Popen(["sleep", "1"])
+            self.addCleanup(lambda: parent_proc.poll() is None and parent_proc.kill())
+
+            proc, _ = self._spawn_engine(
+                tmpdir,
+                extra_env={"MAGNM_PARENT_PID": str(parent_proc.pid)},
+            )
+            proc.stdout.close()
+            proc.stderr.close()
+            parent_proc.wait(timeout=5)
+            rc = proc.wait(timeout=8)
             self.assertEqual(rc, 0)
 
     def test_05_dev_mode_without_token_allows_status(self):

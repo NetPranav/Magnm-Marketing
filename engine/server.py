@@ -9,10 +9,12 @@ Runs on http://127.0.0.1:5050
 """
 
 import base64
+from datetime import datetime, timezone
 import hmac
 import json
 import mimetypes
 import os
+import queue
 import re
 import subprocess
 import sys
@@ -29,10 +31,13 @@ import ai_gateway
 import assets_manager
 import cmo_runtime
 import db
+import events
+import jobs
 import paths
 import product_rules
 import repo_sync
 import scheduler
+import setup_check
 import team_room
 
 ROOT = paths.DATA_ROOT
@@ -40,34 +45,20 @@ PORT = 5050
 HOST = "127.0.0.1"
 ENGINE_TOKEN = os.environ.get("MAGNM_ENGINE_TOKEN", "")
 
-CURRENT_JOB = {"running": False, "job_name": None, "job_id": None, "output": "", "error": None}
+_KEYCHAIN_ERROR_PAYLOAD = {
+    "success": False,
+    "error_code": "use_desktop_keychain",
+    "error": "Keys are stored in the desktop app's secure keychain. Use Settings > Keys.",
+}
 
 
-def run_job_async(job_name, actor="UI"):
-    global CURRENT_JOB
-    CURRENT_JOB = {
-        "running": True,
-        "job_name": job_name,
-        "job_id": f"{job_name}_{int(threading.get_native_id() if hasattr(threading, 'get_native_id') else 1)}",
-        "output": f"Starting {job_name}...\n",
-        "error": None
-    }
+def _is_keychain_mode():
+    return os.environ.get("MAGNM_SECRETS_MODE", "").strip().lower() == "keychain"
 
-    def worker():
-        global CURRENT_JOB
-        try:
-            res = cmo_runtime.execute_job(job_name, actor=actor)
-            if res.get("success"):
-                CURRENT_JOB["output"] = res.get("output", "Completed successfully.")
-            else:
-                CURRENT_JOB["error"] = res.get("error", "Failed.")
-        except Exception as e:
-            CURRENT_JOB["error"] = str(e)
-        finally:
-            CURRENT_JOB["running"] = False
 
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
+def _is_secret_env_name(name):
+    upper = str(name or "").strip().upper()
+    return any(tok in upper for tok in ("KEY", "TOKEN", "SECRET"))
 
 
 def _read_text_safe(rel_path, limit=12000):
@@ -163,6 +154,34 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _serve_sse(self):
+        """Stream live Server-Sent Events ('job', 'message', 'ping') to connected clients."""
+        q = events.subscribe()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            self.wfile.write(b": connected\n\n")
+            self.wfile.flush()
+            while True:
+                try:
+                    ev = q.get(timeout=15)
+                    ev_type = ev.get("type", "message")
+                    payload = json.dumps(ev.get("data"))
+                    frame = f"event: {ev_type}\ndata: {payload}\n\n".encode("utf-8")
+                except queue.Empty:
+                    ping_data = json.dumps({"ts": datetime.now(timezone.utc).isoformat()})
+                    frame = f"event: ping\ndata: {ping_data}\n\n".encode("utf-8")
+                self.wfile.write(frame)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+            pass
+        finally:
+            events.unsubscribe(q)
+
     def _serve_file_with_range(self, file_path, mime):
         size = os.path.getsize(file_path)
         range_hdr = self.headers.get("Range")
@@ -214,14 +233,21 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             qs = urllib.parse.parse_qs(url.query)
             tok_list = qs.get("token")
             if tok_list and hmac.compare_digest(tok_list[0], ENGINE_TOKEN):
-                self.send_response(302)
+                # Reply 200 with a tiny page that moves on to "/" by script. A 302 would
+                # keep the navigation "cross-site" (it started from the desktop app's own
+                # page), and browsers then refuse to send a SameSite=Strict cookie.
+                body = (b"<!doctype html><meta charset=\"utf-8\"><title>Magnm Studio</title>"
+                        b"<script>location.replace('/')</script>")
+                self.send_response(200)
                 self.send_header(
                     "Set-Cookie",
                     f"magnm_token={ENGINE_TOKEN}; HttpOnly; SameSite=Strict; Path=/",
                 )
-                self.send_header("Location", "/")
-                self.send_header("Content-Length", "0")
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
+                self.wfile.write(body)
                 return
 
         if not self._is_authorized():
@@ -230,9 +256,11 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         if url.path == "/" or url.path == "/index.html":
             self.serve_ui()
+        elif url.path == "/api/events":
+            self._serve_sse()
         elif url.path == "/api/status":
             state = cmo_runtime.get_system_status()
-            state["current_job"] = CURRENT_JOB
+            state["current_job"] = jobs.get_job_status_legacy()
             cfg = ai_gateway.get_config()
             matrix = ai_gateway.get_role_model_matrix()
             roles_ready = sum(1 for m in matrix if m["has_key"])
@@ -262,7 +290,19 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             self.send_json(state)
 
         elif url.path == "/api/job_status":
-            self.send_json(CURRENT_JOB)
+            self.send_json(jobs.get_job_status_legacy())
+
+        elif url.path == "/api/jobs":
+            qs = urllib.parse.parse_qs(url.query)
+            try:
+                limit = int(qs.get("limit", ["20"])[0])
+            except (TypeError, ValueError):
+                limit = 20
+            limit = max(1, min(limit, 500))
+            self.send_json(jobs.list_jobs(limit=limit))
+
+        elif url.path == "/api/setup_check":
+            self.send_json(setup_check.run_setup_checks())
 
         elif url.path == "/api/roster":
             self.send_json(agent_chat.get_roster_status())
@@ -344,11 +384,21 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             if not job_name or job_name not in cmo_runtime.ALLOWED_JOBS:
                 self.send_json({"error": "Invalid job"}, status=400)
                 return
-            if CURRENT_JOB["running"]:
-                self.send_json({"error": "Job already running"}, status=409)
+            actor = params.get("actor", "UI")
+            job = jobs.enqueue(job_name, actor=actor)
+            jobs.start_worker()
+            self.send_json({"success": True, "job": job, "message": f"Queued {job_name}"})
+
+        elif url.path == "/api/jobs/cancel":
+            job_id = params.get("id")
+            if not job_id:
+                self.send_json({"error": "id required"}, status=400)
                 return
-            run_job_async(job_name)
-            self.send_json({"success": True, "message": f"Started {job_name}"})
+            job = jobs.cancel(job_id)
+            if job is None:
+                self.send_json({"error": "Job not found"}, status=404)
+                return
+            self.send_json({"success": True, "job": job})
 
         elif url.path == "/api/messages":
             text = params.get("text", "").strip()
@@ -460,6 +510,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             if not key_name:
                 self.send_json({"error": "Invalid key name"}, status=400)
                 return
+            if _is_keychain_mode() and _is_secret_env_name(key_name):
+                self.send_json(_KEYCHAIN_ERROR_PAYLOAD)
+                return
             try:
                 saved = ai_gateway.save_env_values({key_name: key_val})
                 self.send_json({"success": True, "saved_keys": saved})
@@ -471,6 +524,17 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             if not isinstance(updates, dict) or not updates:
                 self.send_json({"error": "updates dictionary required"}, status=400)
                 return
+            if _is_keychain_mode():
+                secret_keys = [k for k in updates.keys() if _is_secret_env_name(k)]
+                if secret_keys:
+                    non_secrets = {k: v for k, v in updates.items() if not _is_secret_env_name(k)}
+                    if non_secrets:
+                        try:
+                            ai_gateway.save_env_values(non_secrets)
+                        except Exception:
+                            pass
+                    self.send_json(_KEYCHAIN_ERROR_PAYLOAD)
+                    return
             try:
                 saved = ai_gateway.save_env_values(updates)
                 cmo_runtime.log_activity("CEO", "AI_GATEWAY", "env_config_updated", f"{len(saved)} keys saved to .env")
@@ -1734,11 +1798,26 @@ FIRST.</textarea>
             </div>
           </div>
 
-          <div style="display:flex; justify-content:space-between; align-items:center;">
-            <span class="panel-meta">API keys are stored securely in local .env (chmod 600, git-ignored) and never exposed in client logs.</span>
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+            <span class="panel-meta" id="envSaveStatus">API keys are stored securely in local .env (chmod 600, git-ignored) and never exposed in client logs.</span>
             <button class="btn btn-lime" onclick="saveFullEnvConfig()">
               <svg class="icon"><use href="#icon-check"/></svg> Save Gateway &amp; Per-Role Models to .env
             </button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title"><svg class="icon"><use href="#icon-check"/></svg> Setup Check</span>
+            <div style="display:flex; align-items:center; gap:10px;">
+              <span class="panel-meta" id="setupCheckSummary">Checking environment...</span>
+              <button class="btn btn-sm" onclick="loadSetupCheck()">
+                <svg class="icon"><use href="#icon-refresh"/></svg> Re-check
+              </button>
+            </div>
+          </div>
+          <div id="setupCheckList" style="display:flex; flex-direction:column; gap:8px;">
+            <div class="panel-meta">Open AI Models &amp; .env to run setup diagnostics.</div>
           </div>
         </div>
 
@@ -1929,7 +2008,10 @@ FIRST.</textarea>
       if (tabId === 'tab-assets' || tabId === 'tab-campaigns' || tabId === 'tab-room') loadAssets();
       if (tabId === 'tab-room') loadGlobalMessages();
       if (tabId === 'tab-team') loadRoster();
-      if (tabId === 'tab-models' && latestState) renderModelsStudio(latestState, true);
+      if (tabId === 'tab-models') {
+        if (latestState) renderModelsStudio(latestState, true);
+        loadSetupCheck();
+      }
     }
 
     function copyPostingKit(pkgId) {
@@ -1956,8 +2038,9 @@ FIRST.</textarea>
 
       if (data.current_job && data.current_job.running) {
         dot.className = 'status-dot busy';
-        text.innerText = 'EXECUTING ' + data.current_job.job_name;
-        term.innerText = data.current_job.output || 'Executing job...';
+        const pct = (typeof data.current_job.progress === 'number') ? ` (${data.current_job.progress}%)` : '';
+        text.innerText = 'EXECUTING ' + data.current_job.job_name + pct;
+        term.innerText = data.current_job.output || data.current_job.message || 'Executing job...';
       } else {
         dot.className = 'status-dot';
         text.innerText = 'SYSTEM READY';
@@ -2226,6 +2309,46 @@ FIRST.</textarea>
       });
     }
 
+    function _isSecretEnvName(name) {
+      const upper = String(name || '').toUpperCase();
+      return upper.includes('KEY') || upper.includes('TOKEN') || upper.includes('SECRET');
+    }
+
+    async function loadSetupCheck() {
+      const listEl = document.getElementById('setupCheckList');
+      const sumEl = document.getElementById('setupCheckSummary');
+      if (!listEl) return;
+      try {
+        const res = await fetch('/api/setup_check');
+        const data = await res.json();
+        const checks = data.checks || [];
+        if (sumEl) {
+          sumEl.innerText = data.ok ? 'All required checks OK' : 'Action needed';
+          sumEl.style.color = data.ok ? 'var(--mint)' : 'var(--amber)';
+        }
+        listEl.innerHTML = checks.map(c => {
+          const color = c.status === 'ok' ? 'var(--mint)' : (c.status === 'warn' ? 'var(--amber)' : 'var(--danger)');
+          const badgeCls = c.status === 'ok' ? 'badge-ok' : (c.status === 'warn' ? 'badge-warn' : 'badge-danger');
+          const fixHtml = c.fix ? `<div class="panel-meta" style="color:var(--sky); margin-top:2px;">Fix: ${escapeHtml(c.fix)}</div>` : '';
+          return `
+            <div style="display:flex; align-items:flex-start; gap:10px; padding:8px 10px; background:#101319; border:1px solid var(--border); border-radius:6px;">
+              <span style="width:9px; height:9px; border-radius:50%; background:${color}; margin-top:5px; flex-shrink:0;"></span>
+              <div style="flex:1; min-width:0;">
+                <div style="display:flex; justify-content:space-between; gap:8px;">
+                  <b style="font-size:13px;">${escapeHtml(c.label)}</b>
+                  <span class="badge ${badgeCls}">${escapeHtml(c.status)}</span>
+                </div>
+                <div class="panel-meta" style="margin-top:2px;">${escapeHtml(c.detail || '')}</div>
+                ${fixHtml}
+              </div>
+            </div>
+          `;
+        }).join('');
+      } catch (e) {
+        listEl.innerHTML = '<div class="panel-meta" style="color:var(--danger);">Failed to run setup check.</div>';
+      }
+    }
+
     async function saveFullEnvConfig() {
       const updates = {
         AI_DEFAULT_PROVIDER: document.getElementById('envDefaultProvider').value,
@@ -2247,6 +2370,46 @@ FIRST.</textarea>
         const k = inp.getAttribute('data-env');
         if (k && inp.value.trim()) updates[k] = inp.value.trim();
       });
+
+      const statusEl = document.getElementById('envSaveStatus');
+      const hasTauri = Boolean(window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === 'function');
+      if (hasTauri) {
+        const secretUpdates = {};
+        const configUpdates = {};
+        Object.entries(updates).forEach(([k, v]) => {
+          if (_isSecretEnvName(k)) secretUpdates[k] = v;
+          else configUpdates[k] = v;
+        });
+
+        try {
+          if (Object.keys(configUpdates).length > 0) {
+            const res = await fetch('/api/save_env_config', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ updates: configUpdates })
+            });
+            const cfgOut = await res.json();
+            if (!cfgOut.success) {
+              alert('Error saving settings: ' + (cfgOut.error || 'Unknown'));
+              return;
+            }
+          }
+          for (const [name, value] of Object.entries(secretUpdates)) {
+            await window.__TAURI__.core.invoke('set_secret', { name, value });
+          }
+          document.getElementById('envNimGlobalKey').value = '';
+          document.getElementById('envOpenAiKey').value = '';
+          document.getElementById('envGeminiKey').value = '';
+          document.querySelectorAll('.role-key-input').forEach(inp => { inp.value = ''; });
+          if (statusEl) {
+            statusEl.innerText = 'Saved. Restarting engine...';
+            statusEl.style.color = 'var(--mint)';
+          }
+        } catch (e) {
+          alert('Error saving keychain secrets: ' + e);
+        }
+        return;
+      }
 
       const res = await fetch('/api/save_env_config', {
         method: 'POST',
@@ -2673,7 +2836,43 @@ FIRST.</textarea>
       fetchStatus();
     }
 
-    setInterval(fetchStatus, 3000);
+    let pollTimer = null;
+    function startPollingFallback() {
+      if (!pollTimer) {
+        pollTimer = setInterval(fetchStatus, 3000);
+      }
+    }
+    function stopPollingFallback() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
+    function initEventStream() {
+      if (typeof EventSource === 'undefined') {
+        startPollingFallback();
+        return;
+      }
+      try {
+        const es = new EventSource('/api/events');
+        es.onopen = () => {
+          stopPollingFallback();
+        };
+        es.addEventListener('job', () => {
+          fetchStatus();
+        });
+        es.addEventListener('message', () => {
+          loadGlobalMessages();
+        });
+        es.onerror = () => {
+          startPollingFallback();
+        };
+      } catch (e) {
+        startPollingFallback();
+      }
+    }
+
+    initEventStream();
     fetchStatus();
     loadRoster();
     loadAssets();
@@ -2694,11 +2893,15 @@ def main():
     print("============================================================")
     print("MAGNM PR & SOCIAL AGENCY COMMAND CENTER (v5 - NVIDIA NIM)")
     print("============================================================")
+    db.init_db()
+    jobs.start_worker()
     print(f"Starting multi-threaded server on http://{HOST}:{PORT}")
     server = ThreadingHTTPServer((HOST, PORT), CommandCenterHandler)
+    server.daemon_threads = True
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        jobs.stop_worker(timeout=1.0)
         server.server_close()
 
 
