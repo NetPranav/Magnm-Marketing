@@ -8,6 +8,8 @@
   },
   "permissions": [
     "core:default",
+    "dialog:default",
+    "updater:default",
     "allow-list-secrets",
     "allow-set-secret",
     "allow-delete-secret",

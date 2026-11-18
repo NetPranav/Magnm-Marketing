@@ -7,6 +7,8 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use tauri::{AppHandle, Manager, RunEvent, State, Url};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+use tauri_plugin_updater::UpdaterExt;
 
 use engine::EngineSupervisor;
 use secrets::SecretStatus;
@@ -117,9 +119,68 @@ fn get_engine_logs(supervisor: State<'_, Arc<EngineSupervisor>>) -> Vec<String> 
     supervisor.recent_error_logs()
 }
 
+/// Return true when a real updater public key (not the placeholder) is configured.
+fn is_updater_configured(app: &AppHandle) -> bool {
+    const PLACEHOLDER: &str = "REPLACE_WITH_TAURI_UPDATER_PUBKEY";
+    let Some(updater_cfg) = app.config().plugins.0.get("updater") else {
+        return false;
+    };
+    let Some(pubkey) = updater_cfg.get("pubkey").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    let trimmed = pubkey.trim();
+    !trimmed.is_empty() && trimmed != PLACEHOLDER
+}
+
+/// Check for updates in the background, install if available, and prompt to restart.
+async fn check_for_updates(app: AppHandle) {
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(err) => {
+            eprintln!("[magnm-updater] Updater unavailable: {err}");
+            return;
+        }
+    };
+    let update = match updater.check().await {
+        Ok(Some(u)) => u,
+        Ok(None) => return,
+        Err(err) => {
+            eprintln!("[magnm-updater] Update check failed: {err}");
+            return;
+        }
+    };
+
+    let version = update.version.clone();
+    if let Err(err) = update.download_and_install(|_, _| {}, || {}).await {
+        eprintln!("[magnm-updater] Update download/install failed: {err}");
+        return;
+    }
+
+    let restart_now = app
+        .dialog()
+        .message(format!(
+            "Magnm Studio {version} has been downloaded and installed. Restart now to apply the update?"
+        ))
+        .title("Update Ready")
+        .kind(MessageDialogKind::Info)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Restart Now".to_string(),
+            "Later".to_string(),
+        ))
+        .blocking_show();
+
+    if restart_now {
+        if let Some(supervisor) = app.try_state::<Arc<EngineSupervisor>>() {
+            supervisor.stop();
+        }
+        app.restart();
+    }
+}
+
 /// Build and run the Tauri desktop application.
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
@@ -148,6 +209,14 @@ pub fn run() {
             app.manage(Arc::clone(&supervisor));
 
             let handle = app.handle().clone();
+            if is_updater_configured(&handle) {
+                handle.plugin(tauri_plugin_updater::Builder::new().build())?;
+                let update_handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    check_for_updates(update_handle).await;
+                });
+            }
+
             std::thread::spawn(move || match supervisor.start() {
                 Ok((port, token)) => {
                     if let Err(err) = navigate_to_engine(&handle, port, &token) {

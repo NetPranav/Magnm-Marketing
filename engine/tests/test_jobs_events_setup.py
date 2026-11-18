@@ -369,6 +369,7 @@ class JobsEventsSetupTests(unittest.TestCase):
             mapping = {
                 "ffmpeg": "/usr/bin/ffmpeg",
                 "node": "/usr/bin/node",
+                "git": "/usr/bin/git",
                 "google-chrome": "/usr/bin/google-chrome",
             }
             return mapping.get(cmd)
@@ -392,7 +393,7 @@ class JobsEventsSetupTests(unittest.TestCase):
         checks = {c["id"]: c for c in res["checks"]}
         self.assertEqual(
             set(checks.keys()),
-            {"python", "disk", "ffmpeg", "browser", "node", "ollama", "nvidia_key"},
+            {"python", "disk", "ffmpeg", "browser", "node", "git", "ollama", "nvidia_key"},
         )
         for item in checks.values():
             self.assertEqual(set(item.keys()), {"id", "label", "status", "detail", "fix"})

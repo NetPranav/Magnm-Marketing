@@ -5,11 +5,12 @@ approval state machines, delivery packages, manifest generation, and job executi
 """
 
 import argparse
+import contextlib
 import glob
+import io
 import json
 import os
 import shutil
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -49,24 +50,31 @@ def get_activity_log(limit=10):
     return db.get_activity_lines(limit=limit)
 
 def run_digest():
-    """Execute CMO daily digest."""
-    digest_script = paths.resource("scripts", "cmo-digest.sh")
-    if os.path.exists(digest_script):
-        res = subprocess.run(["bash", digest_script], capture_output=True, text=True)
-        return res.stdout
-    return "Digest script not found."
+    """Execute CMO daily digest in-process."""
+    import digest
+    return digest.build_digest()
 
 def run_research():
-    """Execute live research scanner."""
-    scanner_path = paths.resource("engine", "research_scanner.py")
-    res = subprocess.run([sys.executable, scanner_path], capture_output=True, text=True)
-    return res.stdout
+    """Execute live research scanner in-process and return collected output."""
+    import research_scanner
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        res = research_scanner.run_scan()
+    out = buf.getvalue()
+    if not out and res:
+        return str(res)
+    return out
 
 def run_repo_sync():
-    """Execute repo sync."""
-    sync_path = paths.resource("engine", "repo_sync.py")
-    res = subprocess.run([sys.executable, sync_path], capture_output=True, text=True)
-    return res.stdout
+    """Execute repo sync in-process and return collected output."""
+    import repo_sync
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        res = repo_sync.run_sync()
+    out = buf.getvalue()
+    if not out and res:
+        return json.dumps(res, indent=2) if isinstance(res, dict) else str(res)
+    return out
 
 def run_job_body(job_name, job_id=None, actor="UI", log_file=None):
     """Run the body of an allowed marketing job and write its log output."""

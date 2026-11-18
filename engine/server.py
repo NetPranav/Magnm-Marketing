@@ -11,12 +11,13 @@ Runs on http://127.0.0.1:5050
 import base64
 from datetime import datetime, timezone
 import hmac
+import importlib.util
 import json
 import mimetypes
 import os
 import queue
 import re
-import subprocess
+import shutil
 import sys
 import threading
 import urllib.parse
@@ -59,6 +60,72 @@ def _is_keychain_mode():
 def _is_secret_env_name(name):
     upper = str(name or "").strip().upper()
     return any(tok in upper for tok in ("KEY", "TOKEN", "SECRET"))
+
+
+def _import_legacy_folder(raw_path):
+    """Validate and copy legacy Magnm-Marketing data and SQLite state into DATA_ROOT."""
+    cleaned = str(raw_path or "").strip()
+    if not cleaned:
+        return 400, {"success": False, "error": "Folder path is required."}
+
+    src_root = os.path.abspath(os.path.expanduser(cleaned))
+    if not os.path.isdir(src_root):
+        return 400, {"success": False, "error": f"Folder does not exist: {src_root}"}
+
+    if os.path.realpath(src_root) == os.path.realpath(os.path.abspath(paths.DATA_ROOT)):
+        return 400, {"success": False, "error": "already using this folder"}
+
+    has_state = os.path.isdir(os.path.join(src_root, "state"))
+    has_outputs = os.path.isdir(os.path.join(src_root, "outputs"))
+    if not has_state and not has_outputs:
+        return 400, {
+            "success": False,
+            "error": "Folder does not look like a Magnm-Marketing folder (missing state/ or outputs/).",
+        }
+
+    files_copied = 0
+    for parts in (
+        ("outputs",),
+        ("research",),
+        ("assets", "uploads"),
+        ("agents",),
+        ("playbooks",),
+        ("plan",),
+    ):
+        files_copied += paths._copy_tree_no_overwrite(
+            os.path.join(src_root, *parts),
+            paths.data(*parts),
+        )
+
+    src_cfg_dir = os.path.join(src_root, "config")
+    if os.path.isdir(src_cfg_dir):
+        dst_cfg_dir = paths.data("config")
+        os.makedirs(dst_cfg_dir, exist_ok=True)
+        for name in os.listdir(src_cfg_dir):
+            if name.endswith(".json"):
+                src_file = os.path.join(src_cfg_dir, name)
+                dst_file = os.path.join(dst_cfg_dir, name)
+                if os.path.isfile(src_file) and not os.path.exists(dst_file):
+                    shutil.copy2(src_file, dst_file)
+                    files_copied += 1
+
+    src_cfg_md = os.path.join(src_root, "config.md")
+    dst_cfg_md = paths.data("config.md")
+    if os.path.isfile(src_cfg_md) and not os.path.exists(dst_cfg_md):
+        shutil.copy2(src_cfg_md, dst_cfg_md)
+        files_copied += 1
+
+    db_counts = db.import_legacy_state(os.path.join(src_root, "state"))
+    cmo_runtime.log_activity("CEO", "ENGINE", "import_legacy", src_root)
+    return 200, {
+        "success": True,
+        "files_copied": files_copied,
+        "db": db_counts,
+        "counts": {
+            "files_copied": files_copied,
+            **db_counts,
+        },
+    }
 
 
 def _read_text_safe(rel_path, limit=12000):
@@ -585,15 +652,22 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 json.dump(spec, f, indent=2)
 
             try:
-                proc = subprocess.run(
-                    [sys.executable, paths.resource("templates", "card.py"), spec_path, out_dir],
-                    capture_output=True, text=True, timeout=30
-                )
-                if proc.returncode != 0:
-                    self.send_json({"error": proc.stderr or proc.stdout or "Card render failed"}, status=500)
-                    return
+                card_path = paths.resource("templates", "card.py")
+                card_spec = importlib.util.spec_from_file_location("magnm_templates_card", card_path)
+                if card_spec is None or card_spec.loader is None:
+                    raise RuntimeError(f"Unable to load card renderer from {card_path}")
+                card_mod = importlib.util.module_from_spec(card_spec)
+                card_spec.loader.exec_module(card_mod)
+                written_paths = card_mod.render(spec, out_dir)
+            except ImportError:
+                self.send_json({"success": False, "error": "Card rendering needs the Pillow library."})
+                return
+            except Exception as e:
+                self.send_json({"error": str(e)}, status=500)
+                return
 
-                rendered_paths = [os.path.basename(line.strip()) for line in proc.stdout.splitlines() if line.strip()]
+            try:
+                rendered_paths = [os.path.basename(p) for p in written_paths if str(p).strip()]
                 kit_path = os.path.join(out_dir, "POSTING-KIT.md")
                 if not os.path.exists(kit_path):
                     with open(kit_path, "w", encoding="utf-8") as kf:
@@ -704,6 +778,13 @@ Hard Rules:
                 self.send_json({"success": True})
             else:
                 self.send_json({"error": "Schedules missing"}, status=500)
+
+        elif url.path == "/api/import_legacy":
+            try:
+                status_code, payload = _import_legacy_folder(params.get("path", ""))
+                self.send_json(payload, status=status_code)
+            except Exception as e:
+                self.send_json({"success": False, "error": str(e)}, status=500)
 
         elif url.path == "/api/schedule/toggle":
             sched_id = params.get("id")
@@ -1823,6 +1904,17 @@ FIRST.</textarea>
 
         <div class="panel">
           <div class="panel-header">
+            <span class="panel-title">Import from an existing Magnm-Marketing folder</span>
+          </div>
+          <div style="display:flex; gap:10px; align-items:center;">
+            <input type="text" id="legacyImportPath" placeholder="/path/to/Magnm-Marketing" style="flex:1;">
+            <button class="btn" id="legacyImportBtn" onclick="importLegacyFolder()">Import</button>
+          </div>
+          <div class="panel-meta" id="legacyImportStatus">Copies outputs, config, agents, and SQLite history without overwriting existing files.</div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
             <span class="panel-title"><svg class="icon"><use href="#icon-cpu"/></svg> Per-Role NVIDIA NIM Model Matrix &amp; Live Endpoint Tester</span>
             <span class="panel-meta">Assign dedicated models &amp; optional per-role keys for all 13 specialists</span>
           </div>
@@ -2346,6 +2438,49 @@ FIRST.</textarea>
         }).join('');
       } catch (e) {
         listEl.innerHTML = '<div class="panel-meta" style="color:var(--danger);">Failed to run setup check.</div>';
+      }
+    }
+
+    async function importLegacyFolder() {
+      const inp = document.getElementById('legacyImportPath');
+      const statusEl = document.getElementById('legacyImportStatus');
+      const btn = document.getElementById('legacyImportBtn');
+      const folderPath = (inp && inp.value || '').trim();
+      if (!folderPath) {
+        if (statusEl) {
+          statusEl.innerText = 'Enter a folder path first.';
+          statusEl.style.color = 'var(--amber)';
+        }
+        return;
+      }
+      if (btn) btn.disabled = true;
+      if (statusEl) {
+        statusEl.innerText = 'Importing...';
+        statusEl.style.color = 'var(--muted)';
+      }
+      try {
+        const res = await fetch('/api/import_legacy', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ path: folderPath })
+        });
+        const data = await res.json();
+        if (!data.success) {
+          statusEl.innerText = data.error || 'Import failed.';
+          statusEl.style.color = 'var(--danger)';
+          return;
+        }
+        const db = data.db || {};
+        statusEl.innerText = `Imported ${data.files_copied || 0} files, ${db.messages || 0} messages, ${db.chat_turns || 0} chat turns, ${db.assets || 0} assets, ${db.schedules || 0} schedules, ${db.activity || 0} activity lines.`;
+        statusEl.style.color = 'var(--mint)';
+        fetchStatus();
+      } catch (e) {
+        if (statusEl) {
+          statusEl.innerText = 'Import request failed: ' + e;
+          statusEl.style.color = 'var(--danger)';
+        }
+      } finally {
+        if (btn) btn.disabled = false;
       }
     }
 

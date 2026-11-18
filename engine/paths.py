@@ -49,7 +49,8 @@ def data(*parts):
 def _copy_tree_no_overwrite(src_dir, dst_dir):
     """Recursively copy files from src_dir to dst_dir without overwriting existing files."""
     if not os.path.isdir(src_dir):
-        return
+        return 0
+    copied = 0
     for root_dir, _, files in os.walk(src_dir):
         rel = os.path.relpath(root_dir, src_dir)
         target_dir = dst_dir if rel == "." else os.path.join(dst_dir, rel)
@@ -59,6 +60,8 @@ def _copy_tree_no_overwrite(src_dir, dst_dir):
             dst_file = os.path.join(target_dir, name)
             if not os.path.exists(dst_file):
                 shutil.copy2(src_file, dst_file)
+                copied += 1
+    return copied
 
 
 def ensure_data_root():

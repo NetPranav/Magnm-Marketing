@@ -383,6 +383,204 @@ def _parse_activity_line(line):
     return ts, actor, target, task, file_col
 
 
+def _import_state_dir(conn, state_dir, deduplicate=False):
+    """Import legacy JSON/log state files from state_dir into an open transaction."""
+    counts = {
+        "messages": 0,
+        "chat_turns": 0,
+        "assets": 0,
+        "schedules": 0,
+        "activity": 0,
+        "skipped": 0,
+    }
+    if not state_dir or not os.path.isdir(state_dir):
+        return counts
+
+    # 1. global_messages.json
+    msgs_path = os.path.join(state_dir, "global_messages.json")
+    if os.path.isfile(msgs_path):
+        try:
+            with open(msgs_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            msgs = raw.get("messages", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else None)
+            if not isinstance(msgs, list):
+                counts["skipped"] += 1
+            else:
+                sql = (
+                    """
+                    INSERT OR IGNORE INTO messages (
+                        id, sender, sender_name, sender_code, text,
+                        mentions_json, attached_assets_json, extra_json, ts
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """
+                    if deduplicate
+                    else """
+                    INSERT OR REPLACE INTO messages (
+                        id, sender, sender_name, sender_code, text,
+                        mentions_json, attached_assets_json, extra_json, ts
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """
+                )
+                for msg in msgs:
+                    if not isinstance(msg, dict):
+                        counts["skipped"] += 1
+                        continue
+                    try:
+                        cur = conn.execute(sql, _serialize_message(msg))
+                        if not deduplicate or cur.rowcount > 0:
+                            counts["messages"] += 1
+                    except Exception:
+                        counts["skipped"] += 1
+        except Exception:
+            counts["skipped"] += 1
+
+    # 2. chats/<agent>.json
+    chats_dir = os.path.join(state_dir, "chats")
+    if os.path.isdir(chats_dir):
+        existing_turns = None
+        if deduplicate:
+            existing_turns = {
+                (r["agent_id"], r["ts"], r["sender"], r["text"])
+                for r in conn.execute("SELECT agent_id, ts, sender, text FROM chat_turns").fetchall()
+            }
+        for fname in sorted(os.listdir(chats_dir)):
+            if not fname.endswith(".json"):
+                continue
+            agent_id = fname[:-5]
+            fpath = os.path.join(chats_dir, fname)
+            if not os.path.isfile(fpath):
+                continue
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    turns = json.load(f)
+                if not isinstance(turns, list):
+                    counts["skipped"] += 1
+                    continue
+                for turn in turns:
+                    if not isinstance(turn, dict):
+                        counts["skipped"] += 1
+                        continue
+                    try:
+                        params = _serialize_turn(agent_id, turn)
+                        if existing_turns is not None:
+                            key = (params[0], params[5], params[1], params[3])
+                            if key in existing_turns:
+                                continue
+                            existing_turns.add(key)
+                        conn.execute(
+                            """
+                            INSERT INTO chat_turns (agent_id, sender, name, text, extra_json, ts)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            """,
+                            params,
+                        )
+                        counts["chat_turns"] += 1
+                    except Exception:
+                        counts["skipped"] += 1
+            except Exception:
+                counts["skipped"] += 1
+
+    # 3. assets.json
+    assets_path = os.path.join(state_dir, "assets.json")
+    if os.path.isfile(assets_path):
+        try:
+            with open(assets_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            assets = raw.get("assets", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else None)
+            if not isinstance(assets, list):
+                counts["skipped"] += 1
+            else:
+                asset_sql = (
+                    "INSERT OR IGNORE INTO assets (id, data_json, created_at) VALUES (?, ?, ?)"
+                    if deduplicate
+                    else "INSERT OR REPLACE INTO assets (id, data_json, created_at) VALUES (?, ?, ?)"
+                )
+                for asset in assets:
+                    if not isinstance(asset, dict) or not asset.get("id"):
+                        counts["skipped"] += 1
+                        continue
+                    cur = conn.execute(
+                        asset_sql,
+                        (
+                            str(asset["id"]),
+                            json.dumps(asset),
+                            asset.get("uploaded_at") or asset.get("created_at"),
+                        ),
+                    )
+                    if not deduplicate or cur.rowcount > 0:
+                        counts["assets"] += 1
+        except Exception:
+            counts["skipped"] += 1
+
+    # 4. schedules.json
+    sched_path = os.path.join(state_dir, "schedules.json")
+    if os.path.isfile(sched_path):
+        try:
+            with open(sched_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            scheds = raw.get("schedules", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else None)
+            if not isinstance(scheds, list):
+                counts["skipped"] += 1
+            else:
+                sched_sql = (
+                    "INSERT OR IGNORE INTO schedules (id, data_json, position) VALUES (?, ?, ?)"
+                    if deduplicate
+                    else "INSERT OR REPLACE INTO schedules (id, data_json, position) VALUES (?, ?, ?)"
+                )
+                next_pos = 0
+                if deduplicate:
+                    max_row = conn.execute(
+                        "SELECT COALESCE(MAX(position), -1) AS max_pos FROM schedules"
+                    ).fetchone()
+                    next_pos = int(max_row["max_pos"]) + 1
+                for idx, sched in enumerate(scheds):
+                    if not isinstance(sched, dict) or not sched.get("id"):
+                        counts["skipped"] += 1
+                        continue
+                    pos = next_pos if deduplicate else idx
+                    cur = conn.execute(sched_sql, (str(sched["id"]), json.dumps(sched), pos))
+                    if not deduplicate or cur.rowcount > 0:
+                        counts["schedules"] += 1
+                        next_pos += 1
+        except Exception:
+            counts["skipped"] += 1
+
+    # 5. activity.log
+    act_path = os.path.join(state_dir, "activity.log")
+    if os.path.isfile(act_path):
+        existing_activity = None
+        if deduplicate:
+            existing_activity = {
+                f"{r['ts']} | {r['actor']} -> {r['target']} | {r['task']} | {r['file']}"
+                for r in conn.execute("SELECT ts, actor, target, task, file FROM activity").fetchall()
+            }
+        try:
+            with open(act_path, "r", encoding="utf-8", errors="replace") as f:
+                for raw_line in f:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    parsed = _parse_activity_line(line)
+                    if parsed is None:
+                        counts["skipped"] += 1
+                        continue
+                    ts, actor, target, task, file_col = parsed
+                    canonical = f"{ts} | {actor} -> {target} | {task} | {file_col}"
+                    if existing_activity is not None:
+                        if line in existing_activity or canonical in existing_activity:
+                            continue
+                        existing_activity.add(canonical)
+                    conn.execute(
+                        "INSERT INTO activity (ts, actor, target, task, file) VALUES (?, ?, ?, ?, ?)",
+                        parsed,
+                    )
+                    counts["activity"] += 1
+        except Exception:
+            counts["skipped"] += 1
+
+    return counts
+
+
 def migrate_from_files():
     """Import legacy JSON/log state files into SQLite once without altering the originals."""
     with _state_lock:
@@ -400,159 +598,26 @@ def migrate_from_files():
             }
 
         state_dir = _legacy_state_dir()
-        counts = {
-            "already_migrated": False,
-            "messages": 0,
-            "chat_turns": 0,
-            "assets": 0,
-            "schedules": 0,
-            "activity": 0,
-            "skipped": 0,
-        }
-
         with conn:
-            # 1. global_messages.json
-            msgs_path = os.path.join(state_dir, "global_messages.json")
-            if os.path.isfile(msgs_path):
-                try:
-                    with open(msgs_path, "r", encoding="utf-8") as f:
-                        raw = json.load(f)
-                    msgs = raw.get("messages", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else None)
-                    if not isinstance(msgs, list):
-                        counts["skipped"] += 1
-                    else:
-                        for msg in msgs:
-                            if not isinstance(msg, dict):
-                                counts["skipped"] += 1
-                                continue
-                            try:
-                                conn.execute(
-                                    """
-                                    INSERT OR REPLACE INTO messages (
-                                        id, sender, sender_name, sender_code, text,
-                                        mentions_json, attached_assets_json, extra_json, ts
-                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                    """,
-                                    _serialize_message(msg),
-                                )
-                                counts["messages"] += 1
-                            except Exception:
-                                counts["skipped"] += 1
-                except Exception:
-                    counts["skipped"] += 1
-
-            # 2. chats/<agent>.json
-            chats_dir = os.path.join(state_dir, "chats")
-            if os.path.isdir(chats_dir):
-                for fname in sorted(os.listdir(chats_dir)):
-                    if not fname.endswith(".json"):
-                        continue
-                    agent_id = fname[:-5]
-                    fpath = os.path.join(chats_dir, fname)
-                    if not os.path.isfile(fpath):
-                        continue
-                    try:
-                        with open(fpath, "r", encoding="utf-8") as f:
-                            turns = json.load(f)
-                        if not isinstance(turns, list):
-                            counts["skipped"] += 1
-                            continue
-                        for turn in turns:
-                            if not isinstance(turn, dict):
-                                counts["skipped"] += 1
-                                continue
-                            try:
-                                conn.execute(
-                                    """
-                                    INSERT INTO chat_turns (agent_id, sender, name, text, extra_json, ts)
-                                    VALUES (?, ?, ?, ?, ?, ?)
-                                    """,
-                                    _serialize_turn(agent_id, turn),
-                                )
-                                counts["chat_turns"] += 1
-                            except Exception:
-                                counts["skipped"] += 1
-                    except Exception:
-                        counts["skipped"] += 1
-
-            # 3. assets.json
-            assets_path = os.path.join(state_dir, "assets.json")
-            if os.path.isfile(assets_path):
-                try:
-                    with open(assets_path, "r", encoding="utf-8") as f:
-                        raw = json.load(f)
-                    assets = raw.get("assets", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else None)
-                    if not isinstance(assets, list):
-                        counts["skipped"] += 1
-                    else:
-                        for asset in assets:
-                            if not isinstance(asset, dict) or not asset.get("id"):
-                                counts["skipped"] += 1
-                                continue
-                            conn.execute(
-                                "INSERT OR REPLACE INTO assets (id, data_json, created_at) VALUES (?, ?, ?)",
-                                (
-                                    str(asset["id"]),
-                                    json.dumps(asset),
-                                    asset.get("uploaded_at") or asset.get("created_at"),
-                                ),
-                            )
-                            counts["assets"] += 1
-                except Exception:
-                    counts["skipped"] += 1
-
-            # 4. schedules.json
-            sched_path = os.path.join(state_dir, "schedules.json")
-            if os.path.isfile(sched_path):
-                try:
-                    with open(sched_path, "r", encoding="utf-8") as f:
-                        raw = json.load(f)
-                    scheds = raw.get("schedules", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else None)
-                    if not isinstance(scheds, list):
-                        counts["skipped"] += 1
-                    else:
-                        for idx, sched in enumerate(scheds):
-                            if not isinstance(sched, dict) or not sched.get("id"):
-                                counts["skipped"] += 1
-                                continue
-                            conn.execute(
-                                "INSERT OR REPLACE INTO schedules (id, data_json, position) VALUES (?, ?, ?)",
-                                (str(sched["id"]), json.dumps(sched), idx),
-                            )
-                            counts["schedules"] += 1
-                except Exception:
-                    counts["skipped"] += 1
-
-            # 5. activity.log
-            act_path = os.path.join(state_dir, "activity.log")
-            if os.path.isfile(act_path):
-                try:
-                    with open(act_path, "r", encoding="utf-8", errors="replace") as f:
-                        for raw_line in f:
-                            line = raw_line.strip()
-                            if not line:
-                                continue
-                            parsed = _parse_activity_line(line)
-                            if parsed is None:
-                                counts["skipped"] += 1
-                                continue
-                            conn.execute(
-                                "INSERT INTO activity (ts, actor, target, task, file) VALUES (?, ?, ?, ?, ?)",
-                                parsed,
-                            )
-                            counts["activity"] += 1
-                except Exception:
-                    counts["skipped"] += 1
-
+            counts = _import_state_dir(conn, state_dir, deduplicate=False)
             meta_val = json.dumps(
                 {
                     "migrated_at": datetime.now(timezone.utc).isoformat(),
-                    "counts": {k: v for k, v in counts.items() if k != "already_migrated"},
+                    "counts": counts,
                 }
             )
             conn.execute("INSERT INTO meta (key, value) VALUES ('files_migrated', ?)", (meta_val,))
 
-        return counts
+        return {"already_migrated": False, **counts}
+
+
+def import_legacy_state(src_state_dir):
+    """Import legacy state files from src_state_dir into the current DB with deduplication."""
+    ensure_init()
+    with _state_lock:
+        conn = connect()
+        with conn:
+            return _import_state_dir(conn, os.fspath(src_state_dir), deduplicate=True)
 
 
 def load_messages(limit=80):

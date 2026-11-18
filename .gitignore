@@ -12,6 +12,10 @@
 __pycache__/
 *.pyc
 .venv/
+.venv-build/
+
+# Tauri packaged sidecar binaries
+apps/desktop/src-tauri/binaries/
 
 # Node dependencies
 node_modules/

@@ -331,15 +331,26 @@ Pitch's style is "white, quiet, premium". The Studio's UI (Phase 3) adopts it:
 
 ## 4. The AI team (7 agents, private to each user)
 
-| Agent | Job | Default engine |
-|-------|-----|----------------|
-| CMO | Weekly plan, splits big requests into tasks, coordinates | NIM `deepseek-v4.1-flash` |
-| Researcher | Web search and browsing (optionally logged-in research), repo facts, watch topics | NIM `glm-5.3-flash` (optionally your coding agent for deep repo reading) |
-| Writer | Posts, threads, captions, scripts, blogs | NIM `deepseek-v4.1-flash` or `glm-5.3-flash` (decided by bake-off) |
-| Designer | Cards, AI images, image edits | NIM `flux.2-klein-4b` / `flux.1-kontext-dev` + a vision model |
-| Video Producer | Scripts to finished videos | NIM + Kokoro/Magpie + local render (optionally your coding agent for building compositions) |
-| Reviewer | Product rules, facts, platform checks. Warns only. | NIM `nemotron-3.5-super-vl` |
-| Analyst | Asks for results, reads screenshots, summarises | NIM `nemotron-3.5-super-vl` + a fast model |
+Models were chosen from **live tests on 2026-11-19** against the free NIM catalog (32 models). The source of truth is `config/models.json`.
+
+| Agent | Job | Primary model (backup) | Why |
+|-------|-----|------------------------|-----|
+| CMO | Weekly plan, splits big requests into tasks, coordinates | `nvidia/nemotron-3-ultra-550b-a55b` (`mistralai/mistral-large-4-1t-a52b`) | Fast (4–5 s), reliable tool calls. It invents details when given no facts, so its prompts always include the product facts. |
+| Researcher | Web search and browsing, repo facts, watch topics | `mistralai/mistral-large-4-1t-a52b` (`nemotron-3-ultra`) | Strong reasoning and tool use. Slow (90–130 s), which is fine for background research. |
+| Writer | Posts, threads, captions, scripts, blogs | `minimaxai/minimax-m3.1-flash` (`nemotron-3-ultra`) | Best tone in both writing tests, stayed honest with and without facts, ~25 s |
+| Designer | Cards, AI images, image edits | images: `black-forest-labs/flux.2-klein-4b` (2.3 s, clean line art); critique: `nemotron-3.5-super-vl` | FLUX.1-dev returned a blank image. The Kontext edit model isn't tested yet. |
+| Video Producer | Scripts to finished videos | Writer model + Kokoro/Magpie + local render | |
+| Reviewer | Product rules, facts, platform checks. Warns only. | `nvidia/nemotron-3.5-super-vl-120b-a12b` (`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`) | Reads images correctly in 3–5 s, and is a different model family from the Writer |
+| Analyst | Reads result screenshots, summarises | `nemotron-3.5-super-vl` (`nemotron-3-nano-omni`) | Needs vision |
+| (fast tasks) | Sentiment, tagging, routing | `nvidia/nemotron-3.5-lightning-30b-a3b` (`nvidia/nemotron-3.5-bolt-e4b`) | 1–7 s. Needs strict output formats. |
+
+**Not used, and why:**
+- `deepseek-v4.1-flash` and `gpt-oss-20b` are end-of-life on NIM (HTTP 410).
+- Kimi K3.1 Pro (top open model on Artificial Analysis), GLM-5.3 Flash and Muse Glimmer timed out on the free tier.
+- Step-5 took 230 s.
+- Gemma 4 31B is good but slow on the free tier today (55–95 s).
+
+Re-run the bake-off when NIM's catalog changes. **Heavier work** (long blogs, video compositions, deep repo reading) can use your own connected agents through agy, e.g. Gemini 4 Hydrogen or Claude Opus 5.5 (Phase 7).
 
 The engine can be changed per agent: NIM / Ollama / your Claude Code / Codex / Antigravity / Gemini CLI.
 

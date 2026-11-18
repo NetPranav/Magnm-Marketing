@@ -10,8 +10,9 @@ import json
 import os
 import sys
 import time
-import urllib.request
 import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone, timedelta
 
 _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -165,6 +166,8 @@ def score_item(item):
     }
 
 def run_scan():
+    out_dir = paths.data("outputs", "research")
+    os.makedirs(out_dir, exist_ok=True)
     today = datetime.now(timezone.utc).strftime("%Y%m%d")
     print(f"[{datetime.now(timezone.utc).isoformat()}] Starting market & developer intelligence scan...")
 
@@ -193,12 +196,12 @@ def run_scan():
     # Sort by score descending
     scored_items.sort(key=lambda x: x["scoring"]["score"], reverse=True)
 
-    json_path = os.path.join(OUTPUT_DIR, f"{today}-findings.json")
+    json_path = os.path.join(out_dir, f"{today}-findings.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(scored_items, f, indent=2)
 
     # Generate human-readable Markdown summary
-    md_path = os.path.join(OUTPUT_DIR, f"{today}-summary.md")
+    md_path = os.path.join(out_dir, f"{today}-summary.md")
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(f"# Market Intelligence & Opportunity Scan ({today})\n\n")
         f.write(f"Scanned sources: Hacker News, Reddit (r/commandline, r/rust, r/LocalLLaMA).\n")

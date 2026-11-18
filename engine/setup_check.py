@@ -125,6 +125,19 @@ def _check_node():
     )
 
 
+def _check_git():
+    found = shutil.which("git")
+    if found:
+        return _make_check("git", "Git", "ok", found)
+    return _make_check(
+        "git",
+        "Git",
+        "missing",
+        "git not found on PATH (needed for repo sync)",
+        "Install Git from git-scm.com",
+    )
+
+
 def _ollama_model_matches(installed_names, wanted):
     if not wanted:
         return bool(installed_names)
@@ -304,6 +317,7 @@ def run_setup_checks(timeout_s=CHECK_TIMEOUT_S):
         ("ffmpeg", "FFmpeg", _check_ffmpeg),
         ("browser", "Chromium / Playwright", _check_browser),
         ("node", "Node.js", _check_node),
+        ("git", "Git", _check_git),
         ("ollama", "Ollama Local AI", _check_ollama),
         ("nvidia_key", "NVIDIA NIM API Key", _check_nvidia_key),
     ]
