@@ -17,6 +17,8 @@ if _ENGINE_DIR not in sys.path:
 import ai_gateway
 import db
 import events
+import paths
+import product_rules
 import tools as tools_pkg
 from tools import ToolContext
 
@@ -124,6 +126,17 @@ class AgentRuntime:
             messages.append({"role": "system", "content": str(system_prompt)})
         messages.append({"role": "user", "content": _build_user_content(user_message, attachments)})
 
+        is_conf = bool(confidential)
+        if not is_conf and user_message:
+            try:
+                rules_path = paths.data("config", "product_rules.json")
+                if not os.path.exists(rules_path):
+                    rules_path = paths.resource("config", "product_rules.json")
+                if os.path.exists(rules_path) and product_rules.mentions_confidential(str(user_message), path=rules_path):
+                    is_conf = True
+            except Exception:
+                pass
+
         now = _now_iso()
         session = db.create_agent_session(
             {
@@ -138,7 +151,7 @@ class AgentRuntime:
                 "result_text": None,
                 "error": None,
                 "allowed_tools": list(allowed_tools or []),
-                "confidential": bool(confidential),
+                "confidential": is_conf,
                 "steps": 0,
                 "created_at": now,
                 "updated_at": now,
@@ -340,6 +353,10 @@ class AgentRuntime:
             if steps >= self.max_steps:
                 return self._mark_failed(session_id, agent_id, "too many steps")
 
+            fresh_sess = db.get_agent_session(session_id)
+            if fresh_sess is not None:
+                confidential = bool(fresh_sess.get("confidential"))
+
             tool_schemas = tools_pkg.schemas_for(allowed_tools)
             try:
                 resp = ai_gateway.chat_with_tools(
@@ -383,6 +400,10 @@ class AgentRuntime:
                 }
                 messages.append(assistant_msg)
 
+                def _mark_confidential():
+                    db.update_agent_session(session_id, confidential=True, updated_at=_now_iso())
+                    ctx.confidential = True
+
                 ctx = ToolContext(
                     session_id=session_id,
                     agent_id=agent_id,
@@ -390,6 +411,7 @@ class AgentRuntime:
                     depth=depth,
                     confidential=confidential,
                     publish=events.publish,
+                    mark_confidential=_mark_confidential,
                 )
 
                 executed_names = []

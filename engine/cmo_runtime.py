@@ -37,6 +37,7 @@ ALLOWED_JOBS = {
     "daily_cycle": "Daily CMO Cycle (Digest, Board & Plan Check)",
     "market_scan": "Live Developer & Market Opportunity Scanner",
     "repo_sync": "Codebase & GitHub Intelligence Sync",
+    "repo_sync_all": "Sync All Configured Repositories",
     "generate_blog": "Generate Technical Blog & Repurposed Assets",
     "render_cards": "Render Visual Social Cards",
     "workflow_step": "Execute Workflow Step",
@@ -108,7 +109,7 @@ def run_job_body(job_name, job_id=None, actor="UI", log_file=None, params=None):
         _checkpoint(15, "Running market research scan...")
         output += "=== RUNNING MARKET RESEARCH SCAN ===\n"
         output += run_research() + "\n"
-    elif job_name == "repo_sync":
+    elif job_name in ("repo_sync", "repo_sync_all"):
         _checkpoint(20, "Running codebase and GitHub sync...")
         output += "=== RUNNING CODEBASE & GITHUB SYNC ===\n"
         output += run_repo_sync() + "\n"

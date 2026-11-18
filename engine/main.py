@@ -118,6 +118,9 @@ def main(argv=None):
     import jobs
     jobs.start_worker()
 
+    import scheduler_loop
+    scheduler_loop.start()
+
     import server
 
     httpd = ThreadingHTTPServer((args.host, args.port), server.CommandCenterHandler)
@@ -136,6 +139,10 @@ def main(argv=None):
         threading.Thread(target=httpd.shutdown, daemon=True).start()
         if reason:
             _safe_log(f"[magnm-engine] Shutting down: {reason}")
+        try:
+            scheduler_loop.stop(timeout=1.0)
+        except Exception:
+            pass
         try:
             jobs.stop_worker(timeout=1.0)
         except Exception:

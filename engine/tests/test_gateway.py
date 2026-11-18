@@ -614,14 +614,15 @@ class GatewayTests(unittest.TestCase):
         with patch.dict(os.environ, {"NVIDIA_NIM_API_KEY": "nvapi-test"}), patch.object(
             model_registry, "get_catalog", return_value=None
         ), patch.object(ai_gateway, "_http_post_json", side_effect=fake_post):
-            # Default role tier for writer is "writing" (150s, 6000)
+            # Default role tier for writer is "writing" (values read from config/models.json)
+            writing = model_registry.load_models_config()["tiers"]["writing"]
             ai_gateway.generate_completion_with_meta(
                 system_prompt="sys",
                 user_prompt="hi",
                 agent_role="writer",
             )
-            self.assertEqual(seen[-1]["timeout"], 150)
-            self.assertEqual(seen[-1]["payload"]["max_tokens"], 6000)
+            self.assertEqual(seen[-1]["timeout"], writing["timeout_s"])
+            self.assertEqual(seen[-1]["payload"]["max_tokens"], writing["max_tokens"])
 
             # Explicit tier="longform" overrides timeout/max_tokens and uses longform primary
             ai_gateway.generate_completion_with_meta(

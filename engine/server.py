@@ -40,6 +40,7 @@ import key_pool
 import paths
 import product_rules
 import repo_sync
+import repos
 import scheduler
 import setup_check
 import team_room
@@ -517,6 +518,40 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                     return
             self.send_error(404, "Asset file not found")
 
+        elif url.path == "/api/repos":
+            repo_list = repos.list_repos()
+            enriched = []
+            for r in repo_list:
+                snap = db.get_latest_repo_snapshot(r["id"])
+                sdata = (snap.get("data") if snap else None) or {}
+                enriched.append({
+                    **r,
+                    "last_sync": snap.get("fetched_at") if snap else None,
+                    "version": sdata.get("version") or r.get("version"),
+                    "branch": sdata.get("branch") or r.get("branch"),
+                    "stars": sdata.get("stars"),
+                    "recent_commits": sdata.get("recent_commits") or [],
+                    "rate_limited": bool(sdata.get("rate_limited")),
+                    "rate_limit_message": sdata.get("rate_limit_message"),
+                })
+            self.send_json(enriched)
+
+        elif url.path == "/api/shipped":
+            qs = urllib.parse.parse_qs(url.query)
+            repo_filter = qs.get("repo_id", [None])[0] or None
+            try:
+                days = int(qs.get("days", ["7"])[0])
+            except (TypeError, ValueError):
+                days = 7
+            days = max(1, min(days, 365))
+            self.send_json(repos.shipped(repo_id=repo_filter, days=days))
+
+        elif url.path == "/api/facts":
+            qs = urllib.parse.parse_qs(url.query)
+            product_filter = qs.get("product_id", [None])[0] or None
+            status_filter = qs.get("status", [None])[0] or None
+            self.send_json(db.list_product_facts(product_id=product_filter, status=status_filter))
+
         elif url.path.startswith("/api/asset/"):
             parts = url.path.split("/")[3:]
             if len(parts) >= 2:
@@ -530,6 +565,21 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                         return
             self.send_error(404, "Asset not found")
 
+        else:
+            self.send_error(404, "Not Found")
+
+    def do_DELETE(self):
+        url = urllib.parse.urlparse(self.path)
+        if not self._is_authorized():
+            self.send_json({"error": "unauthorized"}, status=401)
+            return
+
+        if re.match(r"^/api/repos/[^/]+$", url.path):
+            repo_id = urllib.parse.unquote(url.path.split("/")[3])
+            if not repos.remove_repo(repo_id):
+                self.send_json({"error": "Repository not found"}, status=404)
+                return
+            self.send_json({"success": True, "id": repo_id})
         else:
             self.send_error(404, "Not Found")
 
@@ -606,6 +656,61 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 return
             res = assets_manager.delete_asset(asset_id)
             self.send_json({"success": res})
+
+        elif url.path == "/api/repos":
+            try:
+                created = repos.add_repo(params)
+                self.send_json({"success": True, "repo": created})
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=400)
+            except Exception as exc:
+                self.send_json({"error": str(exc)}, status=500)
+
+        elif re.match(r"^/api/repos/[^/]+/sync$", url.path):
+            repo_id = urllib.parse.unquote(url.path.split("/")[3])
+            try:
+                snap = repos.sync_repo(repo_id)
+                self.send_json({"success": bool(snap.get("synced", True)), "repo": snap})
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=404)
+            except Exception as exc:
+                self.send_json({"error": str(exc)}, status=500)
+
+        elif re.match(r"^/api/repos/[^/]+/remove$", url.path):
+            repo_id = urllib.parse.unquote(url.path.split("/")[3])
+            if not repos.remove_repo(repo_id):
+                self.send_json({"error": "Repository not found"}, status=404)
+                return
+            self.send_json({"success": True, "id": repo_id})
+
+        elif url.path == "/api/facts":
+            try:
+                fact = db.create_product_fact(
+                    product_id=params.get("product_id"),
+                    text=params.get("text"),
+                    source_url=params.get("source_url"),
+                    source_kind=params.get("source_kind") or "manual",
+                    status="approved",
+                    created_by=params.get("created_by") or "CEO",
+                    decided_at=datetime.now(timezone.utc).isoformat(),
+                )
+                self.send_json({**fact, "success": True})
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=400)
+
+        elif re.match(r"^/api/facts/[^/]+/decide$", url.path):
+            fact_id = urllib.parse.unquote(url.path.split("/")[3])
+            try:
+                updated = db.decide_product_fact(
+                    fact_id,
+                    params.get("status"),
+                    text=params.get("text"),
+                )
+                self.send_json({**updated, "success": True})
+            except ValueError as exc:
+                msg = str(exc)
+                status = 404 if "not found" in msg.lower() else 400
+                self.send_json({"error": msg}, status=status)
 
         elif url.path == "/api/repos/add":
             remote_url = params.get("remote_url", "").strip()
@@ -1841,13 +1946,31 @@ Hard Rules:
 
         <div class="panel">
           <div class="panel-header">
-            <span class="panel-title"><svg class="icon"><use href="#icon-git"/></svg> Monitored Codebases &amp; GitHub Intelligence</span>
+            <span class="panel-title"><svg class="icon"><use href="#icon-git"/></svg> Monitored Codebases</span>
             <div style="display:flex; gap:10px;">
-              <button class="btn btn-sm" onclick="runJob('repo_sync')"><svg class="icon"><use href="#icon-refresh"/></svg> Sync Now</button>
-              <button class="btn btn-lime btn-sm" onclick="openAddRepoModal()"><svg class="icon"><use href="#icon-plus"/></svg> Add GitHub Repo</button>
+              <button class="btn btn-sm" onclick="runJob('repo_sync')"><svg class="icon"><use href="#icon-refresh"/></svg> Sync All</button>
+              <button class="btn btn-lime btn-sm" onclick="openAddRepoModal()"><svg class="icon"><use href="#icon-plus"/></svg> Add Repo</button>
             </div>
           </div>
           <div class="grid-2" id="repoContainer"></div>
+          <div style="border-top:1px solid var(--border); padding-top:12px;">
+            <div class="field-label">Shipped This Week (Last 7 Days)</div>
+            <div id="shippedListContainer" style="display:flex; flex-direction:column; gap:6px; font-size:12px;"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title"><svg class="icon"><use href="#icon-check-circle"/></svg> Product Facts</span>
+            <button class="btn btn-sm" onclick="loadFactsPanel()"><svg class="icon"><use href="#icon-refresh"/></svg> Refresh</button>
+          </div>
+          <div id="pendingFactsContainer" style="display:flex; flex-direction:column; gap:10px;"></div>
+          <div style="border-top:1px solid var(--border); padding-top:12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <input type="text" id="manualFactProductId" placeholder="product_id (e.g. cero)" style="width:150px;">
+            <input type="text" id="manualFactText" placeholder="Add verified product fact..." style="flex:1; min-width:220px;">
+            <input type="text" id="manualFactUrl" placeholder="source URL (optional)" style="width:200px;">
+            <button class="btn btn-lime btn-sm" onclick="addManualFact()">Add Fact</button>
+          </div>
         </div>
       </div>
 
@@ -2333,33 +2456,52 @@ FIRST.</textarea>
   <!-- Add Repo Modal -->
   <div id="addRepoModal" class="modal-backdrop">
     <div class="modal-card">
-      <h3 style="font-size:15px;">Monitor GitHub or Local Repository</h3>
-      <div>
-        <label class="field-label">GitHub Remote URL</label>
-        <input type="text" id="newRepoUrl" placeholder="https://github.com/owner/repo">
+      <h3 style="font-size:15px;">Add Repository</h3>
+      <div class="grid-2" style="gap:10px;">
+        <div>
+          <label class="field-label">Kind</label>
+          <select id="newRepoKind" onchange="toggleAddRepoKind()">
+            <option value="local">Local Git Clone</option>
+            <option value="github">GitHub (owner/repo)</option>
+          </select>
+        </div>
+        <div>
+          <label class="field-label">Project Name</label>
+          <input type="text" id="newRepoName" placeholder="e.g. Cero Terminal">
+        </div>
       </div>
-      <div>
-        <label class="field-label">Project Name</label>
-        <input type="text" id="newRepoName" placeholder="e.g. Cero Terminal">
+      <div id="newRepoLocalGroup">
+        <label class="field-label">Local Folder Path</label>
+        <input type="text" id="newRepoLocalPath" placeholder="/home/user/projects/repo">
       </div>
-      <div>
-        <label class="field-label">Optional Local Path</label>
-        <input type="text" id="newRepoLocalPath" placeholder="/home/user/projects/repo (optional)">
+      <div id="newRepoGithubGroup" style="display:none;">
+        <label class="field-label">GitHub Repo (owner/repo or URL)</label>
+        <input type="text" id="newRepoUrl" placeholder="owner/repo or https://github.com/owner/repo">
       </div>
-      <div>
-        <label class="field-label">Lifecycle Status</label>
-        <select id="newRepoStatus">
-          <option value="in_development">In Development (Build-in-public / Internal R&amp;D)</option>
-          <option value="released">Released (Promote verified features)</option>
-        </select>
+      <div class="grid-2" style="gap:10px;">
+        <div>
+          <label class="field-label">Product ID</label>
+          <input type="text" id="newRepoProductId" placeholder="optional (defaults from name)">
+        </div>
+        <div>
+          <label class="field-label">Lifecycle Status</label>
+          <select id="newRepoStatus">
+            <option value="in_development">In Development</option>
+            <option value="released">Released</option>
+          </select>
+        </div>
       </div>
+      <label style="display:flex; align-items:center; gap:8px; font-size:12px;">
+        <input type="checkbox" id="newRepoConfidential" style="width:auto;"> Confidential (local Ollama only, never cloud)
+      </label>
       <div>
         <label class="field-label">Marketing Angle &amp; Rules</label>
-        <textarea id="newRepoAngle" rows="2" placeholder="e.g. Safe AI terminal that asks before executing"></textarea>
+        <textarea id="newRepoAngle" rows="2" placeholder="Optional positioning notes"></textarea>
       </div>
+      <div class="panel-meta" id="addRepoError" style="color:var(--danger);"></div>
       <div style="display:flex; justify-content:flex-end; gap:10px;">
         <button class="btn" onclick="closeAddRepoModal()">Cancel</button>
-        <button class="btn btn-lime" onclick="submitAddRepo()"><svg class="icon"><use href="#icon-check"/></svg> Save &amp; Sync</button>
+        <button class="btn btn-lime" onclick="submitAddRepo()"><svg class="icon"><use href="#icon-check"/></svg> Add Repo</button>
       </div>
     </div>
   </div>
@@ -2403,6 +2545,7 @@ FIRST.</textarea>
       document.getElementById('headerPageTitle').innerText = title;
 
       if (tabId === 'tab-assets' || tabId === 'tab-campaigns' || tabId === 'tab-room') loadAssets();
+      if (tabId === 'tab-research') { loadReposAndShipped(); loadFactsPanel(); }
       if (tabId === 'tab-campaigns') loadWorkflows();
       if (tabId === 'tab-room') loadGlobalMessages();
       if (tabId === 'tab-team') loadRoster();
@@ -2515,28 +2658,10 @@ FIRST.</textarea>
         `;
       });
 
-      // Repos
-      const repoDiv = document.getElementById('repoContainer');
-      repoDiv.innerHTML = '';
+      // Repos count KPI (detailed cards rendered by loadReposAndShipped)
       const reposList = (data.repos && data.repos.repositories) || [];
       document.getElementById('kpiRepos').innerText = reposList.length;
-      reposList.forEach(r => {
-        const badgeClass = r.status === 'released' ? 'badge-approved' : 'badge-warn';
-        const commitsHtml = (r.recent_commits || []).slice(0, 4).map(c =>
-          `<div style="margin-bottom:4px;"><b>${escapeHtml(c.hash)}</b> (${escapeHtml(c.date)}) - ${escapeHtml(c.message)}</div>`
-        ).join('');
-        repoDiv.innerHTML += `
-          <div class="repo-card">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <b style="font-size:15px;">${escapeHtml(r.name)}</b>
-              <span class="badge ${badgeClass}">${escapeHtml(r.status)} (v${escapeHtml(r.version)})</span>
-            </div>
-            <div class="panel-meta">Branch: <b>${escapeHtml(r.branch || 'main')}</b> | <a href="${escapeHtml(r.remote_url)}" target="_blank" style="color:var(--sky); text-decoration:none;">GitHub Remote</a></div>
-            <div style="font-size:12px; color:#B6BCC8;"><b>Directive:</b> ${escapeHtml(r.marketing_angle || 'General')}</div>
-            <div class="commit-box">${commitsHtml || 'No recent commits synced'}</div>
-          </div>
-        `;
-      });
+      loadReposAndShipped();
 
       // Editorial Plan
       const edBody = document.getElementById('editorialTableBody');
@@ -3281,23 +3406,173 @@ FIRST.</textarea>
       }
     }
 
-    function openAddRepoModal() { document.getElementById('addRepoModal').style.display = 'flex'; }
+    function toggleAddRepoKind() {
+      const kind = document.getElementById('newRepoKind').value;
+      document.getElementById('newRepoLocalGroup').style.display = kind === 'local' ? 'block' : 'none';
+      document.getElementById('newRepoGithubGroup').style.display = kind === 'github' ? 'block' : 'none';
+    }
+    function openAddRepoModal() {
+      document.getElementById('addRepoError').innerText = '';
+      toggleAddRepoKind();
+      document.getElementById('addRepoModal').style.display = 'flex';
+    }
     function closeAddRepoModal() { document.getElementById('addRepoModal').style.display = 'none'; }
 
     async function submitAddRepo() {
-      const remote_url = document.getElementById('newRepoUrl').value.trim();
+      const kind = document.getElementById('newRepoKind').value;
       const name = document.getElementById('newRepoName').value.trim();
       const local_path = document.getElementById('newRepoLocalPath').value.trim();
+      const github = document.getElementById('newRepoUrl').value.trim();
+      const product_id = document.getElementById('newRepoProductId').value.trim();
       const status = document.getElementById('newRepoStatus').value;
+      const confidential = document.getElementById('newRepoConfidential').checked;
       const marketing_angle = document.getElementById('newRepoAngle').value.trim();
-      if (!remote_url || !name) { alert('URL and Name are required.'); return; }
-      await fetch('/api/repos/add', {
+      const errEl = document.getElementById('addRepoError');
+      errEl.innerText = '';
+      const payload = { kind, name, status, confidential, marketing_angle };
+      if (product_id) payload.product_id = product_id;
+      if (kind === 'local') payload.local_path = local_path;
+      else payload.github = github;
+
+      const res = await fetch('/api/repos', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ remote_url, name, local_path, status, marketing_angle })
+        body: JSON.stringify(payload)
       });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        errEl.innerText = data.error || 'Failed to add repository.';
+        return;
+      }
       closeAddRepoModal();
-      fetchStatus();
+      loadReposAndShipped();
+    }
+
+    async function syncSingleRepo(repoId) {
+      await fetch(`/api/repos/${encodeURIComponent(repoId)}/sync`, { method: 'POST' });
+      loadReposAndShipped();
+    }
+
+    async function removeSingleRepo(repoId) {
+      if (!confirm(`Remove repository "${repoId}"?`)) return;
+      await fetch(`/api/repos/${encodeURIComponent(repoId)}`, { method: 'DELETE' });
+      loadReposAndShipped();
+    }
+
+    async function loadReposAndShipped() {
+      try {
+        const [reposRes, shippedRes] = await Promise.all([
+          fetch('/api/repos'),
+          fetch('/api/shipped?days=7')
+        ]);
+        const reposList = await reposRes.json();
+        const shippedList = await shippedRes.json();
+        const repoDiv = document.getElementById('repoContainer');
+        if (repoDiv && Array.isArray(reposList)) {
+          document.getElementById('kpiRepos').innerText = reposList.length;
+          repoDiv.innerHTML = reposList.map(r => {
+            const statusCls = r.status === 'released' ? 'badge-approved' : 'badge-warn';
+            const confBadge = r.confidential ? '<span class="badge badge-danger">confidential</span>' : '';
+            const kindBadge = `<span class="badge badge-info">${escapeHtml(r.kind || 'local')}</span>`;
+            const targetText = r.kind === 'github' ? (r.github || '') : (r.local_path || '');
+            const syncText = r.last_sync ? `Last sync: ${escapeHtml(r.last_sync)}` : 'Never synced';
+            const rlWarn = r.rate_limited ? `<div class="panel-meta" style="color:var(--amber);">${escapeHtml(r.rate_limit_message || 'Rate limited')}</div>` : '';
+            const commitsHtml = (r.recent_commits || []).slice(0, 3).map(c =>
+              `<div style="margin-bottom:4px;"><b>${escapeHtml(c.hash)}</b> (${escapeHtml((c.date || '').slice(0, 10))}) - ${escapeHtml(c.message)}</div>`
+            ).join('');
+            return `
+              <div class="repo-card">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+                  <b style="font-size:15px;">${escapeHtml(r.name)}</b>
+                  <div style="display:flex; gap:6px; align-items:center;">
+                    ${kindBadge}
+                    ${confBadge}
+                    <span class="badge ${statusCls}">${escapeHtml(r.status || '')}${r.version ? ' (v' + escapeHtml(r.version) + ')' : ''}</span>
+                  </div>
+                </div>
+                <div class="panel-meta">${escapeHtml(targetText)} | ${syncText}</div>
+                ${rlWarn}
+                <div class="commit-box">${commitsHtml || 'No recent commits synced'}</div>
+                <div style="display:flex; gap:8px; justify-content:flex-end;">
+                  <button class="btn btn-sm" onclick="syncSingleRepo('${escapeHtml(r.id)}')">Sync</button>
+                  <button class="btn btn-sm" onclick="removeSingleRepo('${escapeHtml(r.id)}')">Remove</button>
+                </div>
+              </div>
+            `;
+          }).join('');
+        }
+
+        const shipDiv = document.getElementById('shippedListContainer');
+        if (shipDiv && Array.isArray(shippedList)) {
+          if (shippedList.length === 0) {
+            shipDiv.innerHTML = '<div class="panel-meta">Nothing shipped in the last 7 days.</div>';
+          } else {
+            shipDiv.innerHTML = shippedList.slice(0, 20).map(it => {
+              const titleHtml = it.url
+                ? `<a href="${escapeHtml(it.url)}" target="_blank" style="color:var(--sky); text-decoration:none;">${escapeHtml(it.title)}</a>`
+                : escapeHtml(it.title);
+              return `<div><span class="badge badge-draft">${escapeHtml(it.repo_id)} / ${escapeHtml(it.kind)}</span> ${titleHtml} <span class="panel-meta">${escapeHtml((it.date || '').slice(0, 10))}</span></div>`;
+            }).join('');
+          }
+        }
+      } catch (e) {}
+    }
+
+    async function loadFactsPanel() {
+      const container = document.getElementById('pendingFactsContainer');
+      if (!container) return;
+      try {
+        const res = await fetch('/api/facts?status=pending');
+        const facts = await res.json();
+        if (!Array.isArray(facts) || facts.length === 0) {
+          container.innerHTML = '<div class="panel-meta">No pending product facts awaiting approval.</div>';
+          return;
+        }
+        container.innerHTML = facts.map(f => {
+          const srcHtml = f.source_url
+            ? `<a href="${escapeHtml(f.source_url)}" target="_blank" style="color:var(--sky); text-decoration:none;">${escapeHtml(f.source_kind)}</a>`
+            : escapeHtml(f.source_kind);
+          return `
+            <div style="padding:10px; background:var(--bg-elevated); border:1px solid var(--border-strong); border-radius:6px; display:flex; flex-direction:column; gap:8px;">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span class="badge badge-warn">${escapeHtml(f.product_id)} | ${srcHtml}</span>
+                <span class="panel-meta">${escapeHtml(f.created_by || '')}</span>
+              </div>
+              <input type="text" id="factText_${escapeHtml(f.id)}" value="${escapeHtml(f.text)}">
+              <div style="display:flex; gap:8px; justify-content:flex-end;">
+                <button class="btn btn-lime btn-sm" onclick="decideFact('${escapeHtml(f.id)}', 'approved')">Approve</button>
+                <button class="btn btn-sm" onclick="decideFact('${escapeHtml(f.id)}', 'rejected')">Reject</button>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } catch (e) {}
+    }
+
+    async function decideFact(factId, status) {
+      const input = document.getElementById(`factText_${factId}`);
+      const text = input ? input.value.trim() : undefined;
+      await fetch(`/api/facts/${encodeURIComponent(factId)}/decide`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ status, text })
+      });
+      loadFactsPanel();
+    }
+
+    async function addManualFact() {
+      const product_id = document.getElementById('manualFactProductId').value.trim();
+      const text = document.getElementById('manualFactText').value.trim();
+      const source_url = document.getElementById('manualFactUrl').value.trim();
+      if (!product_id || !text) { alert('product_id and fact text are required.'); return; }
+      await fetch('/api/facts', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ product_id, text, source_url: source_url || null, source_kind: 'manual' })
+      });
+      document.getElementById('manualFactText').value = '';
+      document.getElementById('manualFactUrl').value = '';
+      loadFactsPanel();
     }
 
     async function runJob(job) {
@@ -3480,6 +3755,8 @@ FIRST.</textarea>
 
     initEventStream();
     fetchStatus();
+    loadReposAndShipped();
+    loadFactsPanel();
     loadRoster();
     loadAssets();
     loadGlobalMessages();

@@ -33,6 +33,7 @@ class ToolContext:
     depth: int = 0
     confidential: bool = False
     publish: Callable[[str, Any], None] = field(default=events.publish)
+    mark_confidential: Callable[[], None] = field(default=lambda: None)
 
 
 @dataclass

@@ -16,6 +16,8 @@
         "read_product_facts",
         "list_repos",
         "read_repo_changes",
+        "shipped_this_week",
+        "list_repo_media",
         "search_research",
         "list_content",
         "read_content",
@@ -42,6 +44,11 @@
         "read_product_facts",
         "list_repos",
         "read_repo_changes",
+        "read_repo_file",
+        "list_repo_media",
+        "shipped_this_week",
+        "draft_repo_facts",
+        "propose_fact",
         "search_research",
         "save_research_note",
         "ask_user"
@@ -64,6 +71,7 @@
       "tools": [
         "read_product_facts",
         "read_repo_changes",
+        "shipped_this_week",
         "search_research",
         "write_draft",
         "read_content",
@@ -84,6 +92,7 @@
       "skills": [],
       "tools": [
         "read_product_facts",
+        "list_repo_media",
         "read_content",
         "render_card",
         "generate_image",
@@ -103,6 +112,7 @@
       "tools": [
         "read_product_facts",
         "read_repo_changes",
+        "list_repo_media",
         "write_draft",
         "read_content",
         "check_text",

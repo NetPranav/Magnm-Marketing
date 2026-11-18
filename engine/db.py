@@ -21,7 +21,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -385,12 +385,47 @@ def _apply_migration_v5(conn):
     )
 
 
+def _apply_migration_v6(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS repo_snapshots (
+            id TEXT PRIMARY KEY,
+            repo_id TEXT NOT NULL,
+            fetched_at TEXT NOT NULL,
+            data_json TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_repo_snapshots_repo_fetched
+            ON repo_snapshots(repo_id, fetched_at);
+
+        CREATE TABLE IF NOT EXISTS product_facts (
+            id TEXT PRIMARY KEY,
+            product_id TEXT NOT NULL,
+            text TEXT NOT NULL,
+            source_url TEXT,
+            source_kind TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_by TEXT,
+            created_at TEXT NOT NULL,
+            decided_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_product_facts_product_status
+            ON product_facts(product_id, status);
+
+        CREATE INDEX IF NOT EXISTS idx_product_facts_status_created
+            ON product_facts(status, created_at);
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
     (3, _apply_migration_v3),
     (4, _apply_migration_v4),
     (5, _apply_migration_v5),
+    (6, _apply_migration_v6),
 )
 
 
@@ -2294,3 +2329,208 @@ def cancel_workflow_jobs(run_id, finished_at):
             p = {}
         if p.get("run_id") == str(run_id):
             cancel_job_record(r["id"], finished_at)
+
+
+def has_active_job(job_name):
+    """Return True if a job with job_name is currently queued or running."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT 1 FROM jobs WHERE name = ? AND status IN ('queued', 'running') LIMIT 1",
+        (str(job_name),),
+    ).fetchone()
+    return row is not None
+
+
+def count_session_tool_calls(session_id, tool_name):
+    """Count logged tool calls for a given session_id and tool name."""
+    if not session_id:
+        return 0
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM tool_calls WHERE session_id = ? AND tool = ? AND ok = 1",
+        (str(session_id), str(tool_name)),
+    ).fetchone()
+    return int(row["cnt"]) if row else 0
+
+
+def save_repo_snapshot(repo_id, fetched_at, data, keep=10):
+    """Persist a repo snapshot and keep only the latest `keep` snapshots per repo_id."""
+    ensure_init()
+    conn = connect()
+    snap_id = f"snap_{uuid.uuid4().hex[:12]}"
+    payload = json.dumps(data, ensure_ascii=False)
+    with conn:
+        conn.execute(
+            "INSERT INTO repo_snapshots (id, repo_id, fetched_at, data_json) VALUES (?, ?, ?, ?)",
+            (snap_id, str(repo_id), str(fetched_at), payload),
+        )
+        rows = conn.execute(
+            "SELECT id FROM repo_snapshots WHERE repo_id = ? ORDER BY fetched_at DESC, rowid DESC",
+            (str(repo_id),),
+        ).fetchall()
+        if len(rows) > int(keep):
+            to_delete = [(r["id"],) for r in rows[int(keep):]]
+            conn.executemany("DELETE FROM repo_snapshots WHERE id = ?", to_delete)
+    return {"id": snap_id, "repo_id": str(repo_id), "fetched_at": str(fetched_at), "data": data}
+
+
+def get_latest_repo_snapshot(repo_id):
+    """Return the most recent snapshot dict {id, repo_id, fetched_at, data} for repo_id, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT id, repo_id, fetched_at, data_json FROM repo_snapshots WHERE repo_id = ? ORDER BY fetched_at DESC, rowid DESC LIMIT 1",
+        (str(repo_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "repo_id": row["repo_id"],
+        "fetched_at": row["fetched_at"],
+        "data": json.loads(row["data_json"]),
+    }
+
+
+def list_repo_snapshots(repo_id, limit=10):
+    """Return recent snapshots for repo_id ordered newest-first."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT id, repo_id, fetched_at, data_json FROM repo_snapshots WHERE repo_id = ? ORDER BY fetched_at DESC, rowid DESC LIMIT ?",
+        (str(repo_id), int(limit)),
+    ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "repo_id": r["repo_id"],
+            "fetched_at": r["fetched_at"],
+            "data": json.loads(r["data_json"]),
+        }
+        for r in rows
+    ]
+
+
+_VALID_FACT_SOURCE_KINDS = ("readme", "release", "pr", "commit", "manual")
+_VALID_FACT_STATUSES = ("pending", "approved", "rejected")
+
+
+def _deserialize_product_fact(row):
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "product_id": row["product_id"],
+        "text": row["text"],
+        "source_url": row["source_url"],
+        "source_kind": row["source_kind"],
+        "status": row["status"],
+        "created_by": row["created_by"],
+        "created_at": row["created_at"],
+        "decided_at": row["decided_at"],
+    }
+
+
+def create_product_fact(
+    product_id,
+    text,
+    source_url=None,
+    source_kind="manual",
+    status="pending",
+    created_by=None,
+    fact_id=None,
+    created_at=None,
+    decided_at=None,
+):
+    """Insert a product_facts record and return it."""
+    pid = str(product_id or "").strip()
+    clean_text = str(text or "").strip()
+    if not pid:
+        raise ValueError("product_id is required")
+    if not clean_text:
+        raise ValueError("text is required")
+    kind = str(source_kind or "manual").strip().lower()
+    if kind not in _VALID_FACT_SOURCE_KINDS:
+        raise ValueError(f"Invalid source_kind '{kind}'. Must be one of {_VALID_FACT_SOURCE_KINDS}")
+    st = str(status or "pending").strip().lower()
+    if st not in _VALID_FACT_STATUSES:
+        raise ValueError(f"Invalid status '{st}'. Must be one of {_VALID_FACT_STATUSES}")
+
+    ensure_init()
+    conn = connect()
+    fid = fact_id or f"fact_{uuid.uuid4().hex[:12]}"
+    now = created_at or datetime.now(timezone.utc).isoformat()
+    src_url = str(source_url).strip() if source_url else None
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO product_facts (
+                id, product_id, text, source_url, source_kind, status, created_by, created_at, decided_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                fid,
+                pid,
+                clean_text,
+                src_url,
+                kind,
+                st,
+                str(created_by) if created_by else None,
+                now,
+                decided_at,
+            ),
+        )
+    return get_product_fact(fid)
+
+
+def get_product_fact(fact_id):
+    """Return a single product_fact dict by ID, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute("SELECT * FROM product_facts WHERE id = ?", (str(fact_id),)).fetchone()
+    return _deserialize_product_fact(row)
+
+
+def list_product_facts(product_id=None, status=None, limit=200):
+    """Return product_facts filtered optionally by product_id and/or status, newest-first."""
+    ensure_init()
+    conn = connect()
+    clauses = []
+    params = []
+    if product_id:
+        clauses.append("product_id = ?")
+        params.append(str(product_id).strip())
+    if status:
+        clauses.append("status = ?")
+        params.append(str(status).strip().lower())
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(int(limit))
+    rows = conn.execute(
+        f"SELECT * FROM product_facts {where} ORDER BY created_at DESC, rowid DESC LIMIT ?",
+        params,
+    ).fetchall()
+    return [_deserialize_product_fact(r) for r in rows]
+
+
+def decide_product_fact(fact_id, status, text=None, decided_at=None):
+    """Approve or reject a product fact, optionally updating its text."""
+    st = str(status or "").strip().lower()
+    if st not in ("approved", "rejected"):
+        raise ValueError("status must be 'approved' or 'rejected'")
+    ensure_init()
+    existing = get_product_fact(fact_id)
+    if existing is None:
+        raise ValueError(f"Fact '{fact_id}' not found")
+    decided = decided_at or datetime.now(timezone.utc).isoformat()
+    new_text = existing["text"]
+    if text is not None and str(text).strip():
+        new_text = str(text).strip()
+    conn = connect()
+    with conn:
+        conn.execute(
+            "UPDATE product_facts SET status = ?, text = ?, decided_at = ? WHERE id = ?",
+            (st, new_text, decided, str(fact_id)),
+        )
+    return get_product_fact(fact_id)
