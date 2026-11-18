@@ -19,6 +19,7 @@ if _ENGINE_DIR not in sys.path:
 
 import ai_gateway
 import assets_manager
+import db
 import paths
 import product_rules
 
@@ -163,6 +164,8 @@ def get_roster_status():
     capabilities = load_capabilities()
     model_matrix = {m["role_id"]: m for m in ai_gateway.get_role_model_matrix()}
 
+    chat_counts = db.get_agent_chat_counts()
+
     roster = []
     for member in AGENTS_ROSTER:
         out_dir = paths.data(member["output_dir"])
@@ -175,14 +178,7 @@ def get_roster_status():
             if files:
                 latest_file = os.path.relpath(max(files, key=os.path.getmtime), paths.DATA_ROOT)
 
-        chat_file = os.path.join(CHATS_DIR, f"{member['id']}.json")
-        msg_count = 0
-        if os.path.exists(chat_file):
-            try:
-                with open(chat_file, "r", encoding="utf-8") as cf:
-                    msg_count = len(json.load(cf))
-            except Exception:
-                pass
+        msg_count = chat_counts.get(member["id"], 0)
 
         cap = capabilities.get(member["id"], {})
         m_info = model_matrix.get(member["id"], {})
@@ -202,21 +198,13 @@ def get_roster_status():
 
 
 def get_agent_chat_history(agent_id):
-    chat_file = os.path.join(CHATS_DIR, f"{agent_id}.json")
-    if os.path.exists(chat_file):
-        try:
-            with open(chat_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return []
-    return []
+    """Return chat history turns for agent_id from SQLite."""
+    return db.get_agent_chat_history(agent_id)
 
 
 def save_agent_chat_history(agent_id, history):
-    os.makedirs(CHATS_DIR, exist_ok=True)
-    chat_file = os.path.join(CHATS_DIR, f"{agent_id}.json")
-    with open(chat_file, "w", encoding="utf-8") as f:
-        json.dump(history[-100:], f, indent=2)
+    """Replace chat history turns for agent_id in SQLite."""
+    db.save_agent_chat_history(agent_id, history)
 
 
 def evaluate_capability_guardrail(agent_id, message, attached_asset_ids=None):

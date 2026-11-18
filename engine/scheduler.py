@@ -16,6 +16,7 @@ _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
 
+import db
 import paths
 
 ROOT = paths.DATA_ROOT
@@ -24,14 +25,12 @@ SYSTEMD_DIR = paths.resource("systemd")
 PYTHON_BIN = sys.executable
 
 def load_schedules():
-    if not os.path.exists(SCHEDULES_FILE):
-        return []
-    with open(SCHEDULES_FILE, "r", encoding="utf-8") as f:
-        return json.load(f).get("schedules", [])
+    """Load configured schedules from SQLite in preserved order."""
+    return db.load_schedules()
 
 def save_schedules(schedules):
-    with open(SCHEDULES_FILE, "w", encoding="utf-8") as f:
-        json.dump({"schedules": schedules}, f, indent=2)
+    """Save configured schedules to SQLite, preserving order."""
+    db.save_schedules(schedules)
 
 def generate_systemd_units():
     """Generate systemd user service and timer files."""

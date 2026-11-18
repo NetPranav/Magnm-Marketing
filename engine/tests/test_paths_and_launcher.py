@@ -234,12 +234,14 @@ class PathsAndLauncherTests(unittest.TestCase):
             self.assertEqual(proc.wait(timeout=5), 0)
 
     def test_06_messages_isolated_to_data_dir(self):
-        """POST /api/messages writes under --data-dir and leaves repo state untouched."""
+        """POST /api/messages writes under --data-dir SQLite DB and leaves repo state untouched."""
         repo_msgs = os.path.join(REPO_ROOT, "state", "global_messages.json")
+        repo_db = os.path.join(REPO_ROOT, "state", "magnm.db")
         before_bytes = None
         if os.path.exists(repo_msgs):
             with open(repo_msgs, "rb") as f:
                 before_bytes = f.read()
+        repo_db_existed = os.path.exists(repo_db)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             proc, info = self._spawn_engine(tmpdir)
@@ -254,20 +256,24 @@ class PathsAndLauncherTests(unittest.TestCase):
             payload = json.loads(body.decode("utf-8"))
             self.assertTrue(payload["success"])
 
+            status, _, msgs_body = _http_request(f"{base}/api/messages")
+            self.assertEqual(status, 200)
+            saved_msgs = json.loads(msgs_body.decode("utf-8"))
+            self.assertTrue(
+                any(m.get("sender") == "CEO" and m.get("text") == "hello" for m in saved_msgs)
+            )
+
             _http_request(f"{base}/api/shutdown", method="POST", json_body={})
             proc.wait(timeout=5)
 
-            tmp_msgs = os.path.join(tmpdir, "state", "global_messages.json")
-            self.assertTrue(os.path.isfile(tmp_msgs))
-            with open(tmp_msgs, "r", encoding="utf-8") as f:
-                saved = json.load(f)
-            self.assertTrue(
-                any(m.get("sender") == "CEO" and m.get("text") == "hello" for m in saved.get("messages", []))
-            )
+            self.assertTrue(os.path.isfile(os.path.join(tmpdir, "state", "magnm.db")))
+            self.assertFalse(os.path.exists(os.path.join(tmpdir, "state", "global_messages.json")))
 
         if before_bytes is not None:
             with open(repo_msgs, "rb") as f:
                 self.assertEqual(before_bytes, f.read())
+        if not repo_db_existed:
+            self.assertFalse(os.path.exists(repo_db))
 
 
 if __name__ == "__main__":

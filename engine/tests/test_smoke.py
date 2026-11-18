@@ -19,6 +19,7 @@ ENGINE_MODULES = [
     "ai_gateway",
     "assets_manager",
     "cmo_runtime",
+    "db",
     "main",
     "paths",
     "repo_sync",

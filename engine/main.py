@@ -84,6 +84,9 @@ def main(argv=None):
     import paths
     paths.ensure_data_root()
 
+    import db
+    db.init_db()
+
     import server
 
     httpd = ThreadingHTTPServer((args.host, args.port), server.CommandCenterHandler)

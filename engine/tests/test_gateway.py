@@ -17,6 +17,7 @@ if ENGINE_DIR not in sys.path:
 
 import agent_chat
 import ai_gateway
+import db
 import model_registry
 import team_room
 
@@ -56,6 +57,9 @@ class GatewayTests(unittest.TestCase):
     """Tests for model_registry, ai_gateway, and error handling across callers."""
 
     def setUp(self):
+        self._db_tmpdir = tempfile.TemporaryDirectory()
+        db.set_db_path(os.path.join(self._db_tmpdir.name, "state", "magnm.db"))
+        db.init_db()
         self.env_patcher = patch.object(ai_gateway, "load_env", side_effect=_blank_env)
         self.env_patcher.start()
         self.os_env_patcher = patch.dict(os.environ, {}, clear=True)
@@ -64,6 +68,8 @@ class GatewayTests(unittest.TestCase):
     def tearDown(self):
         self.os_env_patcher.stop()
         self.env_patcher.stop()
+        db.set_db_path(None)
+        self._db_tmpdir.cleanup()
 
     def test_01_no_keys_and_ollama_unreachable_raises_ai_not_connected(self):
         """No keys and unreachable Ollama raises AINotConnected with no canned fallback."""
@@ -315,11 +321,10 @@ class GatewayTests(unittest.TestCase):
     def test_11_callers_handle_ai_errors_gracefully(self):
         """agent_chat and team_room handle AINotConnected and AIAuthError without fake output or cascades."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            chats_dir = os.path.join(tmpdir, "chats")
-            os.makedirs(chats_dir, exist_ok=True)
-            msgs_file = os.path.join(tmpdir, "global_messages.json")
+            db.set_db_path(os.path.join(tmpdir, "state", "magnm.db"))
+            db.init_db()
 
-            with patch.object(agent_chat, "CHATS_DIR", chats_dir), patch.object(
+            with patch.object(
                 ai_gateway, "_ollama_reachable", return_value=False
             ), patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
                 res = agent_chat.chat_with_agent("cmo", "Plan today's launch")
@@ -327,7 +332,7 @@ class GatewayTests(unittest.TestCase):
             self.assertEqual(res["error_code"], "ai_not_connected")
             self.assertEqual(agent_chat.get_agent_chat_history("cmo"), [])
 
-            with patch.object(team_room, "MESSAGES_FILE", msgs_file), patch(
+            with patch(
                 "ai_gateway.generate_completion_with_meta",
                 side_effect=ai_gateway.AIAuthError("bad key"),
             ):

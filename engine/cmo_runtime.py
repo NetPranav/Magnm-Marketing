@@ -18,7 +18,9 @@ _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
 
+import db
 import paths
+import scheduler
 
 ROOT = paths.DATA_ROOT
 QUEUE_DIR = paths.data("queue", "agy")
@@ -41,12 +43,12 @@ ALLOWED_JOBS = {
 }
 
 def log_activity(actor, target_role, task_name, output_file):
-    """Append audit line to state/activity.log."""
-    log_path = os.path.join(STATE_DIR, "activity.log")
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    line = f"{ts} | {actor} -> {target_role} | {task_name} | {output_file}\n"
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(line)
+    """Record an audit entry in the SQLite activity table."""
+    db.log_activity(actor, target_role, task_name, output_file)
+
+def get_activity_log(limit=10):
+    """Return recent activity log lines formatted as 'ts | actor -> target | task | file'."""
+    return db.get_activity_lines(limit=limit)
 
 def run_digest():
     """Execute CMO daily digest."""
@@ -234,11 +236,7 @@ def get_system_status():
                 })
 
     # Read activity log
-    activity_lines = []
-    act_path = os.path.join(STATE_DIR, "activity.log")
-    if os.path.exists(act_path):
-        with open(act_path, "r", encoding="utf-8") as f:
-            activity_lines = [line.strip() for line in f.readlines() if line.strip()][-10:]
+    activity_lines = get_activity_log(limit=10)
 
     # Read repo sync
     repo_sync_data = {}
@@ -251,14 +249,7 @@ def get_system_status():
             pass
 
     # Read schedules
-    schedules_data = []
-    sched_file = os.path.join(STATE_DIR, "schedules.json")
-    if os.path.exists(sched_file):
-        try:
-            with open(sched_file, "r", encoding="utf-8") as f:
-                schedules_data = json.load(f).get("schedules", [])
-        except Exception:
-            pass
+    schedules_data = scheduler.load_schedules()
 
     return {
         "status": "ready",

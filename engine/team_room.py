@@ -19,6 +19,7 @@ if _ENGINE_DIR not in sys.path:
 
 import ai_gateway
 import assets_manager
+import db
 import paths
 import product_rules
 
@@ -38,34 +39,13 @@ def load_capabilities():
 
 
 def load_messages(limit=80):
-    if not os.path.exists(MESSAGES_FILE):
-        return []
-    try:
-        with open(MESSAGES_FILE, "r", encoding="utf-8") as f:
-            msgs = json.load(f).get("messages", [])
-            return msgs[-limit:]
-    except Exception:
-        return []
+    """Return the most recent team room messages from SQLite."""
+    return db.load_messages(limit=limit)
 
 
 def save_message(msg):
-    messages = []
-    if os.path.exists(MESSAGES_FILE):
-        try:
-            with open(MESSAGES_FILE, "r", encoding="utf-8") as f:
-                messages = json.load(f).get("messages", [])
-        except Exception:
-            messages = []
-
-    messages.append(msg)
-    messages = messages[-200:]
-    parent = os.path.dirname(MESSAGES_FILE)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    tmp_path = MESSAGES_FILE + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump({"messages": messages, "updated_at": datetime.now(timezone.utc).isoformat()}, f, indent=2)
-    os.replace(tmp_path, MESSAGES_FILE)
+    """Persist a team room message to SQLite."""
+    db.save_message(msg)
 
 
 def extract_mentions(text):

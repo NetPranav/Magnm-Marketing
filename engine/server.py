@@ -28,6 +28,7 @@ import agent_chat
 import ai_gateway
 import assets_manager
 import cmo_runtime
+import db
 import paths
 import product_rules
 import repo_sync
@@ -271,6 +272,15 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         elif url.path == "/api/messages":
             self.send_json(team_room.load_messages())
+
+        elif url.path == "/api/runs":
+            qs = urllib.parse.parse_qs(url.query)
+            try:
+                limit = int(qs.get("limit", ["50"])[0])
+            except (TypeError, ValueError):
+                limit = 50
+            limit = max(1, min(limit, 500))
+            self.send_json(db.get_recent_runs(limit=limit))
 
         elif url.path == "/api/product_rules":
             try:
@@ -617,37 +627,31 @@ Hard Rules:
             sched_id = params.get("id")
             interval = params.get("interval_hours")
             enabled = params.get("enabled")
-            sched_file = paths.data("state", "schedules.json")
-            if os.path.exists(sched_file):
-                with open(sched_file, "r", encoding="utf-8") as f:
-                    s_data = json.load(f)
-                for s in s_data.get("schedules", []):
+            schedules = scheduler.load_schedules()
+            if schedules:
+                for s in schedules:
                     if s["id"] == sched_id:
                         if interval is not None:
                             s["interval_hours"] = int(interval)
                         if enabled is not None:
                             s["enabled"] = bool(enabled)
-                with open(sched_file, "w", encoding="utf-8") as f:
-                    json.dump(s_data, f, indent=2)
+                scheduler.save_schedules(schedules)
                 scheduler.generate_systemd_units()
                 self.send_json({"success": True})
             else:
-                self.send_json({"error": "Schedules file missing"}, status=500)
+                self.send_json({"error": "Schedules missing"}, status=500)
 
         elif url.path == "/api/schedule/toggle":
             sched_id = params.get("id")
-            sched_file = paths.data("state", "schedules.json")
-            if os.path.exists(sched_file):
-                with open(sched_file, "r", encoding="utf-8") as f:
-                    s_data = json.load(f)
-                for s in s_data.get("schedules", []):
+            schedules = scheduler.load_schedules()
+            if schedules:
+                for s in schedules:
                     if s["id"] == sched_id:
                         s["enabled"] = not s.get("enabled", False)
-                with open(sched_file, "w", encoding="utf-8") as f:
-                    json.dump(s_data, f, indent=2)
+                scheduler.save_schedules(schedules)
                 self.send_json({"success": True})
             else:
-                self.send_json({"error": "Schedules file missing"}, status=500)
+                self.send_json({"error": "Schedules missing"}, status=500)
 
         else:
             self.send_error(404, "Unknown endpoint")

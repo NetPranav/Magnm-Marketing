@@ -15,6 +15,7 @@ _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
 
+import db
 import paths
 
 ROOT = paths.DATA_ROOT
@@ -23,25 +24,20 @@ ASSETS_REGISTRY = paths.data("state", "assets.json")
 os.makedirs(ASSETS_DIR, exist_ok=True)
 
 def load_registry():
-    if not os.path.exists(ASSETS_REGISTRY):
-        return []
-    try:
-        with open(ASSETS_REGISTRY, "r", encoding="utf-8") as f:
-            return json.load(f).get("assets", [])
-    except Exception:
-        return []
+    """Load registered assets metadata from SQLite."""
+    return db.load_assets()
 
 def save_registry(assets):
-    parent = os.path.dirname(ASSETS_REGISTRY)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(ASSETS_REGISTRY, "w", encoding="utf-8") as f:
-        json.dump({"assets": assets, "updated_at": datetime.now(timezone.utc).isoformat()}, f, indent=2)
+    """Persist registered assets metadata to SQLite."""
+    db.save_assets(assets)
 
 def register_asset(filename, content_bytes, category="brand", description="", tags=None):
     """Save asset file to disk and record metadata in registry."""
     if tags is None:
         tags = []
+
+    uploads_dir = paths.data("assets", "uploads")
+    os.makedirs(uploads_dir, exist_ok=True)
 
     # Calculate SHA256 hash for deduplication
     sha = hashlib.sha256(content_bytes).hexdigest()[:12]
@@ -49,7 +45,7 @@ def register_asset(filename, content_bytes, category="brand", description="", ta
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     asset_id = f"asset_{ts}_{sha}"
     saved_filename = f"{asset_id}{ext}"
-    saved_path = os.path.join(ASSETS_DIR, saved_filename)
+    saved_path = os.path.join(uploads_dir, saved_filename)
 
     with open(saved_path, "wb") as f:
         f.write(content_bytes)

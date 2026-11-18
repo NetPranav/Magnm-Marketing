@@ -22,6 +22,7 @@ ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
 if ENGINE_DIR not in sys.path:
     sys.path.insert(0, ENGINE_DIR)
 
+import db
 import model_registry
 import paths
 
@@ -379,7 +380,7 @@ def _http_post_json(url, payload, headers, timeout=45):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _single_nim_request(api_key, base_url, system_prompt, user_prompt, model, images=None, max_tokens=1500, timeout=60):
+def _single_nim_request_meta(api_key, base_url, system_prompt, user_prompt, model, images=None, max_tokens=1500, timeout=60):
     url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -418,7 +419,16 @@ def _single_nim_request(api_key, base_url, system_prompt, user_prompt, model, im
     cleaned = _strip_thinking_tags(raw)
     if not cleaned or not cleaned.strip():
         raise EmptyModelResponse("model returned no answer (all tokens spent on reasoning)")
-    return cleaned
+    usage = res.get("usage") if isinstance(res, dict) else None
+    return cleaned, (usage if isinstance(usage, dict) else {})
+
+
+def _single_nim_request(api_key, base_url, system_prompt, user_prompt, model, images=None, max_tokens=1500, timeout=60):
+    text, _ = _single_nim_request_meta(
+        api_key, base_url, system_prompt, user_prompt, model,
+        images=images, max_tokens=max_tokens, timeout=timeout
+    )
+    return text
 
 
 def _read_http_error_body(err):
@@ -460,7 +470,7 @@ def complete_nvidia_nim(
 
     for attempt in range(3):
         try:
-            text = _single_nim_request(
+            text, usage = _single_nim_request_meta(
                 api_key, base_url, system_prompt, user_prompt, model,
                 images=images, max_tokens=max_tokens, timeout=timeout
             )
@@ -470,7 +480,9 @@ def complete_nvidia_nim(
                 "model_requested": model,
                 "model_used": model,
                 "fallback_used": False,
-                "fallback_reason": None
+                "fallback_reason": None,
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "completion_tokens": usage.get("completion_tokens"),
             }
         except urllib.error.HTTPError as e:
             err_body = _read_http_error_body(e)
@@ -515,7 +527,7 @@ def complete_nvidia_nim(
             file=sys.stderr,
         )
         try:
-            text = _single_nim_request(
+            text, usage = _single_nim_request_meta(
                 api_key, base_url, system_prompt, user_prompt, fallback_model,
                 images=images, max_tokens=max_tokens, timeout=timeout
             )
@@ -525,7 +537,9 @@ def complete_nvidia_nim(
                 "model_requested": model,
                 "model_used": fallback_model,
                 "fallback_used": True,
-                "fallback_reason": fallback_reason
+                "fallback_reason": fallback_reason,
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "completion_tokens": usage.get("completion_tokens"),
             }
         except urllib.error.HTTPError as e:
             err_body = _read_http_error_body(e)
@@ -737,72 +751,58 @@ def _build_not_connected_message(has_nim_key, failures, max_len=300):
     return "AI is not connected: add an NVIDIA NIM key in Settings (or start Ollama for local AI)."
 
 
-def generate_completion_with_meta(
+def _record_run(
+    role,
+    provider,
+    model_requested,
+    model_used,
+    fallback_used,
+    fallback_reason,
+    latency_ms,
+    prompt_tokens=None,
+    completion_tokens=None,
+    ok=True,
+    error=None,
+):
+    """Best-effort DB logging of gateway calls; never raises or stores prompts/keys."""
+    try:
+        db.log_run(
+            role=role,
+            provider=provider,
+            model_requested=model_requested,
+            model_used=model_used,
+            fallback_used=fallback_used,
+            fallback_reason=fallback_reason,
+            latency_ms=latency_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            ok=ok,
+            error=error,
+        )
+    except Exception:
+        pass
+
+
+def _dispatch_non_confidential(
+    cfg,
+    models_cfg,
+    ollama_model,
+    requested_model,
+    backup_model,
+    warnings,
+    nim_key,
+    role_key,
+    effective_timeout,
+    effective_max_tokens,
     system_prompt,
     user_prompt,
-    model_tier="fast",
-    image_paths=None,
-    agent_role="",
-    force_live_only=False,
-    confidential=False,
-    max_tokens=None,
+    model_tier,
+    image_paths,
+    force_live_only,
 ):
-    """Unified entry point returning generated text plus full model & fallback telemetry."""
-    cfg = get_config()
-    models_cfg = model_registry.load_models_config()
-    ollama_model = models_cfg.get("local", {}).get("ollama_model", "llama3.2")
-
-    # Confidential mode: local Ollama only, never call NIM or any cloud provider
-    if confidential:
-        base_url = cfg["OLLAMA_BASE_URL"]
-        if not base_url or not _ollama_reachable(base_url):
-            raise AINotConnected(
-                "This is confidential work and needs local AI (Ollama), which is not running."
-            )
-        try:
-            txt = complete_ollama(
-                base_url, system_prompt, user_prompt, model=ollama_model
-            )
-            if txt:
-                return {
-                    "text": txt,
-                    "provider": "ollama",
-                    "model_requested": ollama_model,
-                    "model_used": f"ollama/{ollama_model}",
-                    "fallback_used": False,
-                    "fallback_reason": None,
-                    "warnings": [],
-                }
-            raise AINotConnected("Ollama couldn't answer: empty response")
-        except AINotConnected:
-            raise
-        except urllib.error.HTTPError as e:
-            err_body = _read_http_error_body(e)
-            if e.code == 404 or "not found" in err_body.lower():
-                raise AINotConnected(
-                    f"Ollama is running but the model '{ollama_model}' isn't installed. Run: ollama pull {ollama_model}"
-                ) from e
-            raise AINotConnected(
-                f"Ollama couldn't answer: {_short_error_reason(e)}"
-            ) from e
-        except Exception as e:
-            if "not found" in str(e).lower():
-                raise AINotConnected(
-                    f"Ollama is running but the model '{ollama_model}' isn't installed. Run: ollama pull {ollama_model}"
-                ) from e
-            raise AINotConnected(
-                f"Ollama couldn't answer: {_short_error_reason(e)}"
-            ) from e
-
-    role_key = (agent_role or "").lower().strip()
-    nim_key = cfg["ROLE_KEYS"].get(role_key) or cfg["NVIDIA_NIM_API_KEY"]
-    requested_model, backup_model, warnings = _resolve_for_role(role_key, cfg, models_cfg, nim_key)
-    tier_info = model_registry.tier_settings(role_key)
-    effective_timeout = tier_info["timeout_s"]
-    effective_max_tokens = tier_info["max_tokens"] if max_tokens is None else int(max_tokens)
+    """Run provider cascade for non-confidential completions."""
     failures = {}
 
-    # 1. Primary Provider: NVIDIA NIM
     if nim_key:
         try:
             result = complete_nvidia_nim(
@@ -826,7 +826,6 @@ def generate_completion_with_meta(
             if force_live_only:
                 raise
 
-    # 2. Secondary API Providers (OpenAI, Anthropic, Gemini, Groq)
     sec_cfg = models_cfg.get("secondary_providers", {})
 
     if cfg["OPENAI_API_KEY"]:
@@ -894,7 +893,6 @@ def generate_completion_with_meta(
             failures["groq"] = _short_error_reason(e)
             print(f"[ai_gateway] Groq failed: {e}", file=sys.stderr)
 
-    # 3. ChatGPT CLI (opt-in only via AI_USE_CHATGPT_CLI_FALLBACK=true)
     if not force_live_only and cfg.get("USE_CHATGPT_CLI_FALLBACK"):
         cli_resp = complete_chatgpt_cli(system_prompt, user_prompt)
         if cli_resp:
@@ -905,7 +903,6 @@ def generate_completion_with_meta(
                 "warnings": warnings,
             }
 
-    # 4. Ollama local server (if reachable)
     if not force_live_only and cfg["OLLAMA_BASE_URL"] and _ollama_reachable(cfg["OLLAMA_BASE_URL"]):
         try:
             txt = complete_ollama(
@@ -923,6 +920,145 @@ def generate_completion_with_meta(
             failures["ollama"] = _short_error_reason(e)
 
     raise AINotConnected(_build_not_connected_message(bool(nim_key), failures))
+
+
+def generate_completion_with_meta(
+    system_prompt,
+    user_prompt,
+    model_tier="fast",
+    image_paths=None,
+    agent_role="",
+    force_live_only=False,
+    confidential=False,
+    max_tokens=None,
+):
+    """Unified entry point returning generated text plus full model & fallback telemetry."""
+    t0 = time.monotonic()
+    cfg = get_config()
+    models_cfg = model_registry.load_models_config()
+    ollama_model = models_cfg.get("local", {}).get("ollama_model", "llama3.2")
+    role_key = (agent_role or "").lower().strip()
+
+    if confidential:
+        base_url = cfg["OLLAMA_BASE_URL"]
+        try:
+            if not base_url or not _ollama_reachable(base_url):
+                raise AINotConnected(
+                    "This is confidential work and needs local AI (Ollama), which is not running."
+                )
+            try:
+                txt = complete_ollama(
+                    base_url, system_prompt, user_prompt, model=ollama_model
+                )
+                if not txt:
+                    raise AINotConnected("Ollama couldn't answer: empty response")
+                result = {
+                    "text": txt,
+                    "provider": "ollama",
+                    "model_requested": ollama_model,
+                    "model_used": f"ollama/{ollama_model}",
+                    "fallback_used": False,
+                    "fallback_reason": None,
+                    "warnings": [],
+                }
+            except AINotConnected:
+                raise
+            except urllib.error.HTTPError as e:
+                err_body = _read_http_error_body(e)
+                if e.code == 404 or "not found" in err_body.lower():
+                    raise AINotConnected(
+                        f"Ollama is running but the model '{ollama_model}' isn't installed. Run: ollama pull {ollama_model}"
+                    ) from e
+                raise AINotConnected(
+                    f"Ollama couldn't answer: {_short_error_reason(e)}"
+                ) from e
+            except Exception as e:
+                if "not found" in str(e).lower():
+                    raise AINotConnected(
+                        f"Ollama is running but the model '{ollama_model}' isn't installed. Run: ollama pull {ollama_model}"
+                    ) from e
+                raise AINotConnected(
+                    f"Ollama couldn't answer: {_short_error_reason(e)}"
+                ) from e
+        except Exception as e:
+            _record_run(
+                role=role_key,
+                provider="ollama",
+                model_requested=ollama_model,
+                model_used=None,
+                fallback_used=False,
+                fallback_reason=None,
+                latency_ms=int((time.monotonic() - t0) * 1000),
+                ok=False,
+                error=str(e)[:300] if isinstance(e, AINotConnected) else _short_error_reason(e),
+            )
+            raise
+
+        _record_run(
+            role=role_key,
+            provider=result["provider"],
+            model_requested=result["model_requested"],
+            model_used=result["model_used"],
+            fallback_used=False,
+            fallback_reason=None,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            ok=True,
+        )
+        return result
+
+    nim_key = cfg["ROLE_KEYS"].get(role_key) or cfg["NVIDIA_NIM_API_KEY"]
+    requested_model, backup_model, warnings = _resolve_for_role(role_key, cfg, models_cfg, nim_key)
+    tier_info = model_registry.tier_settings(role_key)
+    effective_timeout = tier_info["timeout_s"]
+    effective_max_tokens = tier_info["max_tokens"] if max_tokens is None else int(max_tokens)
+    default_provider = "nvidia_nim" if nim_key else cfg["DEFAULT_PROVIDER"]
+
+    try:
+        result = _dispatch_non_confidential(
+            cfg=cfg,
+            models_cfg=models_cfg,
+            ollama_model=ollama_model,
+            requested_model=requested_model,
+            backup_model=backup_model,
+            warnings=warnings,
+            nim_key=nim_key,
+            role_key=role_key,
+            effective_timeout=effective_timeout,
+            effective_max_tokens=effective_max_tokens,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model_tier=model_tier,
+            image_paths=image_paths,
+            force_live_only=force_live_only,
+        )
+    except Exception as e:
+        err_msg = str(e)[:300] if isinstance(e, AINotConnected) else _short_error_reason(e)
+        _record_run(
+            role=role_key,
+            provider=default_provider,
+            model_requested=requested_model,
+            model_used=None,
+            fallback_used=False,
+            fallback_reason=None,
+            latency_ms=int((time.monotonic() - t0) * 1000),
+            ok=False,
+            error=err_msg,
+        )
+        raise
+
+    _record_run(
+        role=role_key,
+        provider=result.get("provider"),
+        model_requested=result.get("model_requested"),
+        model_used=result.get("model_used"),
+        fallback_used=bool(result.get("fallback_used")),
+        fallback_reason=result.get("fallback_reason"),
+        latency_ms=int((time.monotonic() - t0) * 1000),
+        prompt_tokens=result.get("prompt_tokens"),
+        completion_tokens=result.get("completion_tokens"),
+        ok=True,
+    )
+    return result
 
 
 def generate_completion(system_prompt, user_prompt, model_tier="fast", image_paths=None, agent_role="", confidential=False, max_tokens=None):
