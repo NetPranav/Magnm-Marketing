@@ -185,6 +185,38 @@ def resolve_role_models(role, cfg=None, catalog=None):
     return effective_primary, effective_backup, warnings
 
 
+DEFAULT_TIMEOUT_S = 60
+DEFAULT_MAX_TOKENS = 1500
+
+
+def _coerce_positive_int(val, default):
+    if val is None or val == "":
+        return default
+    try:
+        parsed = int(val)
+        return parsed if parsed > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def tier_settings(role, cfg=None):
+    """Return {"tier": name, "timeout_s": int, "max_tokens": int} for a role."""
+    models_cfg = cfg if (isinstance(cfg, dict) and "tiers" in cfg) else load_models_config()
+    role_key = (role or "").lower().strip()
+    tier_name = models_cfg.get("roles", {}).get(role_key, "fast")
+    tiers = models_cfg.get("tiers", {})
+    tier_spec = tiers.get(tier_name)
+    if not isinstance(tier_spec, dict):
+        tier_spec = tiers.get("fast")
+        if not isinstance(tier_spec, dict):
+            tier_spec = {}
+    return {
+        "tier": tier_name,
+        "timeout_s": _coerce_positive_int(tier_spec.get("timeout_s"), DEFAULT_TIMEOUT_S),
+        "max_tokens": _coerce_positive_int(tier_spec.get("max_tokens"), DEFAULT_MAX_TOKENS),
+    }
+
+
 def is_vision_model(model_id, cfg=None):
     """Return True if model_id is listed in vision_models from config/models.json."""
     if not model_id:

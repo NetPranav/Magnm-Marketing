@@ -463,6 +463,134 @@ class GatewayTests(unittest.TestCase):
             mock_port.assert_called_with("ollama.local", 11434, timeout=0.5)
             self.assertFalse(ai_gateway._ollama_reachable(""))
 
+    def test_17_tier_timeout_and_max_tokens_reach_http_call(self):
+        """Tier timeout_s and max_tokens reach _http_post_json, and explicit max_tokens overrides tier."""
+        seen = []
+
+        def fake_post(url, payload, headers, timeout=45):
+            seen.append({"payload": payload, "timeout": timeout})
+            return {"choices": [{"message": {"content": "ready"}}]}
+
+        with patch.dict(os.environ, {"NVIDIA_NIM_API_KEY": "nvapi-test"}), patch.object(
+            model_registry, "get_catalog", return_value=None
+        ), patch.object(ai_gateway, "_http_post_json", side_effect=fake_post):
+            res = ai_gateway.generate_completion_with_meta(
+                system_prompt="sys",
+                user_prompt="hi",
+                agent_role="researcher",
+            )
+            self.assertEqual(res["text"], "ready")
+            self.assertEqual(seen[-1]["timeout"], 240)
+            self.assertEqual(seen[-1]["payload"]["max_tokens"], 8000)
+
+            ai_gateway.generate_completion_with_meta(
+                system_prompt="sys",
+                user_prompt="hi",
+                agent_role="researcher",
+                max_tokens=512,
+            )
+            self.assertEqual(seen[-1]["timeout"], 240)
+            self.assertEqual(seen[-1]["payload"]["max_tokens"], 512)
+
+    def test_18_empty_content_with_reasoning_content_falls_back_to_backup(self):
+        """Empty content with reasoning_content triggers EmptyModelResponse and backup fallback."""
+        calls = []
+
+        def fake_post(url, payload, headers, timeout=45):
+            calls.append(payload["model"])
+            if len(calls) == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "",
+                                "reasoning_content": "long internal chain of thought...",
+                            }
+                        }
+                    ]
+                }
+            return {"choices": [{"message": {"content": "backup answer"}}]}
+
+        with patch.object(ai_gateway, "_http_post_json", side_effect=fake_post):
+            res = ai_gateway.complete_nvidia_nim(
+                api_key="test-key",
+                base_url="https://integrate.api.nvidia.com/v1",
+                system_prompt="sys",
+                user_prompt="hi",
+                model="primary/reasoning-model",
+                fallback_model="backup/model",
+            )
+
+        self.assertEqual(calls, ["primary/reasoning-model", "backup/model"])
+        self.assertEqual(res["text"], "backup answer")
+        self.assertEqual(res["model_used"], "backup/model")
+        self.assertTrue(res["fallback_used"])
+        self.assertEqual(res["fallback_reason"], "empty answer")
+
+    def test_19_think_only_response_treated_as_empty_falls_back_to_backup(self):
+        """Response containing only <think>...</think> raises EmptyModelResponse and uses backup."""
+        calls = []
+
+        def fake_post(url, payload, headers, timeout=45):
+            calls.append(payload["model"])
+            if len(calls) == 1:
+                return {"choices": [{"message": {"content": "<think>x</think>"}}]}
+            return {"choices": [{"message": {"content": "clean backup answer"}}]}
+
+        with patch.object(ai_gateway, "_http_post_json", side_effect=fake_post):
+            with self.assertRaises(ai_gateway.EmptyModelResponse) as ctx:
+                ai_gateway._single_nim_request(
+                    api_key="test-key",
+                    base_url="https://integrate.api.nvidia.com/v1",
+                    system_prompt="sys",
+                    user_prompt="hi",
+                    model="primary/model",
+                )
+            self.assertIn("all tokens spent on reasoning", str(ctx.exception))
+
+            calls.clear()
+            res = ai_gateway.complete_nvidia_nim(
+                api_key="test-key",
+                base_url="https://integrate.api.nvidia.com/v1",
+                system_prompt="sys",
+                user_prompt="hi",
+                model="primary/model",
+                fallback_model="backup/model",
+            )
+
+        self.assertEqual(calls, ["primary/model", "backup/model"])
+        self.assertEqual(res["text"], "clean backup answer")
+        self.assertTrue(res["fallback_used"])
+        self.assertEqual(res["fallback_reason"], "empty answer")
+
+    def test_20_tier_settings_defaults_and_matrix_fields(self):
+        """tier_settings defaults to 60/1500 when missing, and role matrix includes tier/timeout_s/max_tokens."""
+        cfg_missing = {
+            "tiers": {
+                "reasoning": {"primary": "m1", "backup": "m2"},
+                "fast": {"primary": "m3", "backup": "m4"},
+            },
+            "roles": {"cmo": "reasoning"},
+        }
+        self.assertEqual(
+            model_registry.tier_settings("cmo", cfg_missing),
+            {"tier": "reasoning", "timeout_s": 60, "max_tokens": 1500},
+        )
+        self.assertEqual(
+            model_registry.tier_settings("unknown-role", cfg_missing),
+            {"tier": "fast", "timeout_s": 60, "max_tokens": 1500},
+        )
+
+        matrix = ai_gateway.get_role_model_matrix()
+        self.assertTrue(len(matrix) > 0)
+        by_role = {row["role_id"]: row for row in matrix}
+        self.assertEqual(by_role["cmo"]["tier"], "reasoning")
+        self.assertEqual(by_role["cmo"]["timeout_s"], 180)
+        self.assertEqual(by_role["cmo"]["max_tokens"], 8000)
+        self.assertEqual(by_role["listener"]["tier"], "fast")
+        self.assertEqual(by_role["listener"]["timeout_s"], 60)
+        self.assertEqual(by_role["listener"]["max_tokens"], 1500)
+
 
 if __name__ == "__main__":
     unittest.main()

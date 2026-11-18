@@ -40,6 +40,10 @@ class AIAuthError(RuntimeError):
     """Raised when an AI provider rejects authentication credentials (HTTP 401/403)."""
 
 
+class EmptyModelResponse(RuntimeError):
+    """Raised when a model returns no answer (e.g., all tokens spent on reasoning)."""
+
+
 ROLE_MODEL_SPEC = {
     "cmo": {
         "name": "CMO (Chief Marketing Officer)",
@@ -335,7 +339,8 @@ def get_role_model_matrix():
 
         merged_cfg = {**models_cfg, "ROLE_MODEL_OVERRIDES": cfg.get("ROLE_MODEL_OVERRIDES", {})}
         primary, backup, warnings = model_registry.resolve_role_models(role_id, merged_cfg, catalog)
-        tier_name = models_cfg.get("roles", {}).get(role_id, spec.get("tier", "fast"))
+        tier_info = model_registry.tier_settings(role_id, models_cfg)
+        tier_name = tier_info["tier"]
         tier_primary = models_cfg.get("tiers", {}).get(tier_name, {}).get("primary", primary)
 
         matrix.append({
@@ -350,6 +355,8 @@ def get_role_model_matrix():
             "backup": backup,
             "warnings": warnings,
             "tier": tier_name,
+            "timeout_s": tier_info["timeout_s"],
+            "max_tokens": tier_info["max_tokens"],
             "specialization": spec["specialization"],
             "has_key": bool(effective_key),
             "key_source": key_source,
@@ -363,7 +370,7 @@ def _strip_thinking_tags(text):
     if not text:
         return ""
     cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    return cleaned.strip() or text.strip()
+    return cleaned.strip()
 
 
 def _http_post_json(url, payload, headers, timeout=45):
@@ -372,7 +379,7 @@ def _http_post_json(url, payload, headers, timeout=45):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _single_nim_request(api_key, base_url, system_prompt, user_prompt, model, images=None, max_tokens=1500):
+def _single_nim_request(api_key, base_url, system_prompt, user_prompt, model, images=None, max_tokens=1500, timeout=60):
     url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -406,9 +413,12 @@ def _single_nim_request(api_key, base_url, system_prompt, user_prompt, model, im
         "top_p": 0.9,
         "max_tokens": max_tokens
     }
-    res = _http_post_json(url, payload, headers, timeout=45)
-    raw = res["choices"][0]["message"]["content"]
-    return _strip_thinking_tags(raw)
+    res = _http_post_json(url, payload, headers, timeout=timeout)
+    raw = res["choices"][0]["message"].get("content")
+    cleaned = _strip_thinking_tags(raw)
+    if not cleaned or not cleaned.strip():
+        raise EmptyModelResponse("model returned no answer (all tokens spent on reasoning)")
+    return cleaned
 
 
 def _read_http_error_body(err):
@@ -433,7 +443,17 @@ def _parse_retry_after(err, default_wait):
     return min(float(default_wait), 20.0)
 
 
-def complete_nvidia_nim(api_key, base_url, system_prompt, user_prompt, model, images=None, fallback_model=None, max_tokens=1500):
+def complete_nvidia_nim(
+    api_key,
+    base_url,
+    system_prompt,
+    user_prompt,
+    model,
+    images=None,
+    fallback_model=None,
+    max_tokens=1500,
+    timeout=60,
+):
     """Execute completion against NVIDIA NIM with 429 retries and backup model fallback."""
     fallback_reason = None
     last_error = None
@@ -442,7 +462,7 @@ def complete_nvidia_nim(api_key, base_url, system_prompt, user_prompt, model, im
         try:
             text = _single_nim_request(
                 api_key, base_url, system_prompt, user_prompt, model,
-                images=images, max_tokens=max_tokens
+                images=images, max_tokens=max_tokens, timeout=timeout
             )
             return {
                 "text": text,
@@ -484,6 +504,10 @@ def complete_nvidia_nim(api_key, base_url, system_prompt, user_prompt, model, im
             last_error = e
             fallback_reason = f"Network/Timeout: {e}"
             break
+        except EmptyModelResponse as e:
+            last_error = e
+            fallback_reason = "empty answer"
+            break
 
     if fallback_model and model != fallback_model:
         print(
@@ -493,7 +517,7 @@ def complete_nvidia_nim(api_key, base_url, system_prompt, user_prompt, model, im
         try:
             text = _single_nim_request(
                 api_key, base_url, system_prompt, user_prompt, fallback_model,
-                images=images, max_tokens=max_tokens
+                images=images, max_tokens=max_tokens, timeout=timeout
             )
             return {
                 "text": text,
@@ -515,6 +539,10 @@ def complete_nvidia_nim(api_key, base_url, system_prompt, user_prompt, model, im
         except (urllib.error.URLError, TimeoutError, socket.timeout) as e:
             raise RuntimeError(
                 f"NVIDIA NIM backup '{fallback_model}' failed (Network/Timeout): {e}"
+            ) from e
+        except EmptyModelResponse as e:
+            raise RuntimeError(
+                f"NVIDIA NIM backup '{fallback_model}' failed (empty answer): {e}"
             ) from e
 
     raise RuntimeError(f"NVIDIA NIM error for '{model}': {fallback_reason}") from last_error
@@ -667,6 +695,8 @@ def _short_error_reason(exc):
         return "network error"
     if "removed from nvidia catalog" in low or "not found" in low:
         return "model not found"
+    if "empty answer" in low or "returned no answer" in low:
+        return "empty answer"
     return "request failed"
 
 
@@ -715,6 +745,7 @@ def generate_completion_with_meta(
     agent_role="",
     force_live_only=False,
     confidential=False,
+    max_tokens=None,
 ):
     """Unified entry point returning generated text plus full model & fallback telemetry."""
     cfg = get_config()
@@ -766,6 +797,9 @@ def generate_completion_with_meta(
     role_key = (agent_role or "").lower().strip()
     nim_key = cfg["ROLE_KEYS"].get(role_key) or cfg["NVIDIA_NIM_API_KEY"]
     requested_model, backup_model, warnings = _resolve_for_role(role_key, cfg, models_cfg, nim_key)
+    tier_info = model_registry.tier_settings(role_key)
+    effective_timeout = tier_info["timeout_s"]
+    effective_max_tokens = tier_info["max_tokens"] if max_tokens is None else int(max_tokens)
     failures = {}
 
     # 1. Primary Provider: NVIDIA NIM
@@ -779,6 +813,8 @@ def generate_completion_with_meta(
                 model=requested_model,
                 images=image_paths,
                 fallback_model=backup_model,
+                max_tokens=effective_max_tokens,
+                timeout=effective_timeout,
             )
             result["warnings"] = warnings
             return result
@@ -889,7 +925,7 @@ def generate_completion_with_meta(
     raise AINotConnected(_build_not_connected_message(bool(nim_key), failures))
 
 
-def generate_completion(system_prompt, user_prompt, model_tier="fast", image_paths=None, agent_role="", confidential=False):
+def generate_completion(system_prompt, user_prompt, model_tier="fast", image_paths=None, agent_role="", confidential=False, max_tokens=None):
     """Backward-compatible wrapper returning completion string only."""
     return generate_completion_with_meta(
         system_prompt=system_prompt,
@@ -898,6 +934,7 @@ def generate_completion(system_prompt, user_prompt, model_tier="fast", image_pat
         image_paths=image_paths,
         agent_role=agent_role,
         confidential=confidential,
+        max_tokens=max_tokens,
     )["text"]
 
 
