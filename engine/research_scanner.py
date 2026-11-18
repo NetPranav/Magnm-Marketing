@@ -14,8 +14,14 @@ import urllib.request
 import urllib.error
 from datetime import datetime, timezone, timedelta
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUTPUT_DIR = os.path.join(ROOT, "outputs", "research")
+_ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _ENGINE_DIR not in sys.path:
+    sys.path.insert(0, _ENGINE_DIR)
+
+import paths
+
+ROOT = paths.DATA_ROOT
+OUTPUT_DIR = paths.data("outputs", "research")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 USER_AGENT = "MagnmResearchBot/1.0 (Developer Tool Market Scanner; contact: team@magnm.org)"

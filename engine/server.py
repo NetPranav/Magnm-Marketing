@@ -9,6 +9,7 @@ Runs on http://127.0.0.1:5050
 """
 
 import base64
+import hmac
 import json
 import mimetypes
 import os
@@ -19,20 +20,24 @@ import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(ROOT, "engine"))
+_ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _ENGINE_DIR not in sys.path:
+    sys.path.insert(0, _ENGINE_DIR)
 
 import agent_chat
 import ai_gateway
 import assets_manager
 import cmo_runtime
+import paths
 import product_rules
 import repo_sync
 import scheduler
 import team_room
 
+ROOT = paths.DATA_ROOT
 PORT = 5050
 HOST = "127.0.0.1"
+ENGINE_TOKEN = os.environ.get("MAGNM_ENGINE_TOKEN", "")
 
 CURRENT_JOB = {"running": False, "job_name": None, "job_id": None, "output": "", "error": None}
 
@@ -65,7 +70,7 @@ def run_job_async(job_name, actor="UI"):
 
 
 def _read_text_safe(rel_path, limit=12000):
-    fp = os.path.join(ROOT, rel_path)
+    fp = paths.data(rel_path)
     if os.path.exists(fp):
         try:
             with open(fp, "r", encoding="utf-8") as f:
@@ -115,7 +120,7 @@ def _parse_editorial_plan():
 
 
 def _get_latest_research_findings():
-    res_dir = os.path.join(ROOT, "outputs", "research")
+    res_dir = paths.data("outputs", "research")
     if not os.path.exists(res_dir):
         return {"file": None, "items": []}
     candidates = sorted([f for f in os.listdir(res_dir) if f.endswith("-findings.json")], reverse=True)
@@ -125,14 +130,29 @@ def _get_latest_research_findings():
     try:
         with open(latest, "r", encoding="utf-8") as f:
             items = json.load(f)
-        return {"file": os.path.relpath(latest, ROOT), "items": items[:20]}
+        return {"file": os.path.relpath(latest, paths.DATA_ROOT), "items": items[:20]}
     except Exception:
-        return {"file": os.path.relpath(latest, ROOT), "items": []}
+        return {"file": os.path.relpath(latest, paths.DATA_ROOT), "items": []}
 
 
 class CommandCenterHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
+
+    def _is_authorized(self):
+        """Return True if no ENGINE_TOKEN is set or request carries a valid token header/cookie."""
+        if not ENGINE_TOKEN:
+            return True
+        header_token = self.headers.get("X-Magnm-Token") or self.headers.get("x-magnm-token") or ""
+        if header_token and hmac.compare_digest(header_token, ENGINE_TOKEN):
+            return True
+        cookie_hdr = self.headers.get("Cookie") or self.headers.get("cookie") or ""
+        for part in cookie_hdr.split(";"):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                if k.strip() == "magnm_token" and hmac.compare_digest(v.strip(), ENGINE_TOKEN):
+                    return True
+        return False
 
     def send_json(self, data, status=200):
         body = json.dumps(data).encode("utf-8")
@@ -180,6 +200,33 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
 
+        if url.path == "/api/health":
+            self.send_json({
+                "ok": True,
+                "service": "magnm-engine",
+                "version": "0.1.0",
+                "data_root": paths.DATA_ROOT,
+            })
+            return
+
+        if ENGINE_TOKEN and url.path == "/":
+            qs = urllib.parse.parse_qs(url.query)
+            tok_list = qs.get("token")
+            if tok_list and hmac.compare_digest(tok_list[0], ENGINE_TOKEN):
+                self.send_response(302)
+                self.send_header(
+                    "Set-Cookie",
+                    f"magnm_token={ENGINE_TOKEN}; HttpOnly; SameSite=Strict; Path=/",
+                )
+                self.send_header("Location", "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+
+        if not self._is_authorized():
+            self.send_json({"error": "unauthorized"}, status=401)
+            return
+
         if url.path == "/" or url.path == "/index.html":
             self.serve_ui()
         elif url.path == "/api/status":
@@ -190,7 +237,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             roles_ready = sum(1 for m in matrix if m["has_key"])
 
             state["env_status"] = {
-                "has_env_file": os.path.exists(os.path.join(ROOT, ".env")),
+                "has_env_file": os.path.exists(paths.data(".env")),
                 "default_provider": cfg["DEFAULT_PROVIDER"],
                 "nvidia_nim_base_url": cfg["NVIDIA_NIM_BASE_URL"],
                 "nvidia_nim_global": bool(cfg["NVIDIA_NIM_API_KEY"]),
@@ -240,7 +287,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             all_assets = assets_manager.get_assets()
             target = next((a for a in all_assets if a["id"] == asset_id), None)
             if target:
-                full_path = os.path.join(ROOT, target["relative_path"])
+                full_path = paths.data(target["relative_path"])
                 if os.path.exists(full_path) and os.path.isfile(full_path):
                     mime, _ = mimetypes.guess_type(full_path)
                     mime = mime or target.get("mime_type", "application/octet-stream")
@@ -253,7 +300,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             if len(parts) >= 2:
                 post_id, filename = parts[0], parts[1]
                 for sub in ("posts", "video", "blogs"):
-                    cand = os.path.join(ROOT, "outputs", sub, post_id, filename)
+                    cand = paths.data("outputs", sub, post_id, filename)
                     if os.path.exists(cand) and os.path.isfile(cand):
                         mime, _ = mimetypes.guess_type(cand)
                         mime = mime or "application/octet-stream"
@@ -266,12 +313,21 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         url = urllib.parse.urlparse(self.path)
+        if not self._is_authorized():
+            self.send_json({"error": "unauthorized"}, status=401)
+            return
+
         content_len = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
         try:
             params = json.loads(body)
         except Exception:
             params = {}
+
+        if url.path == "/api/shutdown":
+            self.send_json({"ok": True})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
 
         if url.path == "/api/run":
             job_name = params.get("job")
@@ -430,7 +486,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             sizes = params.get("sizes", ["4x5", "1x1", "16x9"])
             asset_id = params.get("asset_id", "")
 
-            out_dir = os.path.join(ROOT, "outputs", "posts", post_id)
+            out_dir = paths.data("outputs", "posts", post_id)
             os.makedirs(out_dir, exist_ok=True)
 
             spec = {
@@ -446,7 +502,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             if asset_id:
                 asset_match = next((a for a in assets_manager.get_assets() if a["id"] == asset_id), None)
                 if asset_match and asset_match.get("file_group") == "image":
-                    img_abs = os.path.join(ROOT, asset_match["relative_path"])
+                    img_abs = paths.data(asset_match["relative_path"])
                     if os.path.exists(img_abs):
                         spec["image"] = img_abs
 
@@ -456,7 +512,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
             try:
                 proc = subprocess.run(
-                    [sys.executable, os.path.join(ROOT, "templates", "card.py"), spec_path, out_dir],
+                    [sys.executable, paths.resource("templates", "card.py"), spec_path, out_dir],
                     capture_output=True, text=True, timeout=30
                 )
                 if proc.returncode != 0:
@@ -561,7 +617,7 @@ Hard Rules:
             sched_id = params.get("id")
             interval = params.get("interval_hours")
             enabled = params.get("enabled")
-            sched_file = os.path.join(ROOT, "state", "schedules.json")
+            sched_file = paths.data("state", "schedules.json")
             if os.path.exists(sched_file):
                 with open(sched_file, "r", encoding="utf-8") as f:
                     s_data = json.load(f)
@@ -580,7 +636,7 @@ Hard Rules:
 
         elif url.path == "/api/schedule/toggle":
             sched_id = params.get("id")
-            sched_file = os.path.join(ROOT, "state", "schedules.json")
+            sched_file = paths.data("state", "schedules.json")
             if os.path.exists(sched_file):
                 with open(sched_file, "r", encoding="utf-8") as f:
                     s_data = json.load(f)

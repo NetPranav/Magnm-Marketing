@@ -11,9 +11,15 @@ import shutil
 import sys
 from datetime import datetime, timezone
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ASSETS_DIR = os.path.join(ROOT, "assets", "uploads")
-ASSETS_REGISTRY = os.path.join(ROOT, "state", "assets.json")
+_ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _ENGINE_DIR not in sys.path:
+    sys.path.insert(0, _ENGINE_DIR)
+
+import paths
+
+ROOT = paths.DATA_ROOT
+ASSETS_DIR = paths.data("assets", "uploads")
+ASSETS_REGISTRY = paths.data("state", "assets.json")
 os.makedirs(ASSETS_DIR, exist_ok=True)
 
 def load_registry():
@@ -26,6 +32,9 @@ def load_registry():
         return []
 
 def save_registry(assets):
+    parent = os.path.dirname(ASSETS_REGISTRY)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     with open(ASSETS_REGISTRY, "w", encoding="utf-8") as f:
         json.dump({"assets": assets, "updated_at": datetime.now(timezone.utc).isoformat()}, f, indent=2)
 
@@ -64,7 +73,7 @@ def register_asset(filename, content_bytes, category="brand", description="", ta
         "id": asset_id,
         "name": filename,
         "saved_filename": saved_filename,
-        "relative_path": os.path.relpath(saved_path, ROOT),
+        "relative_path": os.path.relpath(saved_path, paths.DATA_ROOT),
         "mime_type": mime,
         "file_group": file_group,
         "size": size_str,
@@ -89,7 +98,7 @@ def delete_asset(asset_id):
     if not to_delete:
         return False
 
-    saved_path = os.path.join(ROOT, to_delete["relative_path"])
+    saved_path = paths.data(to_delete["relative_path"])
     if os.path.exists(saved_path):
         os.remove(saved_path)
 

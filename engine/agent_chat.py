@@ -13,15 +13,18 @@ import re
 import sys
 from datetime import datetime, timezone
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(ROOT, "engine"))
+_ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _ENGINE_DIR not in sys.path:
+    sys.path.insert(0, _ENGINE_DIR)
 
 import ai_gateway
 import assets_manager
+import paths
 import product_rules
 
-CHATS_DIR = os.path.join(ROOT, "state", "chats")
-CAPABILITIES_FILE = os.path.join(ROOT, "config", "capabilities.json")
+ROOT = paths.DATA_ROOT
+CHATS_DIR = paths.data("state", "chats")
+CAPABILITIES_FILE = paths.data("config", "capabilities.json")
 os.makedirs(CHATS_DIR, exist_ok=True)
 
 AGENTS_ROSTER = [
@@ -162,7 +165,7 @@ def get_roster_status():
 
     roster = []
     for member in AGENTS_ROSTER:
-        out_dir = os.path.join(ROOT, member["output_dir"])
+        out_dir = paths.data(member["output_dir"])
         latest_file = None
         if os.path.exists(out_dir):
             files = []
@@ -170,7 +173,7 @@ def get_roster_status():
                 for fn in f_list:
                     files.append(os.path.join(root_d, fn))
             if files:
-                latest_file = os.path.relpath(max(files, key=os.path.getmtime), ROOT)
+                latest_file = os.path.relpath(max(files, key=os.path.getmtime), paths.DATA_ROOT)
 
         chat_file = os.path.join(CHATS_DIR, f"{member['id']}.json")
         msg_count = 0
@@ -210,6 +213,7 @@ def get_agent_chat_history(agent_id):
 
 
 def save_agent_chat_history(agent_id, history):
+    os.makedirs(CHATS_DIR, exist_ok=True)
     chat_file = os.path.join(CHATS_DIR, f"{agent_id}.json")
     with open(chat_file, "w", encoding="utf-8") as f:
         json.dump(history[-100:], f, indent=2)
@@ -333,7 +337,7 @@ def evaluate_capability_guardrail(agent_id, message, attached_asset_ids=None):
 
 
 def _load_file_safe(rel_path, limit=3000):
-    full_path = os.path.join(ROOT, rel_path)
+    full_path = paths.data(rel_path)
     if os.path.exists(full_path):
         try:
             with open(full_path, "r", encoding="utf-8") as f:
@@ -401,7 +405,7 @@ def chat_with_agent(agent_id, user_message, attached_assets=None):
             a = next((x for x in all_assets if x["id"] == aid), None)
             if a:
                 ctx_parts.append(f"- {a['name']} ({a['mime_type']}, {a['size']}): {a.get('description', '')}")
-                full_p = os.path.join(ROOT, a["relative_path"])
+                full_p = paths.data(a["relative_path"])
                 if a.get("file_group") == "image" and os.path.exists(full_p):
                     image_paths.append(full_p)
                 elif a.get("file_group") == "document" and os.path.exists(full_p):

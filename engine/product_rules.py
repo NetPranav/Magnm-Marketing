@@ -4,9 +4,16 @@
 import json
 import os
 import re
+import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_RULES_PATH = os.path.join(ROOT, "config", "product_rules.json")
+_ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _ENGINE_DIR not in sys.path:
+    sys.path.insert(0, _ENGINE_DIR)
+
+import paths
+
+ROOT = paths.DATA_ROOT
+DEFAULT_RULES_PATH = paths.data("config", "product_rules.json")
 
 ALLOWED_STATUSES = ("released", "in_development", "secret")
 ALLOWED_SHOW_LEVELS = ("everything", "text_only", "teasers_only", "nothing")

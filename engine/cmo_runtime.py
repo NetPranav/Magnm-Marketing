@@ -14,12 +14,18 @@ import sys
 import time
 from datetime import datetime, timezone
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-QUEUE_DIR = os.path.join(ROOT, "queue", "agy")
-POSTS_DIR = os.path.join(ROOT, "outputs", "posts")
-BLOGS_DIR = os.path.join(ROOT, "outputs", "blogs")
-STATE_DIR = os.path.join(ROOT, "state")
-LOGS_DIR = os.path.join(ROOT, "logs")
+_ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _ENGINE_DIR not in sys.path:
+    sys.path.insert(0, _ENGINE_DIR)
+
+import paths
+
+ROOT = paths.DATA_ROOT
+QUEUE_DIR = paths.data("queue", "agy")
+POSTS_DIR = paths.data("outputs", "posts")
+BLOGS_DIR = paths.data("outputs", "blogs")
+STATE_DIR = paths.data("state")
+LOGS_DIR = paths.data("logs")
 JOBS_LOG_DIR = os.path.join(LOGS_DIR, "jobs")
 os.makedirs(JOBS_LOG_DIR, exist_ok=True)
 
@@ -44,7 +50,7 @@ def log_activity(actor, target_role, task_name, output_file):
 
 def run_digest():
     """Execute CMO daily digest."""
-    digest_script = os.path.join(ROOT, "scripts", "cmo-digest.sh")
+    digest_script = paths.resource("scripts", "cmo-digest.sh")
     if os.path.exists(digest_script):
         res = subprocess.run(["bash", digest_script], capture_output=True, text=True)
         return res.stdout
@@ -52,13 +58,13 @@ def run_digest():
 
 def run_research():
     """Execute live research scanner."""
-    scanner_path = os.path.join(ROOT, "engine", "research_scanner.py")
+    scanner_path = paths.resource("engine", "research_scanner.py")
     res = subprocess.run([sys.executable, scanner_path], capture_output=True, text=True)
     return res.stdout
 
 def run_repo_sync():
     """Execute repo sync."""
-    sync_path = os.path.join(ROOT, "engine", "repo_sync.py")
+    sync_path = paths.resource("engine", "repo_sync.py")
     res = subprocess.run([sys.executable, sync_path], capture_output=True, text=True)
     return res.stdout
 
@@ -185,18 +191,18 @@ def build_delivery_package(post_id):
     manifest = get_post_manifest(post_id)
 
     cards = glob.glob(os.path.join(post_dir, "*.png")) + glob.glob(os.path.join(post_dir, "*.jpg"))
-    manifest["assets"]["images"] = [os.path.relpath(c, ROOT) for c in cards]
+    manifest["assets"]["images"] = [os.path.relpath(c, paths.DATA_ROOT) for c in cards]
 
-    video_dir = os.path.join(ROOT, "outputs", "video", post_id)
+    video_dir = paths.data("outputs", "video", post_id)
     if os.path.exists(video_dir):
         videos = glob.glob(os.path.join(video_dir, "*.mp4"))
-        manifest["assets"]["videos"] = [os.path.relpath(v, ROOT) for v in videos]
+        manifest["assets"]["videos"] = [os.path.relpath(v, paths.DATA_ROOT) for v in videos]
 
     kit_path = os.path.join(post_dir, "POSTING-KIT.md")
     if not os.path.exists(kit_path) and os.path.exists(os.path.join(video_dir, "POSTING-KIT.md")):
         shutil.copy(os.path.join(video_dir, "POSTING-KIT.md"), kit_path)
 
-    manifest["posting_kit"] = os.path.relpath(kit_path, ROOT) if os.path.exists(kit_path) else None
+    manifest["posting_kit"] = os.path.relpath(kit_path, paths.DATA_ROOT) if os.path.exists(kit_path) else None
     save_post_manifest(post_id, manifest)
     return manifest
 
@@ -236,7 +242,7 @@ def get_system_status():
 
     # Read repo sync
     repo_sync_data = {}
-    sync_json = os.path.join(ROOT, "research", "repo-sync.json")
+    sync_json = paths.data("research", "repo-sync.json")
     if os.path.exists(sync_json):
         try:
             with open(sync_json, "r", encoding="utf-8") as f:

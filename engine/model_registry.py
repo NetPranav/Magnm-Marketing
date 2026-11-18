@@ -4,11 +4,18 @@
 from datetime import datetime, timedelta, timezone
 import json
 import os
+import sys
 import urllib.request
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODELS_CONFIG_PATH = os.path.join(ROOT, "config", "models.json")
-CATALOG_CACHE_PATH = os.path.join(ROOT, "state", "model_catalog.json")
+_ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _ENGINE_DIR not in sys.path:
+    sys.path.insert(0, _ENGINE_DIR)
+
+import paths
+
+ROOT = paths.DATA_ROOT
+MODELS_CONFIG_PATH = paths.data("config", "models.json")
+CATALOG_CACHE_PATH = paths.data("state", "model_catalog.json")
 
 
 def load_models_config(config_path=None):

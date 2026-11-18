@@ -1,16 +1,43 @@
 {
-  "version": 1,
+  "version": 2,
   "nim_base_url": "https://integrate.api.nvidia.com/v1",
   "catalog_ttl_hours": 24,
   "tiers": {
-    "reasoning": {"primary": "deepseek-ai/deepseek-v4.1-flash", "backup": "nvidia/nemotron-3-ultra-550b-a55b"},
-    "writing":   {"primary": "deepseek-ai/deepseek-v4.1-flash", "backup": "z-ai/glm-5.3-flash"},
-    "research":  {"primary": "z-ai/glm-5.3-flash", "backup": "nvidia/nemotron-3-ultra-550b-a55b"},
-    "vision":    {"primary": "nvidia/nemotron-3.5-super-vl-120b-a12b", "backup": "meta/llama-3.2-90b-vision-instruct"},
-    "fast":      {"primary": "nvidia/nemotron-3.5-lightning-30b-a3b", "backup": "openai/gpt-oss-20b"}
+    "reasoning": {
+      "primary": "nvidia/nemotron-3-ultra-550b-a55b",
+      "backup": "mistralai/mistral-large-4-1t-a52b",
+      "timeout_s": 180,
+      "max_tokens": 8000
+    },
+    "writing": {
+      "primary": "minimaxai/minimax-m3.1-flash",
+      "backup": "nvidia/nemotron-3-ultra-550b-a55b",
+      "timeout_s": 150,
+      "max_tokens": 6000
+    },
+    "research": {
+      "primary": "mistralai/mistral-large-4-1t-a52b",
+      "backup": "nvidia/nemotron-3-ultra-550b-a55b",
+      "timeout_s": 240,
+      "max_tokens": 8000
+    },
+    "vision": {
+      "primary": "nvidia/nemotron-3.5-super-vl-120b-a12b",
+      "backup": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+      "timeout_s": 150,
+      "max_tokens": 4000
+    },
+    "fast": {
+      "primary": "nvidia/nemotron-3.5-lightning-30b-a3b",
+      "backup": "nvidia/nemotron-3.5-bolt-e4b",
+      "timeout_s": 60,
+      "max_tokens": 1500
+    }
   },
   "vision_models": [
     "nvidia/nemotron-3.5-super-vl-120b-a12b",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    "google/gemma-4-31b-it",
     "meta/llama-3.2-90b-vision-instruct",
     "meta/llama-3.2-11b-vision-instruct"
   ],
@@ -24,22 +51,40 @@
     "community": "writing",
     "video-producer": "writing",
     "researcher": "research",
-    "analyst": "research",
+    "analyst": "vision",
     "reviewer": "vision",
     "designer": "vision",
     "listener": "fast"
   },
   "image_models": {
     "generate": "black-forest-labs/flux.2-klein-4b",
-    "edit": "black-forest-labs/flux.1-kontext-dev"
+    "edit": "black-forest-labs/flux.1-kontext-dev",
+    "generate_tested": "2026-11-19 OK (2.3 s)",
+    "edit_tested": "not yet"
   },
   "local": {
     "ollama_model": "llama3.2"
   },
   "secondary_providers": {
-    "openai": {"fast": "gpt-4o-mini", "reasoning": "gpt-4o"},
-    "anthropic": {"default": "claude-sonnet-5-5"},
-    "gemini": {"default": "gemini-1.5-flash"},
-    "groq": {"default": "llama-3.3-70b-versatile"}
+    "openai": {
+      "fast": "gpt-4o-mini",
+      "reasoning": "gpt-4o"
+    },
+    "anthropic": {
+      "default": "claude-sonnet-5-5"
+    },
+    "gemini": {
+      "default": "gemini-1.5-flash"
+    },
+    "groq": {
+      "default": "llama-3.3-70b-versatile"
+    }
+  },
+  "selected_on": "2026-11-19",
+  "selection_notes": "Chosen from live tests on the free NIM catalog (32 models) on 2026-11-19: grounded-writing test, tool-call test, vision test and latency. deepseek-v4.1-flash and gpt-oss-20b are end-of-life (HTTP 410). Kimi K3.1 Pro, GLM-5.3 Flash and Muse Glimmer timed out on the free tier. Re-run the bake-off when the catalog changes.",
+  "extra_models": {
+    "translate": "nvidia/riva-translate-4b-instruct-v2",
+    "content_safety": "nvidia/nemotron-3.5-content-safety",
+    "video_reasoning": "nvidia/cosmos-reason2-8b"
   }
 }

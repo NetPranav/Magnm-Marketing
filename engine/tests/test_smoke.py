@@ -19,6 +19,8 @@ ENGINE_MODULES = [
     "ai_gateway",
     "assets_manager",
     "cmo_runtime",
+    "main",
+    "paths",
     "repo_sync",
     "research_scanner",
     "scheduler",
@@ -38,10 +40,13 @@ class EngineSmokeTests(unittest.TestCase):
                 self.assertIsNotNone(mod)
 
     def test_cmo_runtime_root_equals_repo_root(self):
-        """cmo_runtime.ROOT resolves to the repository root."""
+        """cmo_runtime.ROOT resolves to paths.DATA_ROOT (and REPO_ROOT when MAGNM_HOME is unset)."""
         import cmo_runtime
+        import paths
 
-        self.assertEqual(os.path.abspath(cmo_runtime.ROOT), os.path.abspath(REPO_ROOT))
+        self.assertEqual(os.path.abspath(cmo_runtime.ROOT), os.path.abspath(paths.DATA_ROOT))
+        if not os.environ.get("MAGNM_HOME"):
+            self.assertEqual(os.path.abspath(paths.DATA_ROOT), os.path.abspath(REPO_ROOT))
 
     def test_scheduler_execstart_points_to_engine(self):
         """scheduler.generate_systemd_units writes ExecStart referencing /engine/cmo_runtime.py."""

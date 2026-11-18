@@ -12,11 +12,17 @@ import sys
 import urllib.parse
 from datetime import datetime, timezone
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_PATH = os.path.join(ROOT, "config", "repos.json")
-CACHE_DIR = os.path.join(ROOT, "cache", "repos")
-OUTPUT_JSON = os.path.join(ROOT, "research", "repo-sync.json")
-OUTPUT_MD = os.path.join(ROOT, "research", "repo-sync.md")
+_ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _ENGINE_DIR not in sys.path:
+    sys.path.insert(0, _ENGINE_DIR)
+
+import paths
+
+ROOT = paths.DATA_ROOT
+CONFIG_PATH = paths.data("config", "repos.json")
+CACHE_DIR = paths.data("cache", "repos")
+OUTPUT_JSON = paths.data("research", "repo-sync.json")
+OUTPUT_MD = paths.data("research", "repo-sync.md")
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 

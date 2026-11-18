@@ -23,9 +23,10 @@ if ENGINE_DIR not in sys.path:
     sys.path.insert(0, ENGINE_DIR)
 
 import model_registry
+import paths
 
-ROOT = os.path.dirname(ENGINE_DIR)
-ENV_PATH = os.path.join(ROOT, ".env")
+ROOT = paths.DATA_ROOT
+ENV_PATH = paths.data(".env")
 DEFAULT_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
 _sleep = time.sleep

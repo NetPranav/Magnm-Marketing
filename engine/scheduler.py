@@ -12,9 +12,15 @@ import sys
 import time
 from datetime import datetime, timezone
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCHEDULES_FILE = os.path.join(ROOT, "state", "schedules.json")
-SYSTEMD_DIR = os.path.join(ROOT, "systemd")
+_ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _ENGINE_DIR not in sys.path:
+    sys.path.insert(0, _ENGINE_DIR)
+
+import paths
+
+ROOT = paths.DATA_ROOT
+SCHEDULES_FILE = paths.data("state", "schedules.json")
+SYSTEMD_DIR = paths.resource("systemd")
 PYTHON_BIN = sys.executable
 
 def load_schedules():
@@ -44,8 +50,8 @@ After=network.target
 
 [Service]
 Type=oneshot
-WorkingDirectory={ROOT}
-ExecStart={PYTHON_BIN} {ROOT}/engine/cmo_runtime.py run-job {cmd}
+WorkingDirectory={paths.DATA_ROOT}
+ExecStart={PYTHON_BIN} {paths.resource("engine", "cmo_runtime.py")} run-job {cmd}
 StandardOutput=journal
 StandardError=journal
 """

@@ -13,14 +13,18 @@ import sys
 import time
 from datetime import datetime, timezone
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(ROOT, "engine"))
+_ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _ENGINE_DIR not in sys.path:
+    sys.path.insert(0, _ENGINE_DIR)
+
 import ai_gateway
 import assets_manager
+import paths
 import product_rules
 
-MESSAGES_FILE = os.path.join(ROOT, "state", "global_messages.json")
-CAPABILITIES_FILE = os.path.join(ROOT, "config", "capabilities.json")
+ROOT = paths.DATA_ROOT
+MESSAGES_FILE = paths.data("state", "global_messages.json")
+CAPABILITIES_FILE = paths.data("config", "capabilities.json")
 
 
 def load_capabilities():
@@ -55,6 +59,9 @@ def save_message(msg):
 
     messages.append(msg)
     messages = messages[-200:]
+    parent = os.path.dirname(MESSAGES_FILE)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     tmp_path = MESSAGES_FILE + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump({"messages": messages, "updated_at": datetime.now(timezone.utc).isoformat()}, f, indent=2)
@@ -74,7 +81,7 @@ def extract_mentions(text):
 
 def _facts_excerpt(limit=1800):
     """Return the start of research/product-facts.md (verified claims only), or a note if missing."""
-    path = os.path.join(ROOT, "research", "product-facts.md")
+    path = paths.data("research", "product-facts.md")
     try:
         with open(path, "r", encoding="utf-8") as f:
             return f.read(limit).strip()
@@ -94,7 +101,7 @@ def build_asset_context(asset_ids):
             ctx_parts.append(f"- Asset ID: {a['id']} ({a['name']}) | Type: {a['mime_type']} | Size: {a['size']}")
             ctx_parts.append(f"  Description: {a.get('description', 'None')}")
             if a["mime_type"].startswith("text/") or a["name"].endswith((".md", ".txt")):
-                full_path = os.path.join(ROOT, a["relative_path"])
+                full_path = paths.data(a["relative_path"])
                 if os.path.exists(full_path):
                     try:
                         with open(full_path, "r", encoding="utf-8", errors="ignore") as tf:
@@ -113,7 +120,7 @@ def _get_image_paths(asset_ids):
     for aid in asset_ids:
         a = next((x for x in all_assets if x["id"] == aid), None)
         if a and a.get("file_group") == "image":
-            fp = os.path.join(ROOT, a["relative_path"])
+            fp = paths.data(a["relative_path"])
             if os.path.exists(fp):
                 paths.append(fp)
     return paths or None
