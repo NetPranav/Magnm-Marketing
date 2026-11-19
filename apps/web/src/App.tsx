@@ -3,11 +3,13 @@ import type { StatusState } from '@magnm/design/react';
 import { ApiError, api, onUnauthorized } from './api';
 import { StudioShell } from './components/StudioShell';
 import { EventsProvider, useRootEventBus } from './events';
-import { SECTIONS, useRoute, type SectionId } from './router';
+import { SECTIONS, parsePitchParam, useRoute, type SectionId } from './router';
 import { PlaceholderScreen } from './screens/PlaceholderScreen';
 import { SessionEndedScreen } from './screens/SessionEndedScreen';
 import { CreateSection } from './sections/create/CreateSection';
 import { LibrarySection } from './sections/library/LibrarySection';
+import { PitchPresent } from './sections/pitch/PitchPresent';
+import { PitchSection } from './sections/pitch/PitchSection';
 import { PlanSection } from './sections/plan/PlanSection';
 import { ReposSection } from './sections/repos/ReposSection';
 import { ResearchSection } from './sections/research/ResearchSection';
@@ -168,6 +170,13 @@ export function App() {
             onNavigate={(nextId) => navigate('review', nextId ?? null)}
           />
         );
+      case 'pitch':
+        return (
+          <PitchSection
+            param={param}
+            onNavigate={(nextParam) => navigate('pitch', nextParam ?? null)}
+          />
+        );
       case 'library':
         return <LibrarySection />;
       case 'repos':
@@ -185,6 +194,19 @@ export function App() {
         );
     }
   };
+
+  const pitchRoute = currentSpec.id === 'pitch' ? parsePitchParam(param) : { proposalId: null, present: false };
+  if (currentSpec.id === 'pitch' && pitchRoute.present && pitchRoute.proposalId) {
+    const presentProposalId = pitchRoute.proposalId;
+    return (
+      <EventsProvider bus={eventBus}>
+        <PitchPresent
+          proposalId={presentProposalId}
+          onExit={() => navigate('pitch', presentProposalId)}
+        />
+      </EventsProvider>
+    );
+  }
 
   return (
     <EventsProvider bus={eventBus}>

@@ -1338,3 +1338,184 @@
     animation: none !important;
   }
 }
+
+/* Pitch section */
+
+.studio-pitch-title-btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+
+.studio-pitch-title-btn:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.studio-pitch-row-desc {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+.studio-pitch-row-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.studio-pitch-total {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.studio-pitch-editor-root {
+  padding-bottom: 96px;
+}
+
+.studio-pitch-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.22fr) minmax(0, 0.78fr);
+  gap: var(--s-5);
+  align-items: start;
+}
+
+.studio-pitch-split .studio-table th,
+.studio-pitch-split .studio-table td {
+  padding: 8px 6px;
+  font-size: 13px;
+}
+
+.studio-pitch-form-col {
+  min-width: 0;
+}
+
+.studio-pitch-preview-col {
+  min-width: 0;
+  position: sticky;
+  top: var(--s-4);
+}
+
+.studio-pitch-preview-pane {
+  display: grid;
+  gap: var(--s-2);
+}
+
+.studio-pitch-iframe-frame {
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.studio-pitch-iframe {
+  display: block;
+  width: 100%;
+  height: 75vh;
+  min-height: 520px;
+  border: 0;
+  background: var(--bg);
+}
+
+.studio-pitch-point-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.studio-pitch-point-row > .mg-input {
+  flex: 1 1 auto;
+}
+
+.studio-pitch-deliverable-toggles {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+.studio-pitch-price-input {
+  max-width: 92px;
+  padding: 7px 8px;
+}
+
+.studio-pitch-totals {
+  display: grid;
+  gap: var(--s-2);
+}
+
+.studio-pitch-total-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding-block: var(--s-1);
+  border-bottom: 1px solid var(--line);
+}
+
+.studio-pitch-total-grand {
+  border-bottom: 0;
+  padding-top: var(--s-2);
+  font-size: 18px;
+}
+
+.studio-field-error {
+  color: var(--fg);
+  font-family: var(--f-mono);
+  font-size: 11px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Present mode */
+
+.studio-present-shell {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  background: var(--bg);
+  z-index: 100;
+}
+
+.studio-present-iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--bg);
+}
+
+.studio-present-exit {
+  position: fixed;
+  top: var(--s-3);
+  right: var(--s-3);
+  z-index: 101;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line-2);
+  background: var(--bar-bg);
+  color: var(--muted);
+  cursor: pointer;
+  opacity: .72;
+  transition: opacity .15s, color .15s, border-color .15s;
+}
+
+.studio-present-exit:hover,
+.studio-present-exit:focus-visible {
+  opacity: 1;
+  color: var(--fg);
+  border-color: var(--fg);
+}

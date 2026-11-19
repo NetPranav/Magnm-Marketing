@@ -277,7 +277,7 @@ def _add_violation(violations, field, rule, message):
     violations.append({"field": field, "rule": rule, "message": message})
 
 
-def _trim_and_check_len(val, field, limit, violations, required=False):
+def _trim_and_check_len(val, field, limit, violations, required=False, forbid_angle_brackets=False):
     if val is None:
         text = ""
     elif not isinstance(val, str):
@@ -288,6 +288,8 @@ def _trim_and_check_len(val, field, limit, violations, required=False):
 
     if required and not text:
         _add_violation(violations, field, "required", f"{field} is required")
+    if forbid_angle_brackets and ("<" in text or ">" in text):
+        _add_violation(violations, field, "unsafe_characters", "Text cannot contain < or >")
     if len(text) > limit:
         _add_violation(violations, field, "text_length", f"{field} exceeds maximum length of {limit} characters")
     return text
@@ -359,8 +361,12 @@ def _validate_and_normalize(candidate, existing_id=None):
                 _add_violation(violations, "slug", "slug_unique", f"slug '{slug}' is already in use")
 
     # Rule (text hygiene): Trim and length-limit proposal text fields.
-    client_name = _trim_and_check_len(candidate.get("client_name"), "client_name", MAX_SHORT_TEXT, violations)
-    business_name = _trim_and_check_len(candidate.get("business_name"), "business_name", MAX_SHORT_TEXT, violations)
+    client_name = _trim_and_check_len(
+        candidate.get("client_name"), "client_name", MAX_SHORT_TEXT, violations, forbid_angle_brackets=True
+    )
+    business_name = _trim_and_check_len(
+        candidate.get("business_name"), "business_name", MAX_SHORT_TEXT, violations, forbid_angle_brackets=True
+    )
     notes = _trim_and_check_len(candidate.get("notes"), "notes", MAX_LONG_TEXT, violations)
 
     raw_contact = candidate.get("contact")
@@ -416,8 +422,12 @@ def _validate_and_normalize(candidate, existing_id=None):
         else:
             grp_clean = grp.strip()
 
-        n_val = _trim_and_check_len(item.get("n"), f"{prefix}.n", MAX_SHORT_TEXT, violations, required=True)
-        d_val = _trim_and_check_len(item.get("d"), f"{prefix}.d", MAX_MEDIUM_TEXT, violations, required=True)
+        n_val = _trim_and_check_len(
+            item.get("n"), f"{prefix}.n", MAX_SHORT_TEXT, violations, required=True, forbid_angle_brackets=True
+        )
+        d_val = _trim_and_check_len(
+            item.get("d"), f"{prefix}.d", MAX_MEDIUM_TEXT, violations, required=True, forbid_angle_brackets=True
+        )
 
         p_val = item.get("p")
         if not _is_int(p_val) or p_val < MIN_PRICE or p_val > MAX_PRICE:
@@ -503,15 +513,33 @@ def _validate_and_normalize(candidate, existing_id=None):
 
     preset = {
         "slug": slug,
-        "name": _trim_and_check_len(raw_preset.get("name"), "preset.name", MAX_SHORT_TEXT, violations),
-        "badge": _trim_and_check_len(raw_preset.get("badge"), "preset.badge", MAX_SHORT_TEXT, violations),
-        "clientName": _trim_and_check_len(raw_preset.get("clientName"), "preset.clientName", MAX_SHORT_TEXT, violations),
-        "businessName": _trim_and_check_len(raw_preset.get("businessName"), "preset.businessName", MAX_SHORT_TEXT, violations),
-        "title": _trim_and_check_len(raw_preset.get("title"), "preset.title", MAX_SHORT_TEXT, violations),
-        "lead": _trim_and_check_len(raw_preset.get("lead"), "preset.lead", MAX_MEDIUM_TEXT, violations),
-        "whatWeDo": _trim_and_check_len(raw_preset.get("whatWeDo"), "preset.whatWeDo", MAX_MEDIUM_TEXT, violations),
-        "portfolio": _trim_and_check_len(raw_preset.get("portfolio"), "preset.portfolio", MAX_SHORT_TEXT, violations),
-        "thisPlan": _trim_and_check_len(raw_preset.get("thisPlan"), "preset.thisPlan", MAX_MEDIUM_TEXT, violations),
+        "name": _trim_and_check_len(
+            raw_preset.get("name"), "preset.name", MAX_SHORT_TEXT, violations, forbid_angle_brackets=True
+        ),
+        "badge": _trim_and_check_len(
+            raw_preset.get("badge"), "preset.badge", MAX_SHORT_TEXT, violations, forbid_angle_brackets=True
+        ),
+        "clientName": _trim_and_check_len(
+            raw_preset.get("clientName"), "preset.clientName", MAX_SHORT_TEXT, violations, forbid_angle_brackets=True
+        ),
+        "businessName": _trim_and_check_len(
+            raw_preset.get("businessName"), "preset.businessName", MAX_SHORT_TEXT, violations, forbid_angle_brackets=True
+        ),
+        "title": _trim_and_check_len(
+            raw_preset.get("title"), "preset.title", MAX_SHORT_TEXT, violations, forbid_angle_brackets=True
+        ),
+        "lead": _trim_and_check_len(
+            raw_preset.get("lead"), "preset.lead", MAX_MEDIUM_TEXT, violations, forbid_angle_brackets=True
+        ),
+        "whatWeDo": _trim_and_check_len(
+            raw_preset.get("whatWeDo"), "preset.whatWeDo", MAX_MEDIUM_TEXT, violations, forbid_angle_brackets=True
+        ),
+        "portfolio": _trim_and_check_len(
+            raw_preset.get("portfolio"), "preset.portfolio", MAX_SHORT_TEXT, violations, forbid_angle_brackets=True
+        ),
+        "thisPlan": _trim_and_check_len(
+            raw_preset.get("thisPlan"), "preset.thisPlan", MAX_MEDIUM_TEXT, violations, forbid_angle_brackets=True
+        ),
     }
 
     raw_arch = raw_preset.get("architectureBlock")
@@ -521,10 +549,18 @@ def _validate_and_normalize(candidate, existing_id=None):
             _add_violation(violations, "preset.architectureBlock", "invalid_type", "preset.architectureBlock must be an object")
         else:
             arch_clean["heading"] = _trim_and_check_len(
-                raw_arch.get("heading"), "preset.architectureBlock.heading", MAX_SHORT_TEXT, violations
+                raw_arch.get("heading"),
+                "preset.architectureBlock.heading",
+                MAX_SHORT_TEXT,
+                violations,
+                forbid_angle_brackets=True,
             )
             arch_clean["sub"] = _trim_and_check_len(
-                raw_arch.get("sub"), "preset.architectureBlock.sub", MAX_MEDIUM_TEXT, violations
+                raw_arch.get("sub"),
+                "preset.architectureBlock.sub",
+                MAX_MEDIUM_TEXT,
+                violations,
+                forbid_angle_brackets=True,
             )
             raw_roles = raw_arch.get("roles") or []
             if not isinstance(raw_roles, list):
@@ -537,7 +573,9 @@ def _validate_and_normalize(candidate, existing_id=None):
                     if not isinstance(role, dict):
                         _add_violation(violations, rfield, "invalid_type", f"{rfield} must be an object")
                         continue
-                    rlabel = _trim_and_check_len(role.get("label"), f"{rfield}.label", MAX_SHORT_TEXT, violations)
+                    rlabel = _trim_and_check_len(
+                        role.get("label"), f"{rfield}.label", MAX_SHORT_TEXT, violations, forbid_angle_brackets=True
+                    )
                     raw_pts = role.get("points") or []
                     pts_clean = []
                     if not isinstance(raw_pts, list):
@@ -545,7 +583,13 @@ def _validate_and_normalize(candidate, existing_id=None):
                     else:
                         for pidx, pt in enumerate(raw_pts):
                             pts_clean.append(
-                                _trim_and_check_len(pt, f"{rfield}.points[{pidx}]", MAX_MEDIUM_TEXT, violations)
+                                _trim_and_check_len(
+                                    pt,
+                                    f"{rfield}.points[{pidx}]",
+                                    MAX_MEDIUM_TEXT,
+                                    violations,
+                                    forbid_angle_brackets=True,
+                                )
                             )
                     arch_clean["roles"].append({"label": rlabel, "points": pts_clean})
     preset["architectureBlock"] = arch_clean

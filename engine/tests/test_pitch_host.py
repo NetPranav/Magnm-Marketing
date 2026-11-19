@@ -190,6 +190,16 @@ class PitchHostTests(unittest.TestCase):
                 self.assertEqual(got_css, css_file)
                 self.assertEqual(got_dir, fonts_dir)
 
+    def test_07_host_adapter_supports_sections_live_preview_pdf_and_present_escape(self):
+        h = _StubGetHandler("/pitch/magnm-host.js")
+        h.do_GET()
+        self.assertEqual(h.status_code, 200)
+        js = h.body_bytes().decode("utf-8")
+        self.assertIn("buildPlannerSections", js)
+        self.assertIn("magnm:pitch-preview-update", js)
+        self.assertIn("magnm:pitch-pdf-saved", js)
+        self.assertIn("magnm:pitch-exit-present", js)
+
 
 if __name__ == "__main__":
     unittest.main()

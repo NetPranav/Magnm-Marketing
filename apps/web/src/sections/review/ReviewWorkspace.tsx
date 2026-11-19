@@ -626,7 +626,7 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
   if (loading && !review) {
     return (
       <div className="studio-stack">
-        <SheetHeader page={6} total={9} subtitle="Review" title="Loading..." />
+        <SheetHeader page={6} total={10} subtitle="Review" title="Loading..." />
         <div className="mg-empty">Loading review workspace...</div>
       </div>
     );
@@ -635,7 +635,7 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
   if (!review) {
     return (
       <div className="studio-stack">
-        <SheetHeader page={6} total={9} subtitle="Review" title="Review not found" />
+        <SheetHeader page={6} total={10} subtitle="Review" title="Review not found" />
         {error ? (
           <div className="mg-notice" role="alert">
             {error}
@@ -749,7 +749,7 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
 
       <SheetHeader
         page={6}
-        total={9}
+        total={10}
         subtitle={
           <span className="studio-review-header-meta">
             <span>{productLabel}</span>

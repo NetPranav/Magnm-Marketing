@@ -407,4 +407,131 @@ describe('SettingsSection', () => {
     });
     expect(keyInput.value).toBe('');
   });
+
+  it('edits and resets Pitch base prices (admin) and shows queued outbox count', async () => {
+    let wFrontOverridden = false;
+    let wFrontPrice = 6000;
+    let pendingCount = 2;
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/health') {
+        return jsonResponse({ ok: true, version: '0.1.0', data_root: '/tmp/magnm-data' });
+      }
+      if (url === '/api/status') {
+        return jsonResponse({ env_status: {}, models_matrix: [] });
+      }
+      if (url === '/api/setup_check') {
+        return jsonResponse({ ok: true, checks: [] });
+      }
+      if (url.startsWith('/api/bakeoff/latest')) {
+        return jsonResponse({ error: 'Not found' }, 404);
+      }
+      if (url === '/api/pitch/catalog') {
+        return jsonResponse({
+          items: {
+            w_front: {
+              g: 'Web & SaaS',
+              n: 'Responsive Web Application / Frontend',
+              d: 'Frontend',
+              r: [],
+              p: wFrontPrice,
+              base_price: 6000,
+              price: wFrontPrice,
+              overridden: wFrontOverridden,
+            },
+          },
+          groups: ['Web & SaaS'],
+          standalone_fee: 4000,
+          standalone_label: 'App-only setup',
+          presets: {},
+        });
+      }
+      if (url.startsWith('/api/pitch/outbox')) {
+        return jsonResponse({ events: [], pending_count: pendingCount });
+      }
+      if (url === '/api/pitch/base_prices' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body || '{}')) as { item_id: string; price: number };
+        wFrontOverridden = true;
+        wFrontPrice = body.price;
+        pendingCount += 1;
+        return jsonResponse({
+          admin_only: true,
+          item_id: body.item_id,
+          old_price: 6000,
+          new_price: body.price,
+          item: {
+            g: 'Web & SaaS',
+            n: 'Responsive Web Application / Frontend',
+            d: 'Frontend',
+            r: [],
+            p: wFrontPrice,
+            base_price: 6000,
+            price: wFrontPrice,
+            overridden: true,
+          },
+        });
+      }
+      if (url === '/api/pitch/base_prices/reset' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body || '{}')) as { item_id: string };
+        wFrontOverridden = false;
+        wFrontPrice = 6000;
+        pendingCount += 1;
+        return jsonResponse({
+          admin_only: true,
+          item_id: body.item_id,
+          old_price: 7500,
+          new_price: 6000,
+          reset: true,
+        });
+      }
+      return jsonResponse([]);
+    });
+
+    render(<SettingsSection />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Responsive Web Application / Frontend')).toBeTruthy();
+    });
+    expect(screen.getByText('Queued admin notifications: 2')).toBeTruthy();
+    expect(screen.getByText(/Only the admin will be able to edit Pitch base prices/)).toBeTruthy();
+
+    const priceInput = screen.getByLabelText(
+      'Admin override for Responsive Web Application / Frontend',
+    ) as HTMLInputElement;
+    fireEvent.change(priceInput, { target: { value: '7500' } });
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Save base price for Responsive Web Application / Frontend' }),
+    );
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/pitch/base_prices',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ item_id: 'w_front', price: 7500 }),
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByText('Queued admin notifications: 3')).toBeTruthy();
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Reset base price for Responsive Web Application / Frontend' }),
+    );
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/pitch/base_prices/reset',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ item_id: 'w_front' }),
+        }),
+      );
+    });
+    await waitFor(() => {
+      expect(priceInput.value).toBe('');
+      expect(screen.getByText('Queued admin notifications: 4')).toBeTruthy();
+    });
+  });
 });

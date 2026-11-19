@@ -708,6 +708,98 @@ class PitchTests(unittest.TestCase):
         finally:
             events.unsubscribe(q)
 
+    def test_14_rejects_angle_brackets_in_pitch_fields_and_agent_tool(self):
+        """Reject < and > in all text fields reaching Pitch, including via agent draft_proposal."""
+        bad = '<img src=x onerror="alert(1)">'
+        with self.assertRaises(pitch.ValidationError) as ctx:
+            pitch.create_proposal({
+                "slug": "xss-check",
+                "client_name": bad,
+                "business_name": "Biz > Co",
+                "custom_items": [
+                    {"id": "custom_xss", "g": "Backend", "n": bad, "d": "Desc <bad>", "p": 500, "r": []},
+                ],
+                "preset": {
+                    "name": bad,
+                    "badge": bad,
+                    "clientName": bad,
+                    "businessName": bad,
+                    "title": bad,
+                    "lead": bad,
+                    "whatWeDo": bad,
+                    "portfolio": bad,
+                    "thisPlan": bad,
+                    "architectureBlock": {
+                        "heading": bad,
+                        "sub": bad,
+                        "roles": [{"label": bad, "points": [bad]}],
+                    },
+                },
+            })
+
+        expected_fields = {
+            "client_name",
+            "business_name",
+            "custom_items[0].n",
+            "custom_items[0].d",
+            "preset.name",
+            "preset.badge",
+            "preset.clientName",
+            "preset.businessName",
+            "preset.title",
+            "preset.lead",
+            "preset.whatWeDo",
+            "preset.portfolio",
+            "preset.thisPlan",
+            "preset.architectureBlock.heading",
+            "preset.architectureBlock.sub",
+            "preset.architectureBlock.roles[0].label",
+            "preset.architectureBlock.roles[0].points[0]",
+        }
+        got_by_field = {e["field"]: e["message"] for e in ctx.exception.errors}
+        self.assertTrue(expected_fields.issubset(got_by_field.keys()))
+        for f in expected_fields:
+            self.assertEqual(got_by_field[f], "Text cannot contain < or >")
+
+        # Update path rejects angle brackets too
+        clean = pitch.create_proposal({"slug": "clean-prop", "client_name": "Clean"})
+        with self.assertRaises(pitch.ValidationError) as upd_ctx:
+            pitch.update_proposal(clean["id"], {"preset": {"badge": "Badge <script>"}})
+        self.assertEqual(upd_ctx.exception.errors[0]["field"], "preset.badge")
+        self.assertEqual(upd_ctx.exception.errors[0]["message"], "Text cannot contain < or >")
+
+        # Agent draft_proposal with <script> in an architecture point is rejected
+        all_agents = {a["id"]: a for a in agents.load_agents()}
+        tool_ctx = ToolContext(session_id="sess_xss", agent_id="writer")
+        before_count = len(pitch.list_proposals())
+        res = tools.run_tool(
+            "draft_proposal",
+            tool_ctx,
+            {
+                "client_name": "Safe Client",
+                "business_name": "Safe Biz",
+                "headline": "Safe Headline",
+                "lead": "Safe lead",
+                "this_plan": "Safe plan",
+                "what_we_do": "Web & Mobile",
+                "selected_item_ids": ["w_front"],
+                "architecture_roles": [
+                    {"label": "Customer", "points": ["Safe point", "<script>alert(1)</script>"]},
+                ],
+            },
+            all_agents["writer"]["tools"],
+        )
+        self.assertIn("error", res)
+        self.assertIn("errors", res)
+        self.assertTrue(
+            any(
+                e["field"] == "preset.architectureBlock.roles[0].points[1]"
+                and e["message"] == "Text cannot contain < or >"
+                for e in res["errors"]
+            )
+        )
+        self.assertEqual(len(pitch.list_proposals()), before_count)
+
 
 if __name__ == "__main__":
     unittest.main()

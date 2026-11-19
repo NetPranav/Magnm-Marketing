@@ -31,6 +31,10 @@ export default defineConfig({
         target: engineUrl,
         changeOrigin: true,
       },
+      '/pitch': {
+        target: engineUrl,
+        changeOrigin: true,
+      },
     },
   },
   test: {

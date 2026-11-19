@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { SECTIONS, parseHash, useRoute } from './router';
+import { SECTIONS, parseHash, parsePitchParam, useRoute } from './router';
 
 function RouteProbe() {
   const { section, param, navigate } = useRoute();
@@ -10,6 +10,9 @@ function RouteProbe() {
       <span data-testid="param">{param ?? 'none'}</span>
       <button type="button" onClick={() => navigate('review', 'post 42')}>
         Go Review
+      </button>
+      <button type="button" onClick={() => navigate('pitch', 'prop_9/present')}>
+        Go Present
       </button>
     </div>
   );
@@ -24,6 +27,7 @@ describe('router', () => {
       'plan',
       'create',
       'review',
+      'pitch',
       'library',
       'repos',
       'settings',
@@ -36,6 +40,20 @@ describe('router', () => {
     expect(parseHash('#/review/hello%20world')).toEqual({
       section: 'review',
       param: 'hello world',
+    });
+    expect(parseHash('#/pitch')).toEqual({ section: 'pitch', param: null });
+    expect(parseHash('#/pitch/prop_123')).toEqual({ section: 'pitch', param: 'prop_123' });
+    expect(parseHash('#/pitch/prop_123/present')).toEqual({
+      section: 'pitch',
+      param: 'prop_123/present',
+    });
+    expect(parsePitchParam('prop_123/present')).toEqual({
+      proposalId: 'prop_123',
+      present: true,
+    });
+    expect(parsePitchParam('prop_123')).toEqual({
+      proposalId: 'prop_123',
+      present: false,
     });
     expect(parseHash('#/TEAM')).toEqual({ section: 'team', param: null });
     expect(parseHash('#/nonexistent/path')).toEqual({ section: 'today', param: null });
@@ -51,5 +69,10 @@ describe('router', () => {
     fireEvent(window, new HashChangeEvent('hashchange'));
     expect(screen.getByTestId('section').textContent).toBe('review');
     expect(screen.getByTestId('param').textContent).toBe('post 42');
+
+    fireEvent.click(screen.getByText('Go Present'));
+    expect(window.location.hash).toBe('#/pitch/prop_9/present');
+    expect(screen.getByTestId('section').textContent).toBe('pitch');
+    expect(screen.getByTestId('param').textContent).toBe('prop_9/present');
   });
 });
