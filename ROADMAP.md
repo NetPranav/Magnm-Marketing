@@ -47,6 +47,21 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
     - Running agent sessions can be cancelled but not paused (no engine support).
     - "Send to my phone" is shown but disabled until Phase 4 pairing.
     - Image editing and video rendering in Review Studio wait for Phase 7.
+- **Phase 3b done (2026-11-19):** built by agy (Gemini 4 Hydrogen High), reviewed and tested by Claude.
+  - Magnm-Pitch pinned at `c44b7e2` in `vendor/magnm-pitch/` (unmodified, hash-checked, Pitch's rules check in CI),
+    served at `/pitch/` with bundled fonts (offline) and a small adapter (`vendor-host/magnm-host.js`) that feeds it
+    prices, proposals and custom items. Side by side with the real Pitch page it is visually identical.
+  - Section 7 Pitch: proposals and quote forms (client details, every Pitch text field, which services each sheet
+    shows, pre-selected choices, custom line items), live Pitch preview, per-proposal prices with the source of every
+    price, full-screen present mode, PDF export (also saved by the engine), Draft with Writer.
+  - Admin base prices in Settings (editable by anyone until roles arrive in Phase 4).
+  - Pitch's rules checked before every save; agents (CMO, Writer) can draft proposals but never set prices.
+  - Every proposal create/update/delete is queued in `sync_outbox` with who made it and its pricing, for the admin.
+  - Security: Pitch inserts some text as HTML, so `<` and `>` are rejected in proposal text and stripped by the
+    adapter (tested in a browser with an injection payload).
+  - 177 engine tests, 41 web tests, 7 adapter tests, 9 design-kit checks.
+  - **Waiting for Phase 4:** proposal links, quote-form links with submissions back to the sender, admin
+    notifications, admin-only base prices, Send to my phone. Present mode on Android comes with Phase 6.
 
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.
