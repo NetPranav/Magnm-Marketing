@@ -45,6 +45,7 @@ import product_rules
 import repo_sync
 import repos
 import review
+import review_studio
 import scheduler
 import setup_check
 import team_room
@@ -55,6 +56,8 @@ ROOT = paths.DATA_ROOT
 PORT = 5050
 HOST = "127.0.0.1"
 ENGINE_TOKEN = os.environ.get("MAGNM_ENGINE_TOKEN", "")
+MAX_POST_BYTES = 20 * 1024 * 1024
+MAX_REVIEW_BODY_BYTES = 1 * 1024 * 1024
 _SESSION_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="magnm-session")
 
 _KEYCHAIN_ERROR_PAYLOAD = {
@@ -294,6 +297,128 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def _send_review_error(self, exc):
+        status = 404 if isinstance(exc, review_studio.NotFoundError) else 400
+        self.send_json({"error": str(exc)}, status=status)
+
+    def _handle_review_get(self, url):
+        raw_rest = url.path[len("/api/review/"):].strip("/")
+        parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
+        try:
+            if len(parts) == 1:
+                self.send_json(review_studio.get_review(parts[0]))
+            elif len(parts) == 3 and parts[1] == "versions":
+                try:
+                    ver_num = int(parts[2])
+                except (TypeError, ValueError):
+                    self.send_json({"error": "Invalid version number"}, status=400)
+                    return
+                self.send_json(review_studio.get_version(parts[0], ver_num))
+            elif len(parts) == 2 and parts[1] == "diff":
+                qs = urllib.parse.parse_qs(url.query)
+                from_raw = qs.get("from", [None])[0]
+                to_raw = qs.get("to", [None])[0]
+                if from_raw is None or to_raw is None:
+                    self.send_json({"error": "from and to query parameters are required"}, status=400)
+                    return
+                try:
+                    from_ver = int(from_raw)
+                    to_ver = int(to_raw)
+                except (TypeError, ValueError):
+                    self.send_json({"error": "from and to must be integers"}, status=400)
+                    return
+                self.send_json(review_studio.diff_versions(parts[0], from_ver, to_ver))
+            else:
+                self.send_json({"error": "Not found"}, status=404)
+        except ValueError as exc:
+            self._send_review_error(exc)
+
+    def _handle_review_post(self, url, params):
+        raw_rest = url.path[len("/api/review/"):].strip("/")
+        parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
+        try:
+            if len(parts) == 4 and parts[1] == "versions" and parts[3] == "restore":
+                try:
+                    ver_num = int(parts[2])
+                except (TypeError, ValueError):
+                    self.send_json({"error": "Invalid version number"}, status=400)
+                    return
+                self.send_json(review_studio.restore_version(parts[0], ver_num))
+            elif len(parts) == 2 and parts[1] == "comments":
+                res = review_studio.create_comment(
+                    parts[0],
+                    kind=params.get("kind", "general"),
+                    version=params.get("version"),
+                    anchor=params.get("anchor"),
+                    body=params.get("body", ""),
+                    author=params.get("author", "user"),
+                    parent_id=params.get("parent_id"),
+                )
+                self.send_json(res)
+            elif len(parts) == 3 and parts[1] == "comments":
+                res = review_studio.update_comment(
+                    parts[0],
+                    parts[2],
+                    body=params.get("body") if "body" in params else None,
+                    status=params.get("status") if "status" in params else None,
+                )
+                self.send_json(res)
+            elif len(parts) == 4 and parts[1] == "comments" and parts[3] == "delete":
+                self.send_json(review_studio.delete_comment(parts[0], parts[2]))
+            elif len(parts) == 2 and parts[1] == "apply_all":
+                self.send_json(
+                    review_studio.apply_all(
+                        parts[0],
+                        agent=params.get("agent"),
+                        as_suggestions=bool(params.get("as_suggestions", False)),
+                    )
+                )
+            elif len(parts) == 2 and parts[1] == "ai_action":
+                self.send_json(
+                    review_studio.ai_action(
+                        parts[0],
+                        params.get("action"),
+                        selection=params.get("selection"),
+                        params=params.get("params"),
+                    )
+                )
+            elif len(parts) == 4 and parts[1] == "suggestions" and parts[3] == "decide":
+                self.send_json(
+                    review_studio.decide_suggestion(parts[0], parts[2], params.get("decision"))
+                )
+            elif len(parts) == 3 and parts[1] == "suggestions" and parts[2] == "decide_all":
+                self.send_json(
+                    review_studio.decide_all_suggestions(parts[0], params.get("decision"))
+                )
+            elif len(parts) == 2 and parts[1] == "checklist":
+                if "checked" not in params:
+                    self.send_json({"error": "checked is required"}, status=400)
+                    return
+                self.send_json(
+                    review_studio.update_checklist(
+                        parts[0],
+                        item_key=params.get("item_key"),
+                        label=params.get("label"),
+                        checked=params.get("checked"),
+                    )
+                )
+            elif len(parts) == 2 and parts[1] == "ready":
+                self.send_json(review_studio.mark_ready(parts[0]))
+            elif len(parts) == 2 and parts[1] == "posting_kit":
+                self.send_json(review_studio.build_posting_kit_for_item(parts[0]))
+            elif len(parts) == 2 and parts[1] == "posted":
+                self.send_json(
+                    review_studio.mark_posted(
+                        parts[0],
+                        url=params.get("url"),
+                        platform=params.get("platform"),
+                    )
+                )
+            else:
+                self.send_json({"error": "Not found"}, status=404)
+        except ValueError as exc:
+            self._send_review_error(exc)
 
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
@@ -627,6 +752,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             mime, _ = mimetypes.guess_type(candidate)
             self._serve_file_with_range(candidate, mime or "image/jpeg")
 
+        elif url.path.startswith("/api/review/"):
+            self._handle_review_get(url)
+
         elif url.path.startswith("/api/asset/"):
             parts = url.path.split("/")[3:]
             if len(parts) >= 2:
@@ -678,12 +806,34 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "unauthorized"}, status=401)
             return
 
-        content_len = int(self.headers.get("Content-Length", 0))
+        try:
+            content_len = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            self.send_json({"error": "Invalid Content-Length"}, status=400)
+            return
+        if content_len < 0:
+            self.send_json({"error": "Invalid Content-Length"}, status=400)
+            return
+        max_len = MAX_REVIEW_BODY_BYTES if url.path.startswith("/api/review/") else MAX_POST_BYTES
+        if content_len > max_len:
+            self.send_json({"error": "Request body too large"}, status=413)
+            return
+
         body = self.rfile.read(content_len).decode("utf-8") if content_len > 0 else "{}"
         try:
             params = json.loads(body)
         except Exception:
+            if url.path.startswith("/api/review/"):
+                self.send_json({"error": "Invalid JSON body"}, status=400)
+                return
             params = {}
+        if url.path.startswith("/api/review/") and not isinstance(params, dict):
+            self.send_json({"error": "JSON body must be an object"}, status=400)
+            return
+
+        if url.path.startswith("/api/review/"):
+            self._handle_review_post(url, params)
+            return
 
         if url.path == "/api/shutdown":
             self.send_json({"ok": True})
