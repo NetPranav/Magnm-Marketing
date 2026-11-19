@@ -1408,6 +1408,7 @@ def _execute_gateway_messages(
     max_tokens=None,
     allow_image_warning=False,
     tier=None,
+    model=None,
 ):
     """Shared gateway execution for confidential Ollama and non-confidential provider cascades."""
     t0 = time.monotonic()
@@ -1457,7 +1458,13 @@ def _execute_gateway_messages(
     pool = key_pool.get_pool()
     has_nim = pool.has_keys(role=role_key)
     nim_key = pool.peek_healthy_key(role=role_key) if has_nim else (cfg["ROLE_KEYS"].get(role_key) or cfg["NVIDIA_NIM_API_KEY"])
-    requested_model, backup_model, warnings = _resolve_for_role(role_key, cfg, models_cfg, nim_key, tier=tier)
+    explicit_model = str(model).strip() if model else ""
+    if explicit_model:
+        requested_model = explicit_model
+        backup_model = None
+        warnings = []
+    else:
+        requested_model, backup_model, warnings = _resolve_for_role(role_key, cfg, models_cfg, nim_key, tier=tier)
     tier_info = model_registry.tier_settings(role_key, models_cfg, tier_override=tier)
     effective_timeout = tier_info["timeout_s"]
     effective_max_tokens = tier_info["max_tokens"] if max_tokens is None else int(max_tokens)
@@ -1522,6 +1529,7 @@ def chat_with_tools(
     agent_role="",
     confidential=False,
     max_tokens=None,
+    model=None,
 ):
     """Multi-turn chat completion supporting OpenAI-compatible tools, vision filtering, and confidential Ollama."""
     res = _execute_gateway_messages(
@@ -1531,6 +1539,7 @@ def chat_with_tools(
         confidential=confidential,
         max_tokens=max_tokens,
         allow_image_warning=True,
+        model=model,
     )
     return {
         "text": res.get("text", ""),
@@ -1555,6 +1564,7 @@ def generate_completion_with_meta(
     confidential=False,
     max_tokens=None,
     tier=None,
+    model=None,
 ):
     """Unified entry point returning generated text plus full model & fallback telemetry."""
     messages = _build_messages_from_prompts(
@@ -1574,10 +1584,11 @@ def generate_completion_with_meta(
         max_tokens=max_tokens,
         allow_image_warning=False,
         tier=tier,
+        model=model,
     )
 
 
-def generate_completion(system_prompt, user_prompt, model_tier="fast", image_paths=None, agent_role="", confidential=False, max_tokens=None, tier=None):
+def generate_completion(system_prompt, user_prompt, model_tier="fast", image_paths=None, agent_role="", confidential=False, max_tokens=None, tier=None, model=None):
     """Backward-compatible wrapper returning completion string only."""
     return generate_completion_with_meta(
         system_prompt=system_prompt,
@@ -1588,6 +1599,7 @@ def generate_completion(system_prompt, user_prompt, model_tier="fast", image_pat
         confidential=confidential,
         max_tokens=max_tokens,
         tier=tier,
+        model=model,
     )["text"]
 
 

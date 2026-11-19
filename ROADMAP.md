@@ -18,6 +18,19 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
   - CI workflow for Windows, macOS and Linux (not run yet, needs the updater signing key).
   - Models re-selected from live NIM tests.
   - 63 engine tests and 6 Rust tests.
+- **Phase 2 done (2026-11-19):** built by agy, reviewed and live-tested by Claude.
+  - 7 agents with tool calling and pausable sessions.
+  - Post / blog / repurpose / weekly-plan / video-script workflows with approval gates and posting kits.
+  - NVIDIA key pool (3 keys rotating).
+  - Repos, "shipped this week" and fact approval, with confidential repos kept to local AI.
+  - Free web research (HN, Reddit, GitHub, dev.to, ddgs) with SSRF-safe page reading and a research browser.
+  - Deterministic review checks, agent memory and feedback, and the model bake-off.
+  - 133 engine tests.
+  - **Changes from the plan:**
+    - A small built-in workflow runner instead of LangGraph.
+    - Our own Playwright tools instead of browser-use.
+    - GitHub via local folder, public repo or token (the GitHub App sign-in comes later).
+    - Video voice-over and render moved to Phase 7.
 
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.

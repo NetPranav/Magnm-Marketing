@@ -21,7 +21,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -462,6 +462,26 @@ def _apply_migration_v7(conn):
     )
 
 
+def _apply_migration_v8(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS agent_memory (
+            id TEXT PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            text TEXT NOT NULL,
+            source TEXT NOT NULL,
+            content_id TEXT,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            last_used_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_memory_agent_created
+            ON agent_memory(agent_id, pinned DESC, created_at DESC);
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -470,6 +490,7 @@ _MIGRATIONS = (
     (5, _apply_migration_v5),
     (6, _apply_migration_v6),
     (7, _apply_migration_v7),
+    (8, _apply_migration_v8),
 )
 
 
@@ -1902,6 +1923,22 @@ def append_content_files(content_id, new_entries):
     return get_content_item(content_id)
 
 
+def set_content_files(content_id, entries):
+    """Replace files_json for content_id with entries and return the updated item."""
+    ensure_init()
+    conn = connect()
+    now = datetime.now(timezone.utc).isoformat()
+    with conn:
+        row = conn.execute("SELECT id FROM content_items WHERE id = ?", (str(content_id),)).fetchone()
+        if row is None:
+            return None
+        conn.execute(
+            "UPDATE content_items SET files_json = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(list(entries or []), ensure_ascii=False), now, str(content_id)),
+        )
+    return get_content_item(content_id)
+
+
 def get_content_item(content_id, version=None, include_versions=False):
     """Fetch a content item with its selected version (default current) and optional all versions."""
     ensure_init()
@@ -2824,3 +2861,216 @@ def search_research_items(query, limit=20):
             if len(hits) >= int(limit):
                 break
     return hits
+
+
+_VALID_MEMORY_SOURCES = ("feedback", "learning", "manual")
+
+
+def _deserialize_agent_memory(row):
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "agent_id": row["agent_id"],
+        "text": row["text"],
+        "source": row["source"],
+        "content_id": row["content_id"],
+        "pinned": bool(row["pinned"]),
+        "created_at": row["created_at"],
+        "last_used_at": row["last_used_at"],
+    }
+
+
+def create_agent_memory(
+    agent_id,
+    text,
+    source="manual",
+    content_id=None,
+    pinned=False,
+    memory_id=None,
+    created_at=None,
+    last_used_at=None,
+):
+    """Insert an agent_memory entry and return its dict."""
+    aid = str(agent_id or "").strip()
+    body = str(text or "").strip()
+    src = str(source or "manual").strip().lower()
+    if not aid:
+        raise ValueError("agent_id is required")
+    if not body:
+        raise ValueError("text is required")
+    if src not in _VALID_MEMORY_SOURCES:
+        raise ValueError(f"source must be one of {_VALID_MEMORY_SOURCES}")
+
+    mid = str(memory_id or f"mem_{uuid.uuid4().hex[:12]}")
+    now = str(created_at or datetime.now(timezone.utc).isoformat())
+
+    ensure_init()
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO agent_memory (
+                id, agent_id, text, source, content_id, pinned, created_at, last_used_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                mid,
+                aid,
+                body,
+                src,
+                str(content_id) if content_id else None,
+                1 if pinned else 0,
+                now,
+                str(last_used_at) if last_used_at else None,
+            ),
+        )
+    return get_agent_memory(mid)
+
+
+def get_agent_memory(memory_id):
+    """Fetch a single agent_memory row by ID, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM agent_memory WHERE id = ?",
+        (str(memory_id),),
+    ).fetchone()
+    return _deserialize_agent_memory(row)
+
+
+def list_agent_memory(agent_id=None, source=None, limit=100):
+    """List agent_memory rows ordered pinned-first then newest-first."""
+    ensure_init()
+    conn = connect()
+    clauses = []
+    params = []
+    if agent_id:
+        clauses.append("agent_id = ?")
+        params.append(str(agent_id).strip())
+    if source:
+        clauses.append("source = ?")
+        params.append(str(source).strip().lower())
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    max_rows = max(1, min(int(limit or 100), 1000))
+    params.append(max_rows)
+    rows = conn.execute(
+        f"""
+        SELECT * FROM agent_memory
+        {where}
+        ORDER BY pinned DESC, created_at DESC, rowid DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    return [_deserialize_agent_memory(r) for r in rows]
+
+
+def list_agent_memory_shared(agent_id, shared_feedback_agents=None, limit=12):
+    """List agent_memory for agent_id plus optional shared feedback from peer agents, pinned-first then newest."""
+    ensure_init()
+    conn = connect()
+    aid = str(agent_id or "").strip()
+    peers = [str(p).strip() for p in (shared_feedback_agents or []) if p and str(p).strip() != aid]
+    max_rows = max(1, min(int(limit or 12), 1000))
+    if peers:
+        placeholders = ", ".join("?" for _ in peers)
+        params = [aid, *peers, max_rows]
+        rows = conn.execute(
+            f"""
+            SELECT * FROM agent_memory
+            WHERE agent_id = ? OR (agent_id IN ({placeholders}) AND source = 'feedback')
+            ORDER BY pinned DESC, created_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT * FROM agent_memory
+            WHERE agent_id = ?
+            ORDER BY pinned DESC, created_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            (aid, max_rows),
+        ).fetchall()
+    return [_deserialize_agent_memory(r) for r in rows]
+
+
+def list_recent_feedback_for_agents(agent_ids, limit=5):
+    """Return newest feedback rows across agent_ids ordered newest-first."""
+    ids = [str(a).strip() for a in (agent_ids or []) if str(a or "").strip()]
+    if not ids:
+        return []
+    ensure_init()
+    conn = connect()
+    placeholders = ", ".join("?" for _ in ids)
+    max_rows = max(1, min(int(limit or 5), 100))
+    rows = conn.execute(
+        f"""
+        SELECT * FROM agent_memory
+        WHERE source = 'feedback' AND agent_id IN ({placeholders})
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT ?
+        """,
+        [*ids, max_rows],
+    ).fetchall()
+    return [_deserialize_agent_memory(r) for r in rows]
+
+
+def update_agent_memory(memory_id, pinned=None, text=None, last_used_at=None):
+    """Update pinned, text, and/or last_used_at on an agent_memory row."""
+    ensure_init()
+    existing = get_agent_memory(memory_id)
+    if existing is None:
+        return None
+    updates = []
+    params = []
+    if pinned is not None:
+        updates.append("pinned = ?")
+        params.append(1 if pinned else 0)
+    if text is not None:
+        clean = str(text).strip()
+        if not clean:
+            raise ValueError("text cannot be empty")
+        updates.append("text = ?")
+        params.append(clean)
+    if last_used_at is not None:
+        updates.append("last_used_at = ?")
+        params.append(str(last_used_at))
+    if not updates:
+        return existing
+    params.append(str(memory_id))
+    conn = connect()
+    with conn:
+        conn.execute(
+            f"UPDATE agent_memory SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+    return get_agent_memory(memory_id)
+
+
+def delete_agent_memory(memory_id):
+    """Delete an agent_memory row by ID. Returns True if a row was deleted."""
+    ensure_init()
+    conn = connect()
+    with conn:
+        cur = conn.execute("DELETE FROM agent_memory WHERE id = ?", (str(memory_id),))
+        return cur.rowcount > 0
+
+
+def touch_agent_memory_used(memory_ids, used_at=None):
+    """Set last_used_at on the given memory IDs."""
+    ids = [str(mid) for mid in (memory_ids or []) if mid]
+    if not ids:
+        return
+    ensure_init()
+    ts = str(used_at or datetime.now(timezone.utc).isoformat())
+    placeholders = ", ".join("?" for _ in ids)
+    conn = connect()
+    with conn:
+        conn.execute(
+            f"UPDATE agent_memory SET last_used_at = ? WHERE id IN ({placeholders})",
+            [ts, *ids],
+        )

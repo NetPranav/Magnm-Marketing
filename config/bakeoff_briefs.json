@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "briefs": [
+    {
+      "id": "linkedin_post",
+      "title": "LinkedIn post: Cero asks before running mutating commands",
+      "platform": "linkedin",
+      "type": "post",
+      "product_id": "cero",
+      "prompt": "Write a LinkedIn post for developers explaining how starting a line with '>' in Cero makes a plain-language request, and how Cero shows commands that change things for approval before running them in a real shell. Hook in the first 210 characters, 3 to 5 hashtags at the end, zero emojis, no hype words. Stick strictly to the verified facts."
+    },
+    {
+      "id": "x_post",
+      "title": "X post: Cero local SLM and system keychain",
+      "platform": "x",
+      "type": "post",
+      "product_id": "cero",
+      "prompt": "Write a single X post (280 characters max, max 2 hashtags, zero emojis, no hype words) about Cero running its built-in local model (3B default, 2.1 GB) on your computer or using Ollama/an API of your choice with keys kept in the system keychain. Stick strictly to the verified facts."
+    },
+    {
+      "id": "instagram_caption",
+      "title": "Instagram caption: Cero .flow files",
+      "platform": "instagram",
+      "type": "post",
+      "product_id": "cero",
+      "prompt": "Write an Instagram caption (strong hook in the first 125 characters, up to 5 hashtags, zero emojis, no hype words) about Cero .flow files: one file, double-click, works on macOS/Linux/Windows, and nothing runs until you click Run. Stick strictly to the verified facts."
+    },
+    {
+      "id": "blog_intro",
+      "title": "Blog intro paragraph: Why Cero previews commands in a real shell",
+      "platform": "blog",
+      "type": "intro",
+      "product_id": "cero",
+      "prompt": "Write an opening intro paragraph (120 to 180 words, direct builder-to-builder tone, zero emojis, no hype words) for an engineering blog post about how Cero works in a real shell (zsh/bash, PowerShell on Windows), asks before running state-changing commands, and answers from real output. Stick strictly to the verified facts."
+    },
+    {
+      "id": "community_reply",
+      "title": "Community reply: Does Cero run commands without asking?",
+      "platform": "x",
+      "type": "post",
+      "product_id": "cero",
+      "prompt": "Write a short, direct developer community reply (280 characters max, zero emojis, no hype words) answering the question: 'Does Cero run commands without asking?' Base every claim strictly on the verified facts."
+    }
+  ]
+}

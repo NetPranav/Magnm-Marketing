@@ -30,8 +30,10 @@ if _ENGINE_DIR not in sys.path:
 
 import agent_chat
 import agent_runtime
+import agents
 import ai_gateway
 import assets_manager
+import bakeoff
 import cmo_runtime
 import db
 import events
@@ -41,6 +43,7 @@ import paths
 import product_rules
 import repo_sync
 import repos
+import review
 import scheduler
 import setup_check
 import team_room
@@ -436,6 +439,12 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 mime, _ = mimetypes.guess_type(full_path)
                 mime = mime or "application/octet-stream"
                 self._serve_file_with_range(full_path, mime)
+            elif len(parts) == 2 and parts[1] == "auto_review":
+                item = db.get_content_item(parts[0], include_versions=True)
+                if item is None:
+                    self.send_json({"error": "Content not found"}, status=404)
+                    return
+                self.send_json(review.auto_review(item))
             else:
                 self.send_json({"error": "Not found"}, status=404)
 
@@ -555,6 +564,26 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         elif url.path == "/api/watch_topics":
             self.send_json(db.list_watch_topics())
 
+        elif url.path == "/api/memory":
+            qs = urllib.parse.parse_qs(url.query)
+            raw_aid = (qs.get("agent_id", [None])[0] or "").strip()
+            if raw_aid:
+                ag = agents.get_agent(raw_aid)
+                canon_aid = ag["id"] if ag else raw_aid.lower()
+            else:
+                canon_aid = None
+            self.send_json(db.list_agent_memory(agent_id=canon_aid))
+
+        elif url.path == "/api/bakeoff/latest":
+            qs = urllib.parse.parse_qs(url.query)
+            reveal_raw = (qs.get("reveal", ["0"])[0] or "").strip().lower()
+            reveal = reveal_raw in ("1", "true", "yes")
+            latest = bakeoff.get_latest_results(reveal=reveal)
+            if latest is None:
+                self.send_json({"error": "No bakeoff results found"}, status=404)
+                return
+            self.send_json(latest)
+
         elif url.path == "/api/research_items":
             qs = urllib.parse.parse_qs(url.query)
             topic_filter = qs.get("topic_id", [None])[0] or None
@@ -621,6 +650,12 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Repository not found"}, status=404)
                 return
             self.send_json({"success": True, "id": repo_id})
+        elif re.match(r"^/api/memory/[^/]+$", url.path):
+            mem_id = urllib.parse.unquote(url.path.split("/")[3])
+            if not db.delete_agent_memory(mem_id):
+                self.send_json({"error": "Memory item not found"}, status=404)
+                return
+            self.send_json({"success": True, "id": mem_id})
         else:
             self.send_error(404, "Not Found")
 
@@ -1188,6 +1223,69 @@ Hard Rules:
             updated = db.toggle_watch_topic(topic_id)
             if updated is None:
                 self.send_json({"error": "Watch topic not found"}, status=404)
+                return
+            self.send_json({**updated, "success": True})
+
+        elif url.path == "/api/feedback":
+            content_id = (params.get("content_id") or "").strip()
+            fb_text = (params.get("text") or "").strip()
+            if not content_id:
+                self.send_json({"error": "content_id is required"}, status=400)
+                return
+            if not fb_text:
+                self.send_json({"error": "text is required"}, status=400)
+                return
+            item = db.get_content_item(content_id)
+            if item is None:
+                self.send_json({"error": "Content not found"}, status=404)
+                return
+            raw_agent = (params.get("agent_id") or item.get("created_by") or "").strip()
+            if not raw_agent:
+                self.send_json({"error": "agent_id is required when content item has no created_by"}, status=400)
+                return
+            ag = agents.get_agent(raw_agent)
+            canon_agent = ag["id"] if ag else raw_agent.lower()
+            mem = db.create_agent_memory(
+                agent_id=canon_agent,
+                text=fb_text,
+                source="feedback",
+                content_id=content_id,
+            )
+            db.log_activity("CEO", canon_agent, f"feedback:{content_id}", fb_text[:80])
+            self.send_json({"success": True, "memory": mem})
+
+        elif url.path == "/api/memory":
+            raw_agent = (params.get("agent_id") or "").strip()
+            mem_text = (params.get("text") or "").strip()
+            if not raw_agent or not mem_text:
+                self.send_json({"error": "agent_id and text are required"}, status=400)
+                return
+            ag = agents.get_agent(raw_agent)
+            canon_agent = ag["id"] if ag else raw_agent.lower()
+            pinned = bool(params.get("pinned", False))
+            mem = db.create_agent_memory(
+                agent_id=canon_agent,
+                text=mem_text,
+                source="manual",
+                pinned=pinned,
+            )
+            self.send_json({**mem, "success": True})
+
+        elif re.match(r"^/api/memory/[^/]+$", url.path):
+            mem_id = urllib.parse.unquote(url.path.split("/")[3])
+            pinned_val = params["pinned"] if "pinned" in params else None
+            text_val = params["text"] if "text" in params else None
+            try:
+                updated = db.update_agent_memory(
+                    mem_id,
+                    pinned=bool(pinned_val) if pinned_val is not None else None,
+                    text=text_val,
+                )
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=400)
+                return
+            if updated is None:
+                self.send_json({"error": "Memory item not found"}, status=404)
                 return
             self.send_json({**updated, "success": True})
 

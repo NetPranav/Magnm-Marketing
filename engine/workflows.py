@@ -439,15 +439,26 @@ class PostWorkflow(BaseWorkflow):
                         collected_files.append(enriched)
 
         # Ensure every draft in draft_ids has the attached visual entries with alt_text
+        alt_by_path = {f["path"]: f["alt_text"] for f in collected_files if f.get("alt_text")}
         for cid in draft_ids:
             item = db.get_content_item(cid)
             if not item:
                 continue
+            existing_files = builtins.list(item.get("files") or [])
+            changed = False
+            for entry in existing_files:
+                if isinstance(entry, dict) and entry.get("kind") in ("card", "image") and not entry.get("alt_text"):
+                    alt_val = alt_by_path.get(entry.get("path"))
+                    if alt_val:
+                        entry["alt_text"] = alt_val
+                        changed = True
             existing_paths = {
-                f.get("path") for f in (item.get("files") or []) if isinstance(f, dict)
+                f.get("path") for f in existing_files if isinstance(f, dict)
             }
             missing = [f for f in collected_files if f["path"] not in existing_paths]
-            if missing:
+            if changed:
+                db.set_content_files(cid, existing_files + missing)
+            elif missing:
                 db.append_content_files(cid, missing)
 
         state["design_done"] = True

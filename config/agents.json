@@ -24,7 +24,9 @@
         "read_content",
         "delegate",
         "ask_user",
-        "check_text"
+        "check_text",
+        "remember",
+        "recall_memory"
       ],
       "legacy_ids": [
         "strategist",
@@ -55,7 +57,8 @@
         "read_page",
         "screenshot_page",
         "save_research_note",
-        "ask_user"
+        "ask_user",
+        "recall_memory"
       ],
       "legacy_ids": [
         "listener"
@@ -82,7 +85,9 @@
         "write_draft",
         "read_content",
         "check_text",
-        "ask_user"
+        "ask_user",
+        "remember",
+        "recall_memory"
       ],
       "legacy_ids": [
         "blog-writer",
@@ -105,7 +110,9 @@
         "check_image",
         "screenshot_page",
         "write_draft",
-        "ask_user"
+        "ask_user",
+        "remember",
+        "recall_memory"
       ],
       "legacy_ids": []
     },
@@ -123,7 +130,8 @@
         "write_draft",
         "read_content",
         "check_text",
-        "ask_user"
+        "ask_user",
+        "recall_memory"
       ],
       "legacy_ids": []
     },
@@ -139,7 +147,8 @@
         "read_content",
         "check_text",
         "check_image",
-        "write_review"
+        "write_review",
+        "recall_memory"
       ],
       "legacy_ids": []
     },
@@ -156,7 +165,9 @@
         "record_metrics",
         "read_metrics",
         "check_image",
-        "ask_user"
+        "ask_user",
+        "remember",
+        "recall_memory"
       ],
       "legacy_ids": []
     }

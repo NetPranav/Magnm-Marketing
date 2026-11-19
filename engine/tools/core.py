@@ -13,6 +13,7 @@ _ENGINE_DIR = os.path.dirname(_TOOLS_DIR)
 if _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
 
+import agents
 import db
 import paths
 import product_rules
@@ -624,4 +625,68 @@ def ask_user(ctx, question, options=None):
         "status": "waiting_user",
         "question": question,
         "options": list(options or []),
+    }
+
+
+@tool(
+    name="remember",
+    description="Save a durable preference or learning note for this agent (max 3 per session; near-duplicates refused).",
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": "Concise preference or learning to remember for future sessions.",
+            }
+        },
+        "required": ["text"],
+    },
+    side_effects=True,
+)
+def remember(ctx, text):
+    clean = str(text or "").strip()
+    if not clean:
+        return {"error": "text is required"}
+
+    prior_db = db.count_session_tool_calls(ctx.session_id, "remember") if ctx and ctx.session_id else 0
+    prior_ctx = int(getattr(ctx, "_remember_count", 0) or 0) if ctx else 0
+    if max(prior_db, prior_ctx) >= 3:
+        return {"error": "Limit of 3 remembered notes per session reached."}
+
+    raw_aid = ctx.agent_id if ctx and ctx.agent_id else "agent"
+    ag = agents.get_agent(raw_aid)
+    canon_id = ag["id"] if ag else str(raw_aid).strip().lower()
+
+    norm_new = " ".join(clean.split()).lower()
+    for existing in db.list_agent_memory(agent_id=canon_id, limit=500):
+        norm_existing = " ".join(str(existing.get("text") or "").split()).lower()
+        if norm_existing == norm_new:
+            return {"error": "Near-duplicate memory already exists.", "duplicate_id": existing["id"]}
+
+    saved = db.create_agent_memory(agent_id=canon_id, text=clean, source="learning")
+    if ctx is not None:
+        ctx._remember_count = prior_ctx + 1
+    return {"saved": True, "memory": saved}
+
+
+@tool(
+    name="recall_memory",
+    description="Recall saved memory notes, user preferences, and feedback visible to this agent.",
+    parameters_schema={
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+)
+def recall_memory(ctx):
+    raw_aid = ctx.agent_id if ctx and ctx.agent_id else ""
+    ag = agents.get_agent(raw_aid)
+    canon_id = ag["id"] if ag else str(raw_aid).strip().lower()
+    own_items, team_feedback = agents.get_visible_memory(canon_id, limit=12)
+    block = agents.memory_block(canon_id)
+    return {
+        "agent_id": canon_id,
+        "items": own_items,
+        "team_feedback": team_feedback,
+        "summary": block,
     }

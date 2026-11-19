@@ -15,6 +15,7 @@ import db
 import paths
 import platforms
 import product_rules
+import review
 from tools import tool
 
 VALID_CONTENT_TYPES = (
@@ -226,13 +227,30 @@ def write_review(ctx, content_id, verdict, notes):
     if norm_verdict not in VALID_VERDICTS:
         return {"error": f"Invalid verdict '{verdict}'. Expected 'ok' or 'warn'."}
 
-    target = db.get_content_item(content_id)
+    target = db.get_content_item(content_id, include_versions=True)
     if target is None:
         return {"error": f"Content item '{content_id}' not found"}
 
+    auto = review.auto_review(target)
+    auto_findings = list(auto.get("findings") or [])
+    final_verdict = "warn" if (norm_verdict == "warn" or auto.get("verdict") == "warn") else "ok"
+
+    base_notes = str(notes or "").strip()
+    if auto_findings:
+        auto_lines = "\n".join(
+            f"- [{f['severity']}] ({f['code']}) {f['message']}" for f in auto_findings
+        )
+        merged_notes = (
+            f"{base_notes}\n\nAuto-review findings:\n{auto_lines}"
+            if base_notes
+            else f"Auto-review findings:\n{auto_lines}"
+        )
+    else:
+        merged_notes = base_notes
+
     now = datetime.now(timezone.utc).isoformat()
     review_id = f"rev_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-    link_notes = f"target_content_id={content_id}; verdict={norm_verdict}"
+    link_notes = f"target_content_id={content_id}; verdict={final_verdict}"
     agent_id = ctx.agent_id if ctx else None
     session_id = ctx.session_id if ctx else None
 
@@ -240,10 +258,10 @@ def write_review(ctx, content_id, verdict, notes):
         content_id=review_id,
         content_type="review",
         platform=target.get("platform"),
-        title=f"Review ({norm_verdict}): {target.get('title') or content_id}",
-        body=notes,
+        title=f"Review ({final_verdict}): {target.get('title') or content_id}",
+        body=merged_notes,
         notes=link_notes,
-        status="ready" if norm_verdict == "ok" else "draft",
+        status="ready" if final_verdict == "ok" else "draft",
         product_id=target.get("product_id"),
         created_by=agent_id,
         session_id=session_id,
@@ -254,8 +272,8 @@ def write_review(ctx, content_id, verdict, notes):
         1,
         "review",
         target.get("platform"),
-        f"Review ({norm_verdict}): {target.get('title') or content_id}",
-        notes,
+        f"Review ({final_verdict}): {target.get('title') or content_id}",
+        merged_notes,
         notes=link_notes,
     )
     db.append_content_files(review_id, [{"kind": "review_doc", "version": 1, "path": rel_path}])
@@ -263,8 +281,11 @@ def write_review(ctx, content_id, verdict, notes):
     review_entry = {
         "kind": "review",
         "review_id": review_id,
-        "verdict": norm_verdict,
-        "notes": notes,
+        "verdict": final_verdict,
+        "agent_verdict": norm_verdict,
+        "auto_verdict": auto.get("verdict", "ok"),
+        "findings": auto_findings,
+        "notes": merged_notes,
         "path": rel_path,
         "created_at": now,
     }
@@ -273,8 +294,11 @@ def write_review(ctx, content_id, verdict, notes):
     return {
         "review_id": review_id,
         "content_id": content_id,
-        "verdict": norm_verdict,
-        "notes": notes,
+        "verdict": final_verdict,
+        "agent_verdict": norm_verdict,
+        "auto_review": auto,
+        "findings": auto_findings,
+        "notes": merged_notes,
         "path": rel_path,
     }
 
