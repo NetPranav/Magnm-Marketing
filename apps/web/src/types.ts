@@ -159,6 +159,23 @@ export interface WorkflowRun {
   content_ids?: string[];
 }
 
+export interface ContentFileEntry {
+  kind?: string;
+  path: string;
+  alt_text?: string;
+  verdict?: string;
+  review_id?: string;
+  notes?: string;
+}
+
+export interface ReviewVersionSummary {
+  number: number;
+  version: number;
+  created_by?: string | null;
+  notes?: string | null;
+  created_at?: string | null;
+}
+
 export interface ContentItem {
   id: string;
   type: string;
@@ -169,12 +186,17 @@ export interface ContentItem {
   created_by?: string | null;
   session_id?: string | null;
   current_version?: number;
+  version?: number;
   created_at: string;
   updated_at: string;
   posted_url?: string | null;
   posted_at?: string | null;
   body?: string;
   notes?: string | null;
+  files?: ContentFileEntry[];
+  versions?: ReviewVersionSummary[];
+  open_comments_count?: number;
+  warnings_count?: number;
 }
 
 export interface ProductFact {
@@ -310,4 +332,141 @@ export interface CheckTextWarning {
   product?: string;
   severity: string;
   message: string;
+}
+
+export interface ReviewVersionDetail {
+  content_id: string;
+  version: number;
+  number: number;
+  body: string;
+  notes?: string | null;
+  created_by?: string | null;
+  created_at?: string | null;
+}
+
+export interface ReviewDiffOp {
+  op: 'equal' | 'insert' | 'delete';
+  text: string;
+}
+
+export interface ReviewDiffResponse {
+  content_id: string;
+  from_version: number;
+  to_version: number;
+  ops: ReviewDiffOp[];
+}
+
+export interface ReviewCommentAnchor {
+  start?: number;
+  end?: number;
+  quote?: string;
+  orphaned?: boolean;
+  file?: string;
+  x?: number;
+  y?: number;
+  t?: number;
+  ai_action?: string;
+}
+
+export interface ReviewComment {
+  id: string;
+  content_id: string;
+  version: number;
+  kind: 'text' | 'image' | 'video' | 'general';
+  anchor: ReviewCommentAnchor;
+  body: string;
+  author: string;
+  parent_id?: string | null;
+  status: 'open' | 'resolved' | 'applied';
+  mentions?: string[];
+  created_at: string;
+  updated_at?: string;
+  replies?: ReviewComment[];
+  job_id?: string;
+  job_ids?: string[];
+}
+
+export interface ReviewSuggestion {
+  id: string;
+  content_id: string;
+  base_version: number;
+  start: number;
+  end: number;
+  original: string;
+  replacement: string;
+  author: string;
+  reason?: string | null;
+  status: string;
+  created_at: string;
+  decided_at?: string | null;
+}
+
+export interface ReviewChecklistItem {
+  id?: string;
+  content_id?: string;
+  item_key: string;
+  label: string;
+  source: 'auto' | 'platform' | 'manual';
+  checked: boolean;
+  updated_at?: string;
+}
+
+export interface ReviewFinding {
+  code?: string;
+  product?: string;
+  severity: string;
+  message: string;
+}
+
+export interface PlatformLimits {
+  platform: string;
+  max_chars?: number;
+  hook_chars?: number;
+  min_hashtags?: number;
+  max_hashtags?: number;
+  threads_numbered?: boolean;
+  alt_text_required?: boolean;
+  title_max_chars?: number;
+  description_hook_chars?: number;
+  min_words?: number;
+  max_words?: number;
+  requires_headings?: boolean;
+  requires_tldr?: boolean;
+}
+
+export interface PlatformCheckResult {
+  platform: string;
+  limits: PlatformLimits;
+  warnings: ReviewFinding[];
+  ok: boolean;
+  char_count: number;
+  word_count: number;
+  hashtag_count: number;
+  see_more_cutoff?: string | null;
+}
+
+export interface ReviewPayload {
+  item: ContentItem;
+  body: string;
+  current_version: number;
+  versions: ReviewVersionSummary[];
+  comments: ReviewComment[];
+  suggestions: ReviewSuggestion[];
+  checklist: ReviewChecklistItem[];
+  warnings: ReviewFinding[];
+  auto_review?: {
+    verdict?: string;
+    findings?: ReviewFinding[];
+  };
+  platform_check: PlatformCheckResult;
+  product?: ProductRule | null;
+  confidential?: boolean;
+}
+
+export interface PostingKitResult {
+  content_id: string;
+  path: string;
+  text: string;
+  files: string[];
+  attachments?: ContentFileEntry[];
 }

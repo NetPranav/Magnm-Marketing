@@ -11,6 +11,7 @@ import { LibrarySection } from './sections/library/LibrarySection';
 import { PlanSection } from './sections/plan/PlanSection';
 import { ReposSection } from './sections/repos/ReposSection';
 import { ResearchSection } from './sections/research/ResearchSection';
+import { ReviewSection } from './sections/review/ReviewSection';
 import { SettingsSection } from './sections/settings/SettingsSection';
 import { TeamSection } from './sections/team/TeamSection';
 import { TodaySection } from './sections/today/TodaySection';
@@ -37,7 +38,7 @@ function isJobRecord(value: unknown): value is JobRecord {
 
 /** Root Studio application shell, routing, API data loading, and live SSE wiring. */
 export function App() {
-  const { section, navigate } = useRoute();
+  const { section, param, navigate } = useRoute();
   const [sessionEnded, setSessionEnded] = useState(false);
   const [health, setHealth] = useState<HealthInfo | null>(null);
   const [status, setStatus] = useState<EngineStatusInfo | null>(null);
@@ -160,6 +161,13 @@ export function App() {
         return <PlanSection />;
       case 'create':
         return <CreateSection />;
+      case 'review':
+        return (
+          <ReviewSection
+            contentId={param}
+            onNavigate={(nextId) => navigate('review', nextId ?? null)}
+          />
+        );
       case 'library':
         return <LibrarySection />;
       case 'repos':

@@ -25,6 +25,7 @@ export const STUDIO_EVENT_NAMES = [
   'agent_failed',
   'agent_cancelled',
   'content_status',
+  'review.updated',
   'repo_synced',
   'research_digest',
   'browser_frame',

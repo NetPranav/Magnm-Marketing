@@ -91,8 +91,11 @@ def _rules_path():
     return _resolve_readable_path("config", "product_rules.json")
 
 
-def _publish(content_id, what):
-    events.publish("review.updated", {"content_id": str(content_id), "what": str(what)})
+def _publish(content_id, what, extra=None):
+    payload = {"content_id": str(content_id), "what": str(what)}
+    if isinstance(extra, dict):
+        payload.update(extra)
+    events.publish("review.updated", payload)
 
 
 def _is_number(val):
@@ -487,6 +490,23 @@ def _on_new_version(content_id, new_version, new_body):
     if comments_changed:
         _publish(content_id, "comment")
     return item
+
+
+def save_version(content_id, body, *, notes=None, created_by="user"):
+    """Create a new version from an edited body, re-anchor comments, and recompute checklist."""
+    item = _require_item(content_id, include_versions=True)
+    if not isinstance(body, str):
+        raise ValidationError("body must be a string")
+    clean_notes = notes.strip() if isinstance(notes, str) and notes.strip() else "Manual edit"
+    clean_actor = str(created_by or "user").strip() or "user"
+    updated = db.add_content_version(
+        item["id"],
+        body=body,
+        notes=clean_notes,
+        created_by=clean_actor,
+    )
+    updated = _on_new_version(item["id"], updated["current_version"], updated["body"])
+    return updated
 
 
 def restore_version(content_id, version_num, created_by="user"):
@@ -1615,19 +1635,52 @@ def _run_ai_action_job(params, job_id=None):
     raise ValidationError(f"Unknown action '{act}'")
 
 
+def enrich_content_list(items):
+    """Attach open_comments_count and warnings_count to content summary dicts."""
+    if not items:
+        return []
+    db.ensure_init()
+    conn = db.connect()
+    counts = {}
+    for row in conn.execute(
+        "SELECT content_id, COUNT(*) AS cnt FROM review_comments WHERE parent_id IS NULL AND status = 'open' GROUP BY content_id"
+    ).fetchall():
+        counts[row["content_id"]] = int(row["cnt"])
+    out = []
+    for raw in items:
+        entry = dict(raw)
+        cid = entry.get("id")
+        entry["open_comments_count"] = counts.get(cid, 0)
+        try:
+            full = db.get_content_item(cid)
+            auto_res = review.auto_review(full) if full is not None else {"findings": []}
+            entry["warnings_count"] = len(auto_res.get("findings") or [])
+        except Exception:
+            entry["warnings_count"] = 0
+        out.append(entry)
+    return out
+
+
 def execute_review_job(params, job_id=None, log_file=None):
     """Execute a queued Review Studio background job."""
     payload = dict(params or {})
     action_type = payload.get("action_type")
     content_id = payload.get("content_id")
+    result = None
     try:
         if action_type == "comment_agent":
-            return _run_comment_agent_job(payload, job_id=job_id)
+            result = _run_comment_agent_job(payload, job_id=job_id)
+            return result
         if action_type == "apply_all":
-            return _run_apply_all_job(payload, job_id=job_id)
+            result = _run_apply_all_job(payload, job_id=job_id)
+            return result
         if action_type == "ai_action":
-            return _run_ai_action_job(payload, job_id=job_id)
+            result = _run_ai_action_job(payload, job_id=job_id)
+            return result
         raise ValidationError(f"Unknown review job action_type '{action_type}'")
     finally:
         if content_id:
-            _publish(content_id, "job")
+            extra = None
+            if isinstance(result, dict) and "warnings" in result:
+                extra = {"warnings": result["warnings"]}
+            _publish(content_id, "job", extra=extra)

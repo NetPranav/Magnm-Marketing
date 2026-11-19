@@ -338,7 +338,16 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         raw_rest = url.path[len("/api/review/"):].strip("/")
         parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
         try:
-            if len(parts) == 4 and parts[1] == "versions" and parts[3] == "restore":
+            if len(parts) == 2 and parts[1] == "versions":
+                self.send_json(
+                    review_studio.save_version(
+                        parts[0],
+                        params.get("body"),
+                        notes=params.get("notes"),
+                        created_by=params.get("created_by") or "user",
+                    )
+                )
+            elif len(parts) == 4 and parts[1] == "versions" and parts[3] == "restore":
                 try:
                     ver_num = int(parts[2])
                 except (TypeError, ValueError):
@@ -525,9 +534,11 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 limit = 20
             limit = max(1, min(limit, 500))
-            self.send_json(
-                db.list_content_items(status=status_filter, content_type=type_filter, limit=limit)
-            )
+            items = db.list_content_items(status=status_filter, content_type=type_filter, limit=limit)
+            # Review counts run the Reviewer per item, so only the Review list asks for them.
+            if qs.get("review_counts", [""])[0] == "1":
+                items = review_studio.enrich_content_list(items)
+            self.send_json(items)
 
         elif url.path.startswith("/api/content/"):
             rest = url.path[len("/api/content/"):].strip("/")

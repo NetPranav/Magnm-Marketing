@@ -924,3 +924,25 @@ class ReviewStudioTests(unittest.TestCase):
             headers={**auth_hdr, "Content-Length": str(server.MAX_REVIEW_BODY_BYTES + 1)},
         )
         self.assertEqual(too_big.status_code, 413)
+
+        # 16. POST /api/review/<id>/versions and GET /api/content summary counts
+        r_ver = self._call(
+            "POST",
+            "/api/review/cnt_http/versions",
+            body_dict={"body": "Edited content for Cero.", "notes": "Tightened copy"},
+            headers=auth_hdr,
+        )
+        self.assertEqual(r_ver.status_code, 200)
+        self.assertEqual(r_ver.response_json()["body"], "Edited content for Cero.")
+        self.assertEqual(self._call("POST", "/api/review/cnt_http/versions", body_dict={"body": 123}, headers=auth_hdr).status_code, 400)
+
+        self._call("POST", "/api/review/cnt_http/comments", body_dict={"body": "Open review note"}, headers=auth_hdr)
+        r_plain = self._call("GET", "/api/content?limit=10", headers=auth_hdr)
+        plain = next((x for x in r_plain.response_json() if x["id"] == "cnt_http"), None)
+        self.assertNotIn("open_comments_count", plain)
+        r_list = self._call("GET", "/api/content?limit=10&review_counts=1", headers=auth_hdr)
+        self.assertEqual(r_list.status_code, 200)
+        listed = next((x for x in r_list.response_json() if x["id"] == "cnt_http"), None)
+        self.assertIsNotNone(listed)
+        self.assertEqual(listed["open_comments_count"], 1)
+        self.assertIsInstance(listed["warnings_count"], int)
