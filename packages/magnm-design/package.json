@@ -1,0 +1,25 @@
+{
+  "name": "@magnm/design",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Shared monochrome design kit for Magnm Studio and Magnm-Pitch",
+  "exports": {
+    "./magnm.css": "./magnm.css",
+    "./tokens.css": "./tokens.css",
+    "./fonts.css": "./fonts.css",
+    "./components.css": "./components.css",
+    "./react": "./react/index.ts"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "test": "node --test scripts/"
+  }
+}
