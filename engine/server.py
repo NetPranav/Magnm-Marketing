@@ -40,6 +40,7 @@ import events
 import jobs
 import key_pool
 import paths
+import pitch_host
 import platforms
 import product_rules
 import repo_sync
@@ -471,6 +472,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.serve_ui()
         elif url.path == "/legacy":
             self.serve_ui()
+        elif url.path == "/pitch" or url.path.startswith("/pitch/"):
+            if not pitch_host.serve(self, url):
+                self.send_error(404, "Not Found")
         elif url.path == "/api/events":
             self._serve_sse()
         elif url.path == "/api/status":

@@ -1,0 +1,16 @@
+{
+  "repo": "NetPranav/Magnm-Pitch",
+  "ref": "c44b7e2",
+  "commit": "c44b7e2347bdd7c60b620000640107ed3c02a568",
+  "synced_at": "2026-11-19T14:06:58.098833+00:00",
+  "files": {
+    "index.html": "e0f397e27e54a39074a2afe8ea653b6245625a1157e062c9526162805f75ac8c",
+    "style.css": "8dc1d03b8758f31bda0736924f60af2dc8bc2e81dfb37fe8c15ddf2f60402ef2",
+    "app.js": "04d29e6c0723c540ee1febc19555db2bbcd0f67f06badc21c89faeeed4991567",
+    "presets.js": "bae7e69c66ff3715c1bf5f30a6ea920542972f10b3400f8f0963c4f488ac129c",
+    "logo.png": "0223638fd005ff79bd8a3d1b21208e9e6751566e0326aaa23bc7471a73f0d0ef",
+    "vendor/jspdf.umd.min.js": "85ba2cc3ff858a20fa49fe6e457bec863ea40b55a9f3725e58a940e62f6f61a4",
+    "RULES.md": "77bc0a7b8e7baebcc55cd0ee2e0b9d12c4faa6640dcbab2283b74fc8e6f8381e",
+    "scripts/check-rules.js": "045c8d3ba55e4a5f0f58a32f6b01c1bdeff11805d712793e94a054993137fb43"
+  }
+}

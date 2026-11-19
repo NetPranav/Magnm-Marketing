@@ -113,6 +113,10 @@ def main():
         (os.path.join(root, "templates"), "templates"),
         (os.path.join(root, "research", "product-facts.md"), "research"),
         (os.path.join(root, "config.md"), "."),
+        (os.path.join(root, "vendor", "magnm-pitch"), os.path.join("vendor", "magnm-pitch")),
+        (os.path.join(root, "vendor-host"), "vendor-host"),
+        (os.path.join(root, "packages", "magnm-design", "fonts.css"), "pitch-fonts"),
+        (os.path.join(root, "packages", "magnm-design", "fonts"), os.path.join("pitch-fonts", "fonts")),
         (web_dist, "web"),
     ]
     for src, _ in data_specs:
