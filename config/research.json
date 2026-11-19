@@ -1,0 +1,9 @@
+{
+  "_comment": "Research engine settings: add domains to blocked_domains to forbid fetching/browsing them; default_topics are scanned by market_scan.",
+  "blocked_domains": [],
+  "default_topics": [
+    "AI terminal",
+    "CLI AI agent",
+    "developer tools launch"
+  ]
+}

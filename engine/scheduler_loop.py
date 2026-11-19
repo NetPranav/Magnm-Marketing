@@ -49,6 +49,16 @@ DEFAULT_SCHEDULES = [
         "last_run": None,
         "last_status": "idle",
     },
+    {
+        "id": "watch_topics",
+        "name": "Watch Topics Radar",
+        "command": "watch_topics",
+        "interval_hours": 1,
+        "description": "Runs due research watch topics hourly",
+        "enabled": True,
+        "last_run": None,
+        "last_status": "idle",
+    },
 ]
 
 _lock = threading.Lock()
@@ -149,10 +159,15 @@ def is_due(schedule, now=None):
 
 
 def ensure_default_schedules():
-    """Seed DEFAULT_SCHEDULES if the schedules table is empty."""
+    """Seed DEFAULT_SCHEDULES if missing from the schedules table."""
     existing = db.load_schedules()
     if not existing:
         db.save_schedules([dict(s) for s in DEFAULT_SCHEDULES])
+        return db.load_schedules()
+    existing_ids = {s.get("id") for s in existing if isinstance(s, dict)}
+    added = [dict(s) for s in DEFAULT_SCHEDULES if s["id"] not in existing_ids]
+    if added:
+        db.save_schedules(list(existing) + added)
         return db.load_schedules()
     return existing
 
@@ -186,7 +201,18 @@ def tick(now=None):
     return enqueued
 
 
+def _startup_delay_s():
+    """Seconds to wait before the first tick, so app start stays fast and quiet.
+    Override with MAGNM_SCHEDULER_DELAY_S (0 = check immediately)."""
+    try:
+        return max(0.0, float(os.environ.get("MAGNM_SCHEDULER_DELAY_S", "120")))
+    except ValueError:
+        return 120.0
+
+
 def _loop(interval_s):
+    if _stop_event.wait(_startup_delay_s()):
+        return
     while not _stop_event.is_set():
         try:
             tick()

@@ -388,6 +388,17 @@ class WorkflowTests(unittest.TestCase):
                     "provider": "nvidia_nim",
                     "model_used": "minimaxai/minimax-m3.1-flash",
                 }
+            if "Write a blog OUTLINE" in kwargs["user_prompt"]:
+                outline_calls["n"] += 1
+                outline_body = (
+                    "# How Cero Decides Approval\n\n"
+                    "## TL;DR\nCero previews every mutating command before execution.\n\n"
+                    "## Why Command Approval Matters\nIntent: Explain risks of unreviewed shell commands.\n\n"
+                    "## How Classification Works\nIntent: Detail read-only vs write classification."
+                )
+                if "### User feedback to apply" in kwargs["user_prompt"]:
+                    outline_body += "\n\n## Recovery and Audit\nIntent: Added per feedback."
+                return {"text": outline_body, "provider": "nvidia_nim", "model_used": "minimaxai/minimax-m3.1-flash"}
             gateway_calls.append(kwargs)
             prompt = kwargs["user_prompt"]
             m_sec = re.search(r"Draft ONLY section \d+/\d+ \('([^']+)'\)", prompt)

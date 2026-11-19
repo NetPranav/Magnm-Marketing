@@ -412,6 +412,7 @@ class AgentRuntime:
                     confidential=confidential,
                     publish=events.publish,
                     mark_confidential=_mark_confidential,
+                    is_cancelled=cancel_ev.is_set,
                 )
 
                 executed_names = []

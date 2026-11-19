@@ -23,6 +23,8 @@ pub const KNOWN_SECRET_KEYS: &[&str] = &[
     "GEMINI_API_KEY",
     "GROQ_API_KEY",
     "GITHUB_TOKEN",
+    "TAVILY_API_KEY",
+    "EXA_API_KEY",
     "NVIDIA_NIM_API_KEY_CMO",
     "NVIDIA_NIM_API_KEY_STRATEGIST",
     "NVIDIA_NIM_API_KEY_ADVISOR",
@@ -163,6 +165,8 @@ mod tests {
         assert!(is_allowed_secret_name("GEMINI_API_KEY"));
         assert!(is_allowed_secret_name("GROQ_API_KEY"));
         assert!(is_allowed_secret_name("GITHUB_TOKEN"));
+        assert!(is_allowed_secret_name("TAVILY_API_KEY"));
+        assert!(is_allowed_secret_name("EXA_API_KEY"));
         assert!(is_allowed_secret_name("NVIDIA_NIM_API_KEY_CMO"));
         assert!(is_allowed_secret_name("NVIDIA_NIM_API_KEY_VIDEO_PRODUCER"));
         assert!(is_allowed_secret_name("NVIDIA_NIM_API_KEY_GROWTH"));

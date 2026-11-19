@@ -11,6 +11,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -36,11 +37,13 @@ VALID_STATES = ["draft", "generated", "under_review", "revision_required", "appr
 ALLOWED_JOBS = {
     "daily_cycle": "Daily CMO Cycle (Digest, Board & Plan Check)",
     "market_scan": "Live Developer & Market Opportunity Scanner",
+    "watch_topics": "Scan Enabled Research Watch Topics",
     "repo_sync": "Codebase & GitHub Intelligence Sync",
     "repo_sync_all": "Sync All Configured Repositories",
     "generate_blog": "Generate Technical Blog & Repurposed Assets",
     "render_cards": "Render Visual Social Cards",
     "workflow_step": "Execute Workflow Step",
+    "install_browser": "Install Playwright Chromium Browser",
 }
 
 def log_activity(actor, target_role, task_name, output_file):
@@ -109,6 +112,24 @@ def run_job_body(job_name, job_id=None, actor="UI", log_file=None, params=None):
         _checkpoint(15, "Running market research scan...")
         output += "=== RUNNING MARKET RESEARCH SCAN ===\n"
         output += run_research() + "\n"
+    elif job_name == "watch_topics":
+        _checkpoint(15, "Scanning due research watch topics...")
+        from research import watch as research_watch
+        digest_res = research_watch.run_watch_topics()
+        output += "=== RUNNING WATCH TOPICS RADAR ===\n"
+        output += json.dumps(digest_res, indent=2, default=str) + "\n"
+    elif job_name == "install_browser":
+        _checkpoint(10, "Installing Playwright Chromium browser...")
+        if getattr(sys, "frozen", False):
+            from playwright._impl._driver import compute_driver_executable
+            driver_exec, driver_cli = compute_driver_executable()
+            cmd = [driver_exec, driver_cli, "install", "chromium"]
+        else:
+            cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        output += (proc.stdout or "") + "\n" + (proc.stderr or "") + "\n"
+        if proc.returncode != 0:
+            raise RuntimeError(f"playwright install chromium failed (exit {proc.returncode})")
     elif job_name in ("repo_sync", "repo_sync_all"):
         _checkpoint(20, "Running codebase and GitHub sync...")
         output += "=== RUNNING CODEBASE & GITHUB SYNC ===\n"

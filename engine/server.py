@@ -552,6 +552,47 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             status_filter = qs.get("status", [None])[0] or None
             self.send_json(db.list_product_facts(product_id=product_filter, status=status_filter))
 
+        elif url.path == "/api/watch_topics":
+            self.send_json(db.list_watch_topics())
+
+        elif url.path == "/api/research_items":
+            qs = urllib.parse.parse_qs(url.query)
+            topic_filter = qs.get("topic_id", [None])[0] or None
+            try:
+                limit = int(qs.get("limit", ["50"])[0])
+            except (TypeError, ValueError):
+                limit = 50
+            limit = max(1, min(limit, 500))
+            self.send_json(db.list_research_items(limit=limit, topic_id=topic_filter))
+
+        elif url.path == "/api/browser_frame":
+            qs = urllib.parse.parse_qs(url.query)
+            req_path = (qs.get("path", [""])[0] or "").strip()
+            if not req_path:
+                self.send_json({"error": "path query parameter required"}, status=400)
+                return
+            shots_root = os.path.realpath(paths.data("cache", "browser-shots"))
+            if os.path.isabs(req_path):
+                candidate = os.path.realpath(req_path)
+            else:
+                norm_rel = os.path.normpath(req_path).replace("\\", "/")
+                if norm_rel.startswith("cache/browser-shots/"):
+                    candidate = os.path.realpath(os.path.join(paths.DATA_ROOT, norm_rel))
+                else:
+                    candidate = os.path.realpath(os.path.join(shots_root, norm_rel))
+            try:
+                inside = os.path.commonpath([shots_root, candidate]) == shots_root and candidate != shots_root
+            except ValueError:
+                inside = False
+            if not inside:
+                self.send_json({"error": "Forbidden: path outside browser-shots"}, status=403)
+                return
+            if not os.path.isfile(candidate):
+                self.send_json({"error": "Frame not found"}, status=404)
+                return
+            mime, _ = mimetypes.guess_type(candidate)
+            self._serve_file_with_range(candidate, mime or "image/jpeg")
+
         elif url.path.startswith("/api/asset/"):
             parts = url.path.split("/")[3:]
             if len(parts) >= 2:
@@ -1122,6 +1163,33 @@ Hard Rules:
                 self.send_json({"error": msg}, status=status)
                 return
             self.send_json(updated)
+
+        elif url.path == "/api/setup/install_browser":
+            actor = params.get("actor", "UI")
+            job = jobs.enqueue("install_browser", actor=actor, max_attempts=1)
+            jobs.start_worker()
+            self.send_json({"success": True, "job": job, "message": "Queued install_browser"})
+
+        elif url.path == "/api/watch_topics":
+            try:
+                created = db.create_watch_topic(
+                    query=params.get("query"),
+                    sources=params.get("sources"),
+                    cadence_hours=params.get("cadence_hours", 24),
+                    days=params.get("days", 7),
+                    enabled=params.get("enabled", True),
+                )
+                self.send_json({**created, "success": True})
+            except (TypeError, ValueError) as exc:
+                self.send_json({"error": str(exc)}, status=400)
+
+        elif re.match(r"^/api/watch_topics/[^/]+/toggle$", url.path):
+            topic_id = urllib.parse.unquote(url.path.split("/")[3])
+            updated = db.toggle_watch_topic(topic_id)
+            if updated is None:
+                self.send_json({"error": "Watch topic not found"}, status=404)
+                return
+            self.send_json({**updated, "success": True})
 
         else:
             self.send_error(404, "Unknown endpoint")

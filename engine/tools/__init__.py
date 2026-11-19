@@ -34,6 +34,8 @@ class ToolContext:
     confidential: bool = False
     publish: Callable[[str, Any], None] = field(default=events.publish)
     mark_confidential: Callable[[], None] = field(default=lambda: None)
+    is_cancelled: Callable[[], bool] = field(default=lambda: False)
+    attachments: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -308,3 +310,4 @@ from . import core  # noqa: E402, F401
 from . import content  # noqa: E402, F401
 from . import design  # noqa: E402, F401
 from . import delegation  # noqa: E402, F401
+from . import research  # noqa: E402, F401

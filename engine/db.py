@@ -21,7 +21,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -419,6 +419,49 @@ def _apply_migration_v6(conn):
     )
 
 
+def _apply_migration_v7(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS search_cache (
+            source TEXT NOT NULL,
+            query TEXT NOT NULL,
+            results_json TEXT NOT NULL,
+            fetched_at TEXT NOT NULL,
+            PRIMARY KEY (source, query)
+        );
+
+        CREATE TABLE IF NOT EXISTS watch_topics (
+            id TEXT PRIMARY KEY,
+            query TEXT NOT NULL,
+            sources_json TEXT,
+            cadence_hours INTEGER NOT NULL DEFAULT 24,
+            days INTEGER NOT NULL DEFAULT 7,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            last_run TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS research_items (
+            id TEXT PRIMARY KEY,
+            url TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            snippet TEXT,
+            source TEXT NOT NULL,
+            published_at TEXT,
+            topic_id TEXT,
+            found_at TEXT NOT NULL,
+            score REAL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_research_items_topic_found
+            ON research_items(topic_id, found_at);
+
+        CREATE INDEX IF NOT EXISTS idx_research_items_found
+            ON research_items(found_at);
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -426,6 +469,7 @@ _MIGRATIONS = (
     (4, _apply_migration_v4),
     (5, _apply_migration_v5),
     (6, _apply_migration_v6),
+    (7, _apply_migration_v7),
 )
 
 
@@ -2534,3 +2578,249 @@ def decide_product_fact(fact_id, status, text=None, decided_at=None):
             (st, new_text, decided, str(fact_id)),
         )
     return get_product_fact(fact_id)
+
+
+def get_search_cache(source, query):
+    """Return cached {source, query, results, fetched_at} or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT source, query, results_json, fetched_at FROM search_cache WHERE source = ? AND query = ?",
+        (str(source), str(query)),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "source": row["source"],
+        "query": row["query"],
+        "results": json.loads(row["results_json"]) if row["results_json"] else [],
+        "fetched_at": row["fetched_at"],
+    }
+
+
+def set_search_cache(source, query, results, fetched_at=None):
+    """Upsert cached search results for (source, query)."""
+    ensure_init()
+    conn = connect()
+    now = fetched_at or datetime.now(timezone.utc).isoformat()
+    payload = json.dumps(list(results or []), ensure_ascii=False)
+    with conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO search_cache (source, query, results_json, fetched_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (str(source), str(query), payload, str(now)),
+        )
+    return {"source": str(source), "query": str(query), "results": list(results or []), "fetched_at": str(now)}
+
+
+def _deserialize_watch_topic(row):
+    if row is None:
+        return None
+    sources = json.loads(row["sources_json"]) if row["sources_json"] else None
+    return {
+        "id": row["id"],
+        "query": row["query"],
+        "sources": sources,
+        "cadence_hours": int(row["cadence_hours"] or 24),
+        "days": int(row["days"] or 7),
+        "enabled": bool(row["enabled"]),
+        "last_run": row["last_run"],
+        "created_at": row["created_at"],
+    }
+
+
+def create_watch_topic(
+    query,
+    sources=None,
+    cadence_hours=24,
+    days=7,
+    enabled=True,
+    topic_id=None,
+    created_at=None,
+    last_run=None,
+):
+    """Create a watch_topics record and return it."""
+    q = str(query or "").strip()
+    if not q:
+        raise ValueError("query is required")
+    cadence = max(1, int(cadence_hours if cadence_hours is not None else 24))
+    lookback = max(1, int(days if days is not None else 7))
+    sources_val = list(sources) if sources else None
+    tid = str(topic_id or f"topic_{uuid.uuid4().hex[:12]}")
+    now = str(created_at or datetime.now(timezone.utc).isoformat())
+
+    ensure_init()
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO watch_topics (
+                id, query, sources_json, cadence_hours, days, enabled, last_run, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                tid,
+                q,
+                json.dumps(sources_val, ensure_ascii=False) if sources_val is not None else None,
+                cadence,
+                lookback,
+                1 if enabled else 0,
+                last_run,
+                now,
+            ),
+        )
+    return get_watch_topic(tid)
+
+
+def get_watch_topic(topic_id):
+    """Return a watch_topic dict by ID, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute("SELECT * FROM watch_topics WHERE id = ?", (str(topic_id),)).fetchone()
+    return _deserialize_watch_topic(row)
+
+
+def list_watch_topics(enabled_only=False):
+    """List watch topics ordered newest-created first."""
+    ensure_init()
+    conn = connect()
+    if enabled_only:
+        rows = conn.execute(
+            "SELECT * FROM watch_topics WHERE enabled = 1 ORDER BY created_at DESC, rowid DESC"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM watch_topics ORDER BY created_at DESC, rowid DESC"
+        ).fetchall()
+    return [_deserialize_watch_topic(r) for r in rows]
+
+
+def toggle_watch_topic(topic_id):
+    """Flip the enabled flag on a watch_topic and return the updated dict, or None if missing."""
+    ensure_init()
+    existing = get_watch_topic(topic_id)
+    if existing is None:
+        return None
+    new_val = 0 if existing["enabled"] else 1
+    conn = connect()
+    with conn:
+        conn.execute("UPDATE watch_topics SET enabled = ? WHERE id = ?", (new_val, str(topic_id)))
+    return get_watch_topic(topic_id)
+
+
+def update_watch_topic_last_run(topic_id, last_run=None):
+    """Update last_run timestamp on a watch_topic and return the updated dict."""
+    ensure_init()
+    ts = str(last_run or datetime.now(timezone.utc).isoformat())
+    conn = connect()
+    with conn:
+        conn.execute("UPDATE watch_topics SET last_run = ? WHERE id = ?", (ts, str(topic_id)))
+    return get_watch_topic(topic_id)
+
+
+def _deserialize_research_item(row):
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "url": row["url"],
+        "title": row["title"],
+        "snippet": row["snippet"] or "",
+        "source": row["source"],
+        "published_at": row["published_at"],
+        "topic_id": row["topic_id"],
+        "found_at": row["found_at"],
+        "score": row["score"],
+    }
+
+
+def insert_research_items(items, topic_id=None, found_at=None):
+    """Insert research items deduped by URL; return count of newly inserted items."""
+    ensure_init()
+    conn = connect()
+    now = str(found_at or datetime.now(timezone.utc).isoformat())
+    inserted = 0
+    with conn:
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip()
+            title = str(item.get("title") or "").strip() or url
+            if not url:
+                continue
+            item_id = str(item.get("id") or f"ritem_{uuid.uuid4().hex[:12]}")
+            score_val = item.get("score")
+            try:
+                score_num = float(score_val) if score_val is not None else None
+            except (TypeError, ValueError):
+                score_num = None
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO research_items (
+                    id, url, title, snippet, source, published_at, topic_id, found_at, score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item_id,
+                    url,
+                    title,
+                    str(item.get("snippet") or ""),
+                    str(item.get("source") or "web"),
+                    item.get("published_at"),
+                    topic_id if topic_id is not None else item.get("topic_id"),
+                    str(item.get("found_at") or now),
+                    score_num,
+                ),
+            )
+            if cur.rowcount > 0:
+                inserted += 1
+    return inserted
+
+
+def list_research_items(limit=50, topic_id=None):
+    """List research_items ordered newest-found first, optionally filtered by topic_id."""
+    ensure_init()
+    conn = connect()
+    max_rows = max(1, min(int(limit or 50), 500))
+    if topic_id:
+        rows = conn.execute(
+            """
+            SELECT * FROM research_items
+            WHERE topic_id = ?
+            ORDER BY found_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            (str(topic_id), max_rows),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT * FROM research_items
+            ORDER BY found_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            (max_rows,),
+        ).fetchall()
+    return [_deserialize_research_item(r) for r in rows]
+
+
+def search_research_items(query, limit=20):
+    """Search research_items case-insensitively by keyword tokens."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT * FROM research_items ORDER BY found_at DESC, rowid DESC"
+    ).fetchall()
+    tokens = [t for t in str(query or "").lower().split() if t]
+    hits = []
+    for r in rows:
+        haystack = " ".join(
+            str(x or "") for x in (r["title"], r["snippet"], r["url"], r["source"])
+        ).lower()
+        if not tokens or all(tok in haystack for tok in tokens):
+            hits.append(_deserialize_research_item(r))
+            if len(hits) >= int(limit):
+                break
+    return hits

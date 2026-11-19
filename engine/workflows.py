@@ -530,6 +530,8 @@ class BlogWorkflow(BaseWorkflow):
         ]
 
     def step_write_outline(self, run, state):
+        """Outline via ONE direct call with the grounding facts included (an agent session
+        took ~400 s live and produced a 1,900-word 'outline'). Capped at ~350 words."""
         if state.get("outline_content_id") and not state.get("pending_outline_revision"):
             return StepResult.next()
 
@@ -541,40 +543,50 @@ class BlogWorkflow(BaseWorkflow):
         product_id = inputs.get("product_id")
         audience = inputs.get("audience") or "developers and technical builders"
 
-        rev_clause = ""
+        if not state.get("grounding"):
+            state["grounding"] = self._fetch_grounding_material(inputs["topic"], product_id=product_id)
+            _persist_state(run["id"], state)
+        grounding_text = self._format_grounding_block(state["grounding"])
+
+        previous = ""
         if existing_id and feedback:
-            rev_clause = (
-                f"\nRevise existing outline content_id='{existing_id}' (pass content_id='{existing_id}' to write_draft) "
-                f"based on this user feedback: {feedback}\n"
+            prev_item = db.get_content_item(existing_id) or {}
+            previous = (
+                f"### Previous outline\n{prev_item.get('body') or ''}\n\n"
+                f"### User feedback to apply\n{feedback}\n\n"
             )
-        instruction = (
-            f"Write a structured blog outline for topic: {inputs['topic']}.\n"
-            f"Target audience: {audience}. Target length: {inputs['length_words']} words."
-            f"{' Product ID: ' + str(product_id) + '.' if product_id else ''}\n"
-            f"{rev_clause}"
-            "Requirements:\n"
-            "1. Call read_product_facts first (and read_repo_changes if relevant).\n"
-            "2. Include a '## TL;DR' draft and 3 to 5 clear '## <Section Heading>' sections, each with a one-line intent.\n"
-            "3. Save via write_draft(type='blog', platform='blog', title=..., body=..., notes='outline'"
-            f"{', content_id=' + repr(existing_id) if existing_id else ''}"
-            f", product_id={json.dumps(product_id)}).\n"
-            "4. Run check_text and fix any warnings. Zero emojis."
+        prompt = (
+            f"Write a blog OUTLINE (not the article) for the topic: {inputs['topic']}\n"
+            f"Audience: {audience}. Planned article length: {inputs.get('length_words') or '1200-2000'} words.\n\n"
+            "Format, in markdown, at most 350 words in total:\n"
+            "- first line: '# <article title>'\n"
+            "- '## TL;DR' with 2-3 sentences\n"
+            "- 3 to 5 sections, each '## <Section Heading>' followed by ONE line starting with 'Intent:'\n"
+            "Only plan claims that the grounding material supports. If something isn't covered by the "
+            "facts, plan to say so rather than inventing it. Zero emojis. Output only the outline.\n\n"
+            f"{previous}### Grounding Material\n{grounding_text}"
         )
-        sess = _run_agent_for_step(run, state, step_key, "writer", instruction, title="Blog outline")
-        if sess["status"] == "waiting_user":
-            return _session_wait_result(sess, state)
-        if sess["status"] in ("failed", "cancelled"):
-            return StepResult.fail(sess.get("error") or f"Writer outline session {sess['status']}")
-
-        if not existing_id:
-            created = [
-                cid for cid in db.list_content_ids_for_session(sess["id"])
-                if (db.get_content_item(cid) or {}).get("type") == "blog"
-            ] or db.list_content_ids_for_session(sess["id"])
-            if not created:
-                return StepResult.fail("Writer completed outline step without creating a blog draft")
-            state["outline_content_id"] = created[0]
-
+        t0 = time.monotonic()
+        res = ai_gateway.generate_completion_with_meta(
+            system_prompt=agents.build_system_prompt("writer"),
+            user_prompt=prompt,
+            agent_role="writer",
+            confidential=self._blog_is_confidential(run),
+        )
+        outline = (res.get("text") or "").strip()
+        if not outline:
+            return StepResult.fail("Writer returned an empty outline")
+        title = inputs["topic"]
+        for line in outline.splitlines():
+            if line.startswith("# "):
+                title = line[2:].strip() or title
+                break
+        saved = content_tools.write_draft(
+            None, type="blog", platform="blog", title=title, body=outline,
+            content_id=existing_id, notes="outline", product_id=product_id,
+        )
+        state["outline_content_id"] = existing_id or saved["content_id"]
+        state.setdefault("step_timings_ms", {})[step_key] = int((time.monotonic() - t0) * 1000)
         state["pending_outline_revision"] = None
         state["outline_gate_id"] = None
         return StepResult.next()

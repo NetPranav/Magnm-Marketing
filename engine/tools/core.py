@@ -438,7 +438,7 @@ def propose_fact(ctx, product_id, text, source_url=None, source_kind="readme"):
 
 @tool(
     name="search_research",
-    description="Case-insensitive keyword search over outputs/research/*-findings.json and saved research_notes.",
+    description="Case-insensitive keyword search over research_notes, watch-topic research_items, and outputs/research/*-findings.json.",
     parameters_schema={
         "type": "object",
         "properties": {
@@ -474,7 +474,21 @@ def search_research(ctx, query, limit=8):
     if len(hits) >= max_hits:
         return {"query": query, "results": hits[:max_hits]}
 
-    # 2. Search outputs/research/*-findings.json files
+    # 2. Search watch-topic research_items in SQLite
+    for ritem in db.search_research_items(query, limit=max_hits):
+        hits.append(
+            {
+                "title": ritem["title"],
+                "url": ritem.get("url") or "",
+                "summary": (ritem.get("snippet") or "")[:400],
+                "date": ritem.get("published_at") or ritem.get("found_at") or "",
+                "source": ritem.get("source") or "research_items",
+            }
+        )
+        if len(hits) >= max_hits:
+            return {"query": query, "results": hits[:max_hits]}
+
+    # 3. Search outputs/research/*-findings.json files
     res_dir = paths.data("outputs", "research")
     findings_files = []
     if os.path.isdir(res_dir):
@@ -527,14 +541,14 @@ def search_research(ctx, query, limit=8):
 
 @tool(
     name="save_research_note",
-    description="Save a structured research note to the local research_notes database table.",
+    description="Save a structured research note to the local research_notes database table. Researcher notes must include the source url and date in the body.",
     parameters_schema={
         "type": "object",
         "properties": {
             "title": {"type": "string", "description": "Short title for the note."},
-            "body": {"type": "string", "description": "Detailed findings or takeaway."},
-            "url": {"type": "string", "description": "Optional source URL."},
-            "source": {"type": "string", "description": "Optional source label (e.g. 'Hacker News')."},
+            "body": {"type": "string", "description": "Detailed findings or takeaway, including source URLs and dates."},
+            "url": {"type": "string", "description": "Source URL."},
+            "source": {"type": "string", "description": "Source label (e.g. 'Hacker News')."},
         },
         "required": ["title", "body"],
     },

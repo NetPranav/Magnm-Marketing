@@ -119,7 +119,9 @@ def main(argv=None):
     jobs.start_worker()
 
     import scheduler_loop
-    scheduler_loop.start()
+    # Tests (and anyone who wants a quiet engine) can turn the background scheduler off.
+    if os.environ.get("MAGNM_DISABLE_SCHEDULER", "").strip() not in ("1", "true", "yes"):
+        scheduler_loop.start()
 
     import server
 
