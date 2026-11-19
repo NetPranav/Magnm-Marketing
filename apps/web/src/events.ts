@@ -1,4 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
+import {
+  createContext,
+  createElement,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 
 export type EventsState = 'connecting' | 'open' | 'closed';
 
@@ -27,15 +36,15 @@ const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 15000;
 
 /** Subscribe to /api/events SSE stream with exponential-backoff reconnect and ping ignored. */
-export function useEvents(handler: StudioEventHandler): EventsState {
+export function useEvents(handler: StudioEventHandler, enabled = true): EventsState {
   const [state, setState] = useState<EventsState>(() =>
-    typeof EventSource === 'undefined' ? 'closed' : 'connecting',
+    !enabled || typeof EventSource === 'undefined' ? 'closed' : 'connecting',
   );
   const handlerRef = useRef<StudioEventHandler>(handler);
   handlerRef.current = handler;
 
   useEffect(() => {
-    if (typeof EventSource === 'undefined') {
+    if (!enabled || typeof EventSource === 'undefined') {
       setState('closed');
       return undefined;
     }
@@ -110,7 +119,77 @@ export function useEvents(handler: StudioEventHandler): EventsState {
       }
       cleanupSource();
     };
-  }, []);
+  }, [enabled]);
 
   return state;
+}
+
+export interface EventBus {
+  state: EventsState;
+  subscribe: (handler: StudioEventHandler) => () => void;
+}
+
+const EventsContext = createContext<EventBus | null>(null);
+
+/** Provide a shared SSE event bus so sections reuse the app's single EventSource connection. */
+export function EventsProvider({
+  bus,
+  children,
+}: {
+  bus: EventBus;
+  children: ReactNode;
+}) {
+  return createElement(EventsContext.Provider, { value: bus }, children);
+}
+
+/** Create an EventBus backed by one useEvents() subscription in the root App component. */
+export function useRootEventBus(onEvent?: StudioEventHandler): EventBus {
+  const listenersRef = useRef(new Set<StudioEventHandler>());
+  const onEventRef = useRef(onEvent);
+  onEventRef.current = onEvent;
+
+  const state = useEvents((eventName, data) => {
+    onEventRef.current?.(eventName, data);
+    for (const listener of listenersRef.current) {
+      listener(eventName, data);
+    }
+  });
+
+  return useMemo<EventBus>(
+    () => ({
+      state,
+      subscribe(handler: StudioEventHandler) {
+        listenersRef.current.add(handler);
+        return () => {
+          listenersRef.current.delete(handler);
+        };
+      },
+    }),
+    [state],
+  );
+}
+
+/** Subscribe to live engine SSE events via shared EventsProvider, or standalone useEvents in tests. */
+export function useStudioEvents(handler: StudioEventHandler): EventsState {
+  const ctx = useContext(EventsContext);
+  const handlerRef = useRef<StudioEventHandler>(handler);
+  handlerRef.current = handler;
+
+  useEffect(() => {
+    if (!ctx) return undefined;
+    return ctx.subscribe((name, data) => {
+      handlerRef.current(name, data);
+    });
+  }, [ctx]);
+
+  const fallbackState = useEvents(
+    (name, data) => {
+      if (!ctx) {
+        handlerRef.current(name, data);
+      }
+    },
+    !ctx,
+  );
+
+  return ctx ? ctx.state : fallbackState;
 }

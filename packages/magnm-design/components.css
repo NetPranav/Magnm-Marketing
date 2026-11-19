@@ -696,6 +696,55 @@ a.mg-row {
   color: var(--bg);
 }
 
+/* Modal dialog */
+
+.mg-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: var(--bar-bg);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--s-4);
+}
+
+.mg-dialog {
+  width: 100%;
+  max-width: 520px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-card);
+  padding: var(--s-5);
+  box-shadow: var(--shadow-pop);
+  display: grid;
+  gap: var(--s-4);
+}
+
+.mg-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding-bottom: var(--s-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.mg-dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--line);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .mg-root *,
   .mg-root *::before,

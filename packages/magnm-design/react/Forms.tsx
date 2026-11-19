@@ -1,9 +1,10 @@
-import type {
-  HTMLAttributes,
-  InputHTMLAttributes,
-  ReactNode,
-  SelectHTMLAttributes,
-  TextareaHTMLAttributes,
+import {
+  forwardRef,
+  type HTMLAttributes,
+  type InputHTMLAttributes,
+  type ReactNode,
+  type SelectHTMLAttributes,
+  type TextareaHTMLAttributes,
 } from 'react';
 import { cx } from './cx';
 
@@ -35,9 +36,12 @@ export function TextInput({ className, ...rest }: TextInputProps) {
 export type TextAreaProps = TextareaHTMLAttributes<HTMLTextAreaElement>;
 
 /** Monochrome multi-line textarea control. */
-export function TextArea({ className, ...rest }: TextAreaProps) {
-  return <textarea className={cx('mg-textarea', className)} {...rest} />;
-}
+export const TextArea = forwardRef<HTMLTextAreaElement, TextAreaProps>(function TextArea(
+  { className, ...rest },
+  ref,
+) {
+  return <textarea ref={ref} className={cx('mg-textarea', className)} {...rest} />;
+});
 
 export type SelectProps = SelectHTMLAttributes<HTMLSelectElement>;
 
@@ -47,5 +51,19 @@ export function Select({ className, children, ...rest }: SelectProps) {
     <select className={cx('mg-select', className)} {...rest}>
       {children}
     </select>
+  );
+}
+
+export interface CheckboxProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 'type'> {
+  label: ReactNode;
+}
+
+/** Monochrome checkbox control with label. */
+export function Checkbox({ label, className, ...rest }: CheckboxProps) {
+  return (
+    <label className={cx('mg-check', className)}>
+      <input type="checkbox" {...rest} />
+      <span>{label}</span>
+    </label>
   );
 }

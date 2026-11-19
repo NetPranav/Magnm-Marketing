@@ -22,8 +22,11 @@ export type { BottomBarProps } from './BottomBar';
 export { StatusDot } from './StatusDot';
 export type { StatusDotProps, StatusState } from './StatusDot';
 
-export { Field, TextInput, TextArea, Select } from './Forms';
-export type { FieldProps, TextInputProps, TextAreaProps, SelectProps } from './Forms';
+export { Field, TextInput, TextArea, Select, Checkbox } from './Forms';
+export type { FieldProps, TextInputProps, TextAreaProps, SelectProps, CheckboxProps } from './Forms';
+
+export { Dialog } from './Dialog';
+export type { DialogProps } from './Dialog';
 
 export {
   THEME_STORAGE_KEY,

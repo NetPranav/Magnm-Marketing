@@ -662,6 +662,12 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Memory item not found"}, status=404)
                 return
             self.send_json({"success": True, "id": mem_id})
+        elif re.match(r"^/api/watch_topics/[^/]+$", url.path):
+            topic_id = urllib.parse.unquote(url.path.split("/")[3])
+            if not db.delete_watch_topic(topic_id):
+                self.send_json({"error": "Watch topic not found"}, status=404)
+                return
+            self.send_json({"success": True, "id": topic_id})
         else:
             self.send_error(404, "Not Found")
 

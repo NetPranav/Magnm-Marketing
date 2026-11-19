@@ -805,6 +805,10 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(h_tog.status_code, 200)
         self.assertFalse(h_tog.response_json()["enabled"])
 
+        h_del_missing = _StubHandler("/api/watch_topics/missing_topic", method="DELETE")
+        h_del_missing.do_DELETE()
+        self.assertEqual(h_del_missing.status_code, 404)
+
         db.insert_research_items(
             [{"title": "Item 1", "url": "https://example.org/1", "snippet": "S1", "source": "hn"}],
             topic_id=tid,
@@ -813,6 +817,14 @@ class ResearchTests(unittest.TestCase):
         h_items.do_GET()
         self.assertEqual(h_items.status_code, 200)
         self.assertEqual(len(h_items.response_json()), 1)
+
+        h_del = _StubHandler(f"/api/watch_topics/{tid}", method="DELETE")
+        h_del.do_DELETE()
+        self.assertEqual(h_del.status_code, 200)
+        self.assertTrue(h_del.response_json()["success"])
+        h_list_after = _StubHandler("/api/watch_topics")
+        h_list_after.do_GET()
+        self.assertEqual(h_list_after.response_json(), [])
 
         # /api/browser_frame serves only files inside cache/browser-shots
         shots_dir = paths.data("cache", "browser-shots")

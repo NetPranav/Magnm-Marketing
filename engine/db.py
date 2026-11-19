@@ -2747,6 +2747,15 @@ def toggle_watch_topic(topic_id):
     return get_watch_topic(topic_id)
 
 
+def delete_watch_topic(topic_id):
+    """Delete a watch_topic row by ID; return True if deleted, False if missing."""
+    ensure_init()
+    conn = connect()
+    with conn:
+        cur = conn.execute("DELETE FROM watch_topics WHERE id = ?", (str(topic_id),))
+    return cur.rowcount > 0
+
+
 def update_watch_topic_last_run(topic_id, last_run=None):
     """Update last_run timestamp on a watch_topic and return the updated dict."""
     ensure_init()

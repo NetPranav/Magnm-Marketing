@@ -33,7 +33,7 @@ async function parseErrorMessage(response: Response): Promise<string> {
   return response.statusText || `Request failed (${response.status})`;
 }
 
-async function request<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+async function request<T>(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {
     Accept: 'application/json',
   };
@@ -72,5 +72,8 @@ export const api = {
   },
   post<T>(path: string, body?: unknown): Promise<T> {
     return request<T>('POST', path, body);
+  },
+  delete<T>(path: string): Promise<T> {
+    return request<T>('DELETE', path);
   },
 };

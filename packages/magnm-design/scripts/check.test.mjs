@@ -213,3 +213,15 @@ test('8. compact wordmark variant is defined in CSS and React Typography', () =>
   assert.match(typographyTsx, /compact\?:\s*boolean/);
   assert.match(typographyTsx, /mg-wordmark--compact/);
 });
+
+test('9. Dialog component and modal styles exist and export from react/index.ts', () => {
+  const componentsCss = stripComments(readText('components.css'));
+  const dialogTsx = readText('react/Dialog.tsx');
+  const indexTs = readText('react/index.ts');
+  assert.match(componentsCss, /\.mg-dialog-backdrop\s*\{/);
+  assert.match(componentsCss, /\.mg-dialog\s*\{/);
+  assert.match(dialogTsx, /aria-modal="true"/);
+  assert.match(dialogTsx, /Escape/);
+  assert.match(indexTs, /export \{ Dialog \} from '\.\/Dialog'/);
+  assert.match(indexTs, /Checkbox/);
+});

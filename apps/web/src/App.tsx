@@ -2,11 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { StatusState } from '@magnm/design/react';
 import { ApiError, api, onUnauthorized } from './api';
 import { StudioShell } from './components/StudioShell';
-import { useEvents } from './events';
+import { EventsProvider, useRootEventBus } from './events';
 import { SECTIONS, useRoute, type SectionId } from './router';
 import { PlaceholderScreen } from './screens/PlaceholderScreen';
 import { SessionEndedScreen } from './screens/SessionEndedScreen';
-import { TodayScreen } from './screens/TodayScreen';
+import { PlanSection } from './sections/plan/PlanSection';
+import { ResearchSection } from './sections/research/ResearchSection';
+import { TeamSection } from './sections/team/TeamSection';
+import { TodaySection } from './sections/today/TodaySection';
 import type { EngineStatusInfo, HealthInfo, JobRecord } from './types';
 
 function mergeJobUpdate(prev: JobRecord[], incoming: JobRecord): JobRecord[] {
@@ -21,7 +24,11 @@ function mergeJobUpdate(prev: JobRecord[], incoming: JobRecord): JobRecord[] {
 function isJobRecord(value: unknown): value is JobRecord {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<JobRecord>;
-  return typeof candidate.id === 'string' && typeof candidate.name === 'string' && typeof candidate.status === 'string';
+  return (
+    typeof candidate.id === 'string' &&
+    typeof candidate.name === 'string' &&
+    typeof candidate.status === 'string'
+  );
 }
 
 /** Root Studio application shell, routing, API data loading, and live SSE wiring. */
@@ -93,7 +100,8 @@ export function App() {
     }
   }, []);
 
-  const eventsState = useEvents(handleEvent);
+  const eventBus = useRootEventBus(handleEvent);
+  const eventsState = eventBus.state;
 
   useEffect(() => {
     const prev = prevEventsStateRef.current;
@@ -127,31 +135,49 @@ export function App() {
 
   const tabItems = SECTIONS.map((item) => ({ id: item.id, label: item.label }));
 
+  const renderSection = () => {
+    switch (currentSpec.id) {
+      case 'today':
+        return (
+          <TodaySection
+            health={health}
+            status={status}
+            jobs={jobs}
+            loading={loading}
+            error={error}
+            onRefreshSummary={() => void loadSummary()}
+          />
+        );
+      case 'team':
+        return <TeamSection />;
+      case 'research':
+        return <ResearchSection />;
+      case 'plan':
+        return <PlanSection />;
+      default:
+        return (
+          <PlaceholderScreen
+            page={sectionIndex + 1}
+            total={SECTIONS.length}
+            title={currentSpec.label}
+            description={currentSpec.coming}
+          />
+        );
+    }
+  };
+
   return (
-    <StudioShell
-      items={tabItems}
-      current={currentSpec.id}
-      onSelect={(nextId: SectionId) => navigate(nextId)}
-      layout={currentSpec.layout}
-      engineState={engineState}
-      engineLabel={engineLabel}
-    >
-      {currentSpec.id === 'today' ? (
-        <TodayScreen
-          health={health}
-          status={status}
-          jobs={jobs}
-          loading={loading}
-          error={error}
-        />
-      ) : (
-        <PlaceholderScreen
-          page={sectionIndex + 1}
-          total={SECTIONS.length}
-          title={currentSpec.label}
-          description={currentSpec.coming}
-        />
-      )}
-    </StudioShell>
+    <EventsProvider bus={eventBus}>
+      <StudioShell
+        items={tabItems}
+        current={currentSpec.id}
+        onSelect={(nextId: SectionId) => navigate(nextId)}
+        layout={currentSpec.layout}
+        engineState={engineState}
+        engineLabel={engineLabel}
+      >
+        {renderSection()}
+      </StudioShell>
+    </EventsProvider>
   );
 }
