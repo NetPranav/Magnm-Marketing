@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Serve the pinned Magnm-Pitch bundle at /pitch/ with offline fonts and Studio host payload."""
 
+from copy import deepcopy
+from html.parser import HTMLParser
 import json
 import os
 import re
@@ -92,6 +94,283 @@ def _apply_price_overrides(prices, overrides):
         prices[item_id] = int(raw_price)
 
 
+class _PitchIndexDefaultsParser(HTMLParser):
+    """Strict HTML parser extracting default timeline and payment plan blocks from Pitch index.html."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.blocks = []
+        self._block = None
+        self._block_div_depth = 0
+        self._in_steps = False
+        self._step = None
+        self._in_pay = False
+        self._pay_div_depth = 0
+        self._pay_item = None
+        self._capture = None
+        self._buf = []
+
+    def _classes(self, attrs):
+        for k, v in attrs:
+            if k == "class" and v:
+                return set(v.split())
+        return set()
+
+    def handle_starttag(self, tag, attrs):
+        classes = self._classes(attrs)
+        if tag == "div":
+            if self._block is None:
+                if "block" in classes:
+                    self._block = {"heading": "", "steps": [], "pay": [], "hints": []}
+                    self._block_div_depth = 1
+                return
+            self._block_div_depth += 1
+            if "pay" in classes:
+                self._in_pay = True
+                self._pay_div_depth = 1
+            elif self._in_pay:
+                self._pay_div_depth += 1
+                if self._pay_div_depth == 2:
+                    self._pay_item = {"percent_text": "", "label": ""}
+            return
+
+        if self._block is None:
+            return
+
+        if tag == "h2" and not self._block["heading"]:
+            self._capture = "heading"
+            self._buf = []
+        elif tag == "ol" and "steps" in classes:
+            self._in_steps = True
+        elif tag == "li" and self._in_steps:
+            self._step = {"title": "", "when": "", "detail": ""}
+        elif self._step is not None:
+            if tag == "span":
+                self._capture = "step_when" if "t" in classes else "step_title"
+                self._buf = []
+            elif tag == "small":
+                self._capture = "step_detail"
+                self._buf = []
+        elif self._pay_item is not None:
+            if tag == "b":
+                self._capture = "pay_pct"
+                self._buf = []
+            elif tag == "span":
+                self._capture = "pay_label"
+                self._buf = []
+        elif tag == "p" and "hint" in classes:
+            self._capture = "hint"
+            self._buf = []
+
+    def handle_data(self, data):
+        if self._capture is not None:
+            self._buf.append(data)
+
+    def handle_endtag(self, tag):
+        if self._block is None:
+            return
+
+        if self._capture is not None:
+            text = " ".join("".join(self._buf).split())
+            if self._capture == "heading" and tag == "h2":
+                self._block["heading"] = text
+                self._capture = None
+            elif self._capture == "step_when" and tag == "span" and self._step is not None:
+                self._step["when"] = text
+                self._capture = None
+            elif self._capture == "step_title" and tag == "span" and self._step is not None:
+                self._step["title"] = text
+                self._capture = None
+            elif self._capture == "step_detail" and tag == "small" and self._step is not None:
+                self._step["detail"] = text
+                self._capture = None
+            elif self._capture == "pay_pct" and tag == "b" and self._pay_item is not None:
+                self._pay_item["percent_text"] = text
+                self._capture = None
+            elif self._capture == "pay_label" and tag == "span" and self._pay_item is not None:
+                self._pay_item["label"] = text
+                self._capture = None
+            elif self._capture == "hint" and tag == "p":
+                if text:
+                    self._block["hints"].append(text)
+                self._capture = None
+
+        if tag == "li" and self._step is not None:
+            self._block["steps"].append(self._step)
+            self._step = None
+        elif tag == "ol" and self._in_steps:
+            self._in_steps = False
+        elif tag == "div":
+            if self._in_pay:
+                if self._pay_div_depth == 2 and self._pay_item is not None:
+                    self._block["pay"].append(self._pay_item)
+                    self._pay_item = None
+                self._pay_div_depth -= 1
+                if self._pay_div_depth <= 0:
+                    self._in_pay = False
+                    self._pay_div_depth = 0
+            self._block_div_depth -= 1
+            if self._block_div_depth <= 0:
+                self.blocks.append(self._block)
+                self._block = None
+                self._block_div_depth = 0
+
+
+def parse_index_defaults(html_text=None):
+    """Parse default payment_plan, payment_note, and timeline from vendored index.html strictly."""
+    if html_text is None:
+        index_path = os.path.join(vendor_dir(), "index.html")
+        with open(index_path, "r", encoding="utf-8") as f:
+            html_text = f.read()
+
+    parser = _PitchIndexDefaultsParser()
+    parser.feed(html_text)
+    parser.close()
+
+    steps_block = None
+    pay_block = None
+    for blk in parser.blocks:
+        h = blk["heading"].strip().lower()
+        if h == "how your software gets built":
+            steps_block = blk
+        elif h == "how you pay":
+            pay_block = blk
+
+    if steps_block is None or not steps_block["steps"]:
+        raise RuntimeError("Could not parse 'How your software gets built' timeline from Pitch index.html")
+    timeline = []
+    for idx, st in enumerate(steps_block["steps"]):
+        title = st["title"].strip()
+        when = st["when"].strip()
+        detail = st["detail"].strip()
+        if not title or not when or not detail:
+            raise RuntimeError(f"Incomplete timeline step {idx} in Pitch index.html")
+        timeline.append({"title": title, "when": when, "detail": detail})
+    if not (1 <= len(timeline) <= 8):
+        raise RuntimeError(f"Expected 1..8 timeline steps in Pitch index.html, got {len(timeline)}")
+
+    if pay_block is None or not pay_block["pay"] or not pay_block["hints"]:
+        raise RuntimeError("Could not parse 'How you pay' payment plan or hint from Pitch index.html")
+    payment_plan = []
+    for idx, row in enumerate(pay_block["pay"]):
+        m = re.match(r"^(\d+)\s*%$", row["percent_text"].strip())
+        if not m:
+            raise RuntimeError(f"Invalid payment percent {row['percent_text']!r} at row {idx} in Pitch index.html")
+        pct = int(m.group(1))
+        label = row["label"].strip()
+        if pct < 1 or pct > 100 or not label:
+            raise RuntimeError(f"Invalid payment row {idx} in Pitch index.html")
+        payment_plan.append({"percent": pct, "label": label})
+    if not (2 <= len(payment_plan) <= 4) or sum(r["percent"] for r in payment_plan) != 100:
+        raise RuntimeError("Invalid payment_plan row count or percent sum in Pitch index.html")
+
+    payment_note = pay_block["hints"][0].strip()
+    if not payment_note:
+        raise RuntimeError("Missing payment_note hint in Pitch index.html")
+
+    return {
+        "payment_plan": payment_plan,
+        "payment_note": payment_note,
+        "timeline": timeline,
+    }
+
+
+def expand_selected_ids(initial_ids, all_items):
+    """Port Pitch's addWithDeps(): expand initialSelected with transitive dependencies r."""
+    selected = []
+    seen = set()
+    added = []
+
+    def add_with_deps(item_id, is_dep=False):
+        if item_id in seen or item_id not in all_items:
+            return
+        seen.add(item_id)
+        selected.append(item_id)
+        if is_dep:
+            added.append(item_id)
+        for dep_id in all_items[item_id].get("r") or []:
+            add_with_deps(dep_id, is_dep=True)
+
+    for iid in initial_ids or []:
+        add_with_deps(iid, is_dep=False)
+    return selected, added
+
+
+def compute_payment_plan_amounts(payment_plan, total):
+    """Compute rupee amounts for each payment plan row, putting rounding remainder on the last row."""
+    rows = list(payment_plan or [])
+    if not rows:
+        return []
+    out = []
+    running = 0
+    last_idx = len(rows) - 1
+    total_int = int(total)
+    for idx, row in enumerate(rows):
+        pct = int(row.get("percent", 0))
+        label = str(row.get("label") or "")
+        if idx == last_idx:
+            amt = total_int - running
+        else:
+            amt = round(total_int * pct / 100)
+            running += amt
+        out.append({"percent": pct, "label": label, "amount": amt})
+    return out
+
+
+def _extract_contact(proposal, preset):
+    raw_contact = proposal.get("contact") if isinstance(proposal.get("contact"), dict) else {}
+    preset_dict = preset if isinstance(preset, dict) else {}
+    name = (
+        str(proposal.get("client_name") or "").strip()
+        or str(raw_contact.get("name") or "").strip()
+        or str(preset_dict.get("clientName") or "").strip()
+    )
+    business = (
+        str(proposal.get("business_name") or "").strip()
+        or str(raw_contact.get("business") or "").strip()
+        or str(preset_dict.get("businessName") or "").strip()
+    )
+    return {
+        "name": name,
+        "business": business,
+        "phone": str(raw_contact.get("phone") or "").strip(),
+        "email": str(raw_contact.get("email") or "").strip(),
+        "notes": str(raw_contact.get("notes") or "").strip(),
+    }
+
+
+def _compute_final_total(selected_ids, prices, custom_items, standalone_fee, service_plans, cat_items):
+    all_items = dict(cat_items)
+    custom_map = {}
+    for citem in custom_items:
+        if isinstance(citem, dict) and citem.get("id"):
+            cid = citem["id"]
+            custom_map[cid] = citem
+            all_items[cid] = citem
+
+    expanded, _ = expand_selected_ids(selected_ids, all_items)
+    groups = []
+    subtotal = 0
+    for iid in expanded:
+        if iid in custom_map:
+            citem = custom_map[iid]
+            subtotal += int(citem.get("p", 0))
+            groups.append(citem.get("g", ""))
+        elif iid in prices:
+            subtotal += int(prices[iid])
+            groups.append((cat_items.get(iid) or {}).get("g", ""))
+
+    has_mobile = any(g == "Mobile app" for g in groups)
+    has_web = any(g == "Web & SaaS" for g in groups)
+    fee = int(standalone_fee) if (has_mobile and not has_web) else 0
+    one_time_plans = sum(
+        int(sp.get("price", 0))
+        for sp in (service_plans or [])
+        if isinstance(sp, dict) and sp.get("period") == "one_time"
+    )
+    return subtotal + fee + one_time_plans
+
+
 def build_payload(mode="preview", proposal=None, price_overrides=None):
     """Build the host payload injected into the composed Pitch page."""
     norm_mode = mode if mode in VALID_MODES else "preview"
@@ -101,26 +380,62 @@ def build_payload(mode="preview", proposal=None, price_overrides=None):
     _apply_price_overrides(prices, price_overrides)
 
     proposal_id = None
+    kind = None
+    locked = False
     preset = None
     custom_items = []
+    contact = {"name": "", "business": "", "phone": "", "email": "", "notes": ""}
+    payment_plan = []
+    payment_note = ""
+    timeline = []
+    service_plans = []
+
     if isinstance(proposal, dict):
         proposal_id = proposal.get("id") or proposal.get("proposal_id")
-        raw_preset = proposal.get("preset")
-        if isinstance(raw_preset, dict):
-            preset = dict(raw_preset)
-            if proposal.get("slug") and not preset.get("slug"):
-                preset["slug"] = proposal["slug"]
+        kind = proposal.get("kind") or "proposal"
+        if kind == "default":
+            norm_mode = "form"
+            preset = deepcopy((catalog.get("presets") or {}).get("general") or {})
         else:
-            preset = raw_preset
-        custom_items = list(proposal.get("custom_items") or [])
-        _apply_price_overrides(prices, proposal.get("price_overrides"))
+            raw_preset = proposal.get("preset")
+            if isinstance(raw_preset, dict):
+                preset = dict(raw_preset)
+                if proposal.get("slug") and not preset.get("slug"):
+                    preset["slug"] = proposal["slug"]
+            else:
+                preset = raw_preset
+            custom_items = list(proposal.get("custom_items") or [])
+            _apply_price_overrides(prices, proposal.get("price_overrides"))
+            contact = _extract_contact(proposal, preset)
+            if kind == "final":
+                locked = True
+                service_plans = [dict(sp) for sp in (proposal.get("service_plans") or []) if isinstance(sp, dict)]
+                selected_ids = list((preset or {}).get("initialSelected") or []) if isinstance(preset, dict) else []
+                total = _compute_final_total(
+                    selected_ids,
+                    prices,
+                    custom_items,
+                    catalog.get("standalone_fee", 4000),
+                    service_plans,
+                    items,
+                )
+                payment_plan = compute_payment_plan_amounts(proposal.get("payment_plan") or [], total)
+                payment_note = str(proposal.get("payment_note") or "")
+                timeline = [dict(st) for st in (proposal.get("timeline") or []) if isinstance(st, dict)]
 
     return {
         "mode": norm_mode,
+        "kind": kind,
+        "locked": locked,
         "prices": prices,
         "custom_items": custom_items,
         "preset": preset,
         "proposal_id": proposal_id,
+        "contact": contact,
+        "payment_plan": payment_plan,
+        "payment_note": payment_note,
+        "timeline": timeline,
+        "service_plans": service_plans,
     }
 
 
@@ -268,18 +583,33 @@ def serve(handler, url):
             prop = db.get_pitch_proposal(proposal_id)
             if prop is None:
                 return False
-            preset_copy = dict(prop.get("preset") or {})
-            preset_copy["slug"] = prop["slug"]
-            proposal_payload = {
-                "id": prop["id"],
-                "slug": prop["slug"],
-                "kind": prop["kind"],
-                "preset": preset_copy,
-                "price_overrides": prop.get("price_overrides") or {},
-                "custom_items": prop.get("custom_items") or [],
-            }
-            if prop.get("kind") == "quote_form":
+            if prop.get("kind") == "default":
+                proposal_payload = {
+                    "id": prop["id"],
+                    "slug": prop["slug"],
+                    "kind": "default",
+                }
                 mode = "form"
+            else:
+                preset_copy = dict(prop.get("preset") or {})
+                preset_copy["slug"] = prop["slug"]
+                proposal_payload = {
+                    "id": prop["id"],
+                    "slug": prop["slug"],
+                    "kind": prop["kind"],
+                    "client_name": prop.get("client_name") or "",
+                    "business_name": prop.get("business_name") or "",
+                    "contact": prop.get("contact") or {},
+                    "preset": preset_copy,
+                    "price_overrides": prop.get("price_overrides") or {},
+                    "custom_items": prop.get("custom_items") or [],
+                    "payment_plan": prop.get("payment_plan") or [],
+                    "payment_note": prop.get("payment_note") or "",
+                    "timeline": prop.get("timeline") or [],
+                    "service_plans": prop.get("service_plans") or [],
+                }
+                if prop.get("kind") == "quote_form":
+                    mode = "form"
 
         payload = build_payload(
             mode=mode,

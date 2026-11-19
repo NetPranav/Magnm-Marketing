@@ -9,6 +9,7 @@ schedules, activity audit logs, and AI gateway run telemetry into
 from datetime import datetime, timezone
 import json
 import os
+import secrets
 import sqlite3
 import sys
 import threading
@@ -21,7 +22,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -593,6 +594,63 @@ def _apply_migration_v10(conn):
     )
 
 
+def _apply_migration_v11(conn):
+    cols = {
+        r["name"]
+        for r in conn.execute("PRAGMA table_info(pitch_proposals)").fetchall()
+    }
+    if "payment_plan_json" not in cols:
+        conn.execute("ALTER TABLE pitch_proposals ADD COLUMN payment_plan_json TEXT NOT NULL DEFAULT '[]'")
+    if "payment_note" not in cols:
+        conn.execute("ALTER TABLE pitch_proposals ADD COLUMN payment_note TEXT NOT NULL DEFAULT ''")
+    if "timeline_json" not in cols:
+        conn.execute("ALTER TABLE pitch_proposals ADD COLUMN timeline_json TEXT NOT NULL DEFAULT '[]'")
+    if "service_plans_json" not in cols:
+        conn.execute("ALTER TABLE pitch_proposals ADD COLUMN service_plans_json TEXT NOT NULL DEFAULT '[]'")
+
+    existing = conn.execute(
+        "SELECT id FROM pitch_proposals WHERE kind = 'default' OR slug = 'default-quotation' LIMIT 1"
+    ).fetchone()
+    if existing is None:
+        share_id = secrets.token_urlsafe(12)
+        while conn.execute("SELECT 1 FROM pitch_proposals WHERE share_id = ?", (share_id,)).fetchone() is not None:
+            share_id = secrets.token_urlsafe(12)
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """
+            INSERT INTO pitch_proposals (
+                id, slug, kind, status, client_name, business_name,
+                contact_json, preset_json, price_overrides_json, custom_items_json,
+                notes, created_by, share_id, pitch_commit,
+                payment_plan_json, payment_note, timeline_json, service_plans_json,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "prop_default",
+                "default-quotation",
+                "default",
+                "ready",
+                "",
+                "",
+                "{}",
+                "{}",
+                "{}",
+                "[]",
+                "",
+                "system",
+                share_id,
+                "",
+                "[]",
+                "",
+                "[]",
+                "[]",
+                now,
+                now,
+            ),
+        )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -604,6 +662,7 @@ _MIGRATIONS = (
     (8, _apply_migration_v8),
     (9, _apply_migration_v9),
     (10, _apply_migration_v10),
+    (11, _apply_migration_v11),
 )
 
 
@@ -3587,6 +3646,11 @@ def _deserialize_pitch_proposal(row):
     preset = json.loads(row["preset_json"]) if row["preset_json"] else {}
     price_overrides = json.loads(row["price_overrides_json"]) if row["price_overrides_json"] else {}
     custom_items = json.loads(row["custom_items_json"]) if row["custom_items_json"] else []
+    keys = row.keys()
+    payment_plan = json.loads(row["payment_plan_json"]) if ("payment_plan_json" in keys and row["payment_plan_json"]) else []
+    payment_note = (row["payment_note"] or "") if "payment_note" in keys else ""
+    timeline = json.loads(row["timeline_json"]) if ("timeline_json" in keys and row["timeline_json"]) else []
+    service_plans = json.loads(row["service_plans_json"]) if ("service_plans_json" in keys and row["service_plans_json"]) else []
     return {
         "id": row["id"],
         "slug": row["slug"],
@@ -3598,6 +3662,10 @@ def _deserialize_pitch_proposal(row):
         "preset": preset,
         "price_overrides": price_overrides,
         "custom_items": custom_items,
+        "payment_plan": payment_plan,
+        "payment_note": payment_note,
+        "timeline": timeline,
+        "service_plans": service_plans,
         "notes": row["notes"] or "",
         "created_by": row["created_by"] or "user",
         "share_id": row["share_id"],
@@ -3623,6 +3691,10 @@ def create_pitch_proposal(
     created_by,
     share_id,
     pitch_commit,
+    payment_plan=None,
+    payment_note="",
+    timeline=None,
+    service_plans=None,
     created_at=None,
 ):
     """Insert a pitch_proposals row and return the deserialized dict."""
@@ -3635,8 +3707,10 @@ def create_pitch_proposal(
             INSERT INTO pitch_proposals (
                 id, slug, kind, status, client_name, business_name,
                 contact_json, preset_json, price_overrides_json, custom_items_json,
-                notes, created_by, share_id, pitch_commit, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                notes, created_by, share_id, pitch_commit,
+                payment_plan_json, payment_note, timeline_json, service_plans_json,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(proposal_id),
@@ -3653,6 +3727,10 @@ def create_pitch_proposal(
                 str(created_by or "user"),
                 str(share_id),
                 str(pitch_commit or ""),
+                json.dumps(payment_plan if payment_plan is not None else [], ensure_ascii=False),
+                str(payment_note or ""),
+                json.dumps(timeline if timeline is not None else [], ensure_ascii=False),
+                json.dumps(service_plans if service_plans is not None else [], ensure_ascii=False),
                 now,
                 now,
             ),
@@ -3678,6 +3756,17 @@ def get_pitch_proposal_by_slug(slug):
     row = conn.execute(
         "SELECT * FROM pitch_proposals WHERE slug = ?",
         (str(slug),),
+    ).fetchone()
+    return _deserialize_pitch_proposal(row)
+
+
+def get_pitch_proposal_by_kind(kind):
+    """Fetch the first pitch proposal matching kind, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM pitch_proposals WHERE kind = ? ORDER BY rowid ASC LIMIT 1",
+        (str(kind),),
     ).fetchone()
     return _deserialize_pitch_proposal(row)
 
@@ -3732,6 +3821,7 @@ def update_pitch_proposal(proposal_id, updates, updated_at=None):
         "status": lambda v: str(v),
         "client_name": lambda v: str(v or ""),
         "business_name": lambda v: str(v or ""),
+        "payment_note": lambda v: str(v or ""),
         "notes": lambda v: str(v or ""),
     }
     json_map = {
@@ -3739,6 +3829,9 @@ def update_pitch_proposal(proposal_id, updates, updated_at=None):
         "preset": "preset_json",
         "price_overrides": "price_overrides_json",
         "custom_items": "custom_items_json",
+        "payment_plan": "payment_plan_json",
+        "timeline": "timeline_json",
+        "service_plans": "service_plans_json",
     }
     sets = []
     params = []

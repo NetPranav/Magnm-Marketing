@@ -664,4 +664,493 @@ describe('PitchSection', () => {
     expect(customDescInput.getAttribute('aria-invalid')).toBe('true');
     expect(screen.getAllByText('Text cannot contain < or >')).toHaveLength(2);
   });
+
+  it('renders pinned default row with allowed actions only, opens default read-only, filters final, creates quote form & final (blank and finalize)', async () => {
+    const catalog = makeCatalog();
+    catalog.default_plans = {
+      payment_plan: [
+        { percent: 40, label: 'to start' },
+        { percent: 30, label: 'at demo' },
+        { percent: 30, label: 'at launch' },
+      ],
+      payment_note: 'Third-party infrastructure billed directly.',
+      timeline: [
+        { title: 'Scope & Cost Estimation', when: 'Day 1', detail: 'Configure scope.' },
+        { title: 'Architecture & UI/UX Screens', when: 'Week 1', detail: 'Wireframes.' },
+        { title: 'Sprint Development & QA Testing', when: 'Weeks 2 to 6', detail: 'Bi-weekly demos.' },
+        { title: 'Cloud Deployment & Handover', when: 'Final Week', detail: 'Launch and handover.' },
+      ],
+    };
+    const defaultProp = makeProposal({
+      id: 'prop_default',
+      slug: 'default-quotation',
+      kind: 'default',
+      status: 'ready',
+      client_name: '',
+      business_name: '',
+      created_by: 'system',
+      pricing_summary: {
+        lines: [],
+        custom_items: [],
+        subtotal: 8800,
+        standalone_fee: 0,
+        standalone_label: '',
+        total: 8800,
+        differs_from_base: [],
+      },
+    });
+    const finalProp = makeProposal({
+      id: 'prop_final_1',
+      slug: 'acme-final',
+      kind: 'final',
+      status: 'ready',
+      client_name: 'Asha',
+      business_name: 'Acme Health',
+      created_by: 'user',
+      pricing_summary: {
+        lines: [],
+        custom_items: [],
+        subtotal: 12000,
+        standalone_fee: 0,
+        standalone_label: '',
+        total: 12000,
+        differs_from_base: [],
+      },
+    });
+    const proposals = [makeProposal(), defaultProp, finalProp];
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/pitch/version') {
+        return jsonResponse({ ref: 'c44b7e2', commit: 'c44b7e2347bdd7c60b620000640107ed3c02a568' });
+      }
+      if (url === '/api/pitch/catalog') return jsonResponse(catalog);
+      if (url === '/api/pitch/default') return jsonResponse(defaultProp);
+      if (url === '/api/pitch/proposals/prop_default') return jsonResponse(defaultProp);
+      if (url === '/api/pitch/proposals/prop_default/pdfs') {
+        return jsonResponse({ proposal_id: 'prop_default', slug: 'default-quotation', pdfs: [] });
+      }
+      if (url === '/api/pitch/proposals/prop_default/duplicate' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body || '{}')) as Record<string, unknown>;
+        return jsonResponse(
+          makeProposal({
+            id: 'prop_dup_qf',
+            slug: String(body.slug || 'dup-qf'),
+            kind: (body.kind as PitchProposal['kind']) || 'proposal',
+            created_by: 'user',
+          }),
+        );
+      }
+      if (url.startsWith('/api/pitch/proposals') && (!init?.method || init.method === 'GET')) {
+        const parsed = new URL(url, 'http://localhost');
+        const st = parsed.searchParams.get('status') || '';
+        const kd = parsed.searchParams.get('kind') || '';
+        const filtered = proposals.filter(
+          (p) => (!st || p.status === st) && (!kd || p.kind === kd),
+        );
+        return jsonResponse({ proposals: filtered });
+      }
+      if (url === '/api/pitch/proposals' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body || '{}')) as Record<string, unknown>;
+        return jsonResponse(
+          makeProposal({
+            id: 'prop_created',
+            slug: String(body.slug || 'created'),
+            kind: (body.kind as PitchProposal['kind']) || 'proposal',
+            created_by: 'user',
+          }),
+        );
+      }
+      if (url === '/api/pitch/proposals/prop_1/finalize' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body || '{}')) as Record<string, unknown>;
+        return jsonResponse(
+          makeProposal({
+            id: 'prop_finalized',
+            slug: String(body.slug || 'telemed-india-final'),
+            kind: 'final',
+            created_by: 'user',
+          }),
+        );
+      }
+      return jsonResponse({});
+    });
+
+    const onNavigate = vi.fn();
+    const { rerender } = render(<PitchSection param={null} onNavigate={onNavigate} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('pitch-default-row')).toBeTruthy();
+    });
+
+    // Pinned default row is first and has ONLY allowed actions
+    const rows = document.querySelectorAll('.mg-row');
+    expect(rows[0].getAttribute('data-testid')).toBe('pitch-default-row');
+    const defRow = screen.getByTestId('pitch-default-row');
+    expect(within(defRow).getByText('Default')).toBeTruthy();
+    expect(within(defRow).getByText('Pitch version c44b7e2')).toBeTruthy();
+    expect(within(defRow).getByText('₹8,800')).toBeTruthy();
+    expect(within(defRow).getByRole('button', { name: 'Open' })).toBeTruthy();
+    expect(within(defRow).getByRole('button', { name: 'Present' })).toBeTruthy();
+    expect(within(defRow).getByRole('button', { name: 'Download PDF' })).toBeTruthy();
+    const defCopyBtn = within(defRow).getByRole('button', { name: 'Copy link' }) as HTMLButtonElement;
+    expect(defCopyBtn.disabled).toBe(true);
+    expect(defCopyBtn.title).toBe('Client links need the team connection (Phase 4)');
+    expect(within(defRow).getByRole('button', { name: 'Duplicate' })).toBeTruthy();
+    expect(within(defRow).queryByRole('button', { name: 'Archive' })).toBeNull();
+    expect(within(defRow).queryByRole('button', { name: 'Delete' })).toBeNull();
+    expect(within(defRow).queryByRole('button', { name: 'Make final quotation' })).toBeNull();
+
+    // Present button navigates to present mode
+    fireEvent.click(within(defRow).getByRole('button', { name: 'Present' }));
+    expect(onNavigate).toHaveBeenCalledWith('prop_default/present');
+
+    // Duplicate default as quote_form
+    fireEvent.click(within(defRow).getByRole('button', { name: 'Duplicate' }));
+    const dupDialog = screen.getByRole('dialog');
+    fireEvent.change(within(dupDialog).getByLabelText('Duplicate as'), {
+      target: { value: 'quote_form' },
+    });
+    fireEvent.change(within(dupDialog).getByLabelText('New slug'), {
+      target: { value: 'default-qf-copy' },
+    });
+    fireEvent.click(within(dupDialog).getByRole('button', { name: 'Duplicate' }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/pitch/proposals/prop_default/duplicate',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ slug: 'default-qf-copy', kind: 'quote_form' }),
+        }),
+      );
+    });
+
+    // Regular proposal row gets "Make final quotation"; final row does not
+    const telemedRow = screen.getByText('TeleMed India · Dr. Mehta').closest('.mg-row') as HTMLElement;
+    expect(within(telemedRow).getByRole('button', { name: 'Make final quotation' })).toBeTruthy();
+    const finalRow = screen.getByText('Acme Health · Asha').closest('.mg-row') as HTMLElement;
+    expect(within(finalRow).getByText('Final quotation')).toBeTruthy();
+    expect(within(finalRow).queryByRole('button', { name: 'Make final quotation' })).toBeNull();
+
+    // Kind filter includes Final quotation
+    fireEvent.change(screen.getByLabelText('Filter by kind'), { target: { value: 'final' } });
+    await waitFor(() => {
+      expect(screen.queryByTestId('pitch-default-row')).toBeNull();
+      expect(screen.queryByText('TeleMed India · Dr. Mehta')).toBeNull();
+      expect(screen.getByText('Acme Health · Asha')).toBeTruthy();
+    });
+
+    // New quote form
+    fireEvent.click(screen.getByRole('button', { name: 'New quote form' }));
+    const qfDialog = screen.getByRole('dialog');
+    fireEvent.change(within(qfDialog).getByLabelText(/^Slug/), {
+      target: { value: 'client-intake' },
+    });
+    fireEvent.click(within(qfDialog).getByRole('button', { name: 'Create quote form' }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/pitch/proposals',
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('"kind":"quote_form"'),
+        }),
+      );
+    });
+
+    // New final quotation from blank (requires selecting at least one agreed service)
+    fireEvent.click(screen.getByRole('button', { name: 'New final quotation' }));
+    const finalBlankDialog = screen.getByRole('dialog');
+    fireEvent.change(within(finalBlankDialog).getByLabelText(/^Slug/), {
+      target: { value: 'blank-final-1' },
+    });
+    fireEvent.click(
+      within(finalBlankDialog).getByLabelText('Responsive Web Application / Frontend'),
+    );
+    fireEvent.click(
+      within(finalBlankDialog).getByRole('button', { name: 'Create final quotation' }),
+    );
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/pitch/proposals',
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('"initialSelected":["w_front"]'),
+        }),
+      );
+    });
+
+    // New final quotation from an existing proposal via finalize
+    fireEvent.change(screen.getByLabelText('Filter by kind'), { target: { value: '' } });
+    await waitFor(() => {
+      expect(screen.getByText('TeleMed India · Dr. Mehta')).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'New final quotation' }));
+    const finalSrcDialog = screen.getByRole('dialog');
+    fireEvent.change(within(finalSrcDialog).getByLabelText('Start from'), {
+      target: { value: 'finalize' },
+    });
+    fireEvent.change(within(finalSrcDialog).getByLabelText(/^Slug/), {
+      target: { value: 'telemed-agreed' },
+    });
+    fireEvent.click(
+      within(finalSrcDialog).getByRole('button', { name: 'Create final quotation' }),
+    );
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/pitch/proposals/prop_1/finalize',
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('"slug":"telemed-agreed"'),
+        }),
+      );
+    });
+
+    // Default opens read-only (no Save button, no form tabs)
+    rerender(<PitchSection param="prop_default" onNavigate={onNavigate} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('pitch-default-readonly')).toBeTruthy();
+    });
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+    expect(screen.queryByRole('tab')).toBeNull();
+    const roCopyBtn = screen.getByRole('button', { name: 'Copy link' }) as HTMLButtonElement;
+    expect(roCopyBtn.disabled).toBe(true);
+    expect(roCopyBtn.title).toBe('Client links need the team connection (Phase 4)');
+  });
+
+  it('edits final quotation: Services without sheet toggle, Prices with recurring, Plans validation/limits/reset/reorder/periods, bottom bar recurring line', async () => {
+    const catalog = makeCatalog();
+    catalog.default_plans = {
+      payment_plan: [
+        { percent: 40, label: 'to start' },
+        { percent: 30, label: 'at demo' },
+        { percent: 30, label: 'at launch' },
+      ],
+      payment_note: 'Default payment note.',
+      timeline: [
+        { title: 'Scope & Cost Estimation', when: 'Day 1', detail: 'Estimate scope.' },
+        { title: 'Architecture & UI/UX Screens', when: 'Week 1', detail: 'Wireframes.' },
+        { title: 'Sprint Development & QA Testing', when: 'Weeks 2 to 6', detail: 'Sprints.' },
+        { title: 'Cloud Deployment & Handover', when: 'Final Week', detail: 'Handover.' },
+      ],
+    };
+
+    let finalProp = makeProposal({
+      id: 'prop_final',
+      slug: 'acme-final',
+      kind: 'final',
+      status: 'ready',
+      client_name: 'Asha',
+      business_name: 'Acme Health',
+      price_overrides: {},
+      payment_plan: [
+        { percent: 40, label: 'to start' },
+        { percent: 30, label: 'at demo' },
+        { percent: 30, label: 'at launch' },
+      ],
+      payment_note: 'Default payment note.',
+      timeline: [
+        { title: 'Step One', when: 'Day 1', detail: 'First phase' },
+        { title: 'Step Two', when: 'Week 2', detail: 'Second phase' },
+      ],
+      service_plans: [
+        {
+          id: 'plan_care',
+          name: 'Monthly Care',
+          description: 'Hosting and updates',
+          price: 2500,
+          period: 'monthly',
+        },
+        {
+          id: 'plan_setup',
+          name: 'Onboarding',
+          description: 'Initial setup',
+          price: 1500,
+          period: 'one_time',
+        },
+      ],
+      pricing_summary: {
+        lines: [],
+        custom_items: [],
+        one_time_plans: [
+          {
+            id: 'plan_setup',
+            name: 'Onboarding',
+            description: 'Initial setup',
+            price: 1500,
+            period: 'one_time',
+          },
+        ],
+        recurring: [
+          { id: 'plan_care', name: 'Monthly Care', price: 2500, period: 'monthly' },
+        ],
+        recurring_totals: { monthly: 2500, quarterly: 0, yearly: 0 },
+        payment_plan: [
+          { percent: 40, label: 'to start', amount: 4120 },
+          { percent: 30, label: 'at demo', amount: 3090 },
+          { percent: 30, label: 'at launch', amount: 3090 },
+        ],
+        subtotal: 10300,
+        standalone_fee: 0,
+        standalone_label: '',
+        total: 10300,
+        differs_from_base: [],
+      },
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/pitch/catalog') return jsonResponse(catalog);
+      if (url === '/api/pitch/proposals/prop_final' && (!init?.method || init.method === 'GET')) {
+        return jsonResponse(finalProp);
+      }
+      if (url === '/api/pitch/proposals/prop_final/pdfs') {
+        return jsonResponse({ proposal_id: 'prop_final', slug: 'acme-final', pdfs: [] });
+      }
+      if (url === '/api/pitch/proposals/prop_final' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body || '{}')) as Partial<PitchProposal>;
+        finalProp = {
+          ...finalProp,
+          ...body,
+          pricing_summary: {
+            ...finalProp.pricing_summary,
+            payment_plan: [
+              { percent: 50, label: 'upfront', amount: 5150 },
+              { percent: 50, label: 'delivery', amount: 5150 },
+            ],
+          },
+        };
+        return jsonResponse(finalProp);
+      }
+      return jsonResponse({});
+    });
+
+    render(<PitchSection param="prop_final" onNavigate={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Final quotation: the client sees only these services, ticked and locked.'),
+      ).toBeTruthy();
+    });
+
+    // Bottom bar shows Total (one-time) + recurring mono line + disabled Phase 4 buttons
+    expect(screen.getByText('Total (one-time)')).toBeTruthy();
+    expect(screen.getByText('+ ₹2,500 / month')).toBeTruthy();
+    const copyLinkBtn = screen.getByRole('button', { name: 'Copy link' }) as HTMLButtonElement;
+    const phoneBtn = screen.getByRole('button', { name: 'Send to my phone' }) as HTMLButtonElement;
+    expect(copyLinkBtn.disabled).toBe(true);
+    expect(copyLinkBtn.title).toBe('Client links need the team connection (Phase 4)');
+    expect(phoneBtn.disabled).toBe(true);
+    expect(phoneBtn.title).toBe('Available after phone pairing (Phase 4)');
+
+    // Tabs: Details, Services, Prices, Plans
+    const tabs = screen.getAllByRole('tab');
+    expect(tabs.map((t) => t.textContent)).toEqual([
+      expect.stringContaining('Details'),
+      expect.stringContaining('Services'),
+      expect.stringContaining('Prices'),
+      expect.stringContaining('Plans'),
+    ]);
+
+    // Services tab: search works and NO "Show on this sheet" checkbox exists
+    fireEvent.click(screen.getByRole('tab', { name: /Services/i }));
+    expect(screen.queryByLabelText('Show on this sheet')).toBeNull();
+    expect(screen.getAllByLabelText('Agreed').length).toBeGreaterThanOrEqual(1);
+    fireEvent.change(screen.getByLabelText(/^Search services/), {
+      target: { value: 'Android' },
+    });
+    expect(screen.getByText('Cross-Platform Mobile App (Android)')).toBeTruthy();
+    expect(screen.queryByText('Responsive Web Application / Frontend')).toBeNull();
+
+    // Prices tab: shows one-time plans and recurring totals from engine pricing_summary
+    fireEvent.click(screen.getByRole('tab', { name: /Prices/i }));
+    const summaryEl = screen.getByLabelText('Engine pricing totals');
+    expect(within(summaryEl).getByText('Onboarding')).toBeTruthy();
+    expect(within(summaryEl).getByText('Monthly Care')).toBeTruthy();
+    expect(within(summaryEl).getByText('Recurring total (monthly)')).toBeTruthy();
+
+    // Plans tab
+    fireEvent.click(screen.getByRole('tab', { name: /Plans/i }));
+    const paymentSection = screen.getByRole('region', { name: 'Payment plan' });
+    expect(within(paymentSection).getByText('Installment 1 · ₹4,120')).toBeTruthy();
+
+    // Payment plan sum validation + add/remove row limits (2..4) + Reset
+    fireEvent.change(within(paymentSection).getByLabelText('Percent (%)', { selector: '#pay-percent-0' }), {
+      target: { value: '20' },
+    });
+    expect(
+      within(paymentSection).getByText('Payment percentages sum to 80%. They must equal 100%.'),
+    ).toBeTruthy();
+
+    const addPayRowBtn = within(paymentSection).getByRole('button', { name: 'Add row' }) as HTMLButtonElement;
+    fireEvent.click(addPayRowBtn);
+    expect(addPayRowBtn.disabled).toBe(true); // 4 rows max reached
+
+    fireEvent.click(within(paymentSection).getByRole('button', { name: 'Remove payment row 4' }));
+    fireEvent.click(within(paymentSection).getByRole('button', { name: 'Remove payment row 3' }));
+    const removeRow1 = within(paymentSection).getByRole('button', {
+      name: 'Remove payment row 1',
+    }) as HTMLButtonElement;
+    expect(removeRow1.disabled).toBe(true); // 2 rows min reached
+
+    fireEvent.click(
+      within(paymentSection).getByRole('button', { name: "Reset to Pitch's default" }),
+    );
+    expect(within(paymentSection).getByTestId('payment-plan-sum').textContent).toContain('100%');
+
+    // Timeline reorder & Reset to Pitch's default
+    const timelineSection = screen.getByRole('region', { name: 'Timeline' });
+    fireEvent.click(within(timelineSection).getByRole('button', { name: 'Move step 2 up' }));
+    const step0Title = within(timelineSection).getByLabelText('Title', {
+      selector: '#timeline-title-0',
+    }) as HTMLInputElement;
+    expect(step0Title.value).toBe('Step Two');
+    fireEvent.click(
+      within(timelineSection).getByRole('button', { name: "Reset to Pitch's default" }),
+    );
+    expect(
+      (
+        within(timelineSection).getByLabelText('Title', {
+          selector: '#timeline-title-0',
+        }) as HTMLInputElement
+      ).value,
+    ).toBe('Scope & Cost Estimation');
+
+    // Service plans: period select options
+    const spSection = screen.getByRole('region', { name: 'Service plans' });
+    const periodSelect = within(spSection).getByLabelText('Billing period', {
+      selector: '#sp-period-0',
+    }) as HTMLSelectElement;
+    expect(Array.from(periodSelect.options).map((o) => o.text)).toEqual([
+      'One-time',
+      'Monthly',
+      'Quarterly',
+      'Yearly',
+    ]);
+    fireEvent.change(periodSelect, { target: { value: 'yearly' } });
+    expect(periodSelect.value).toBe('yearly');
+
+    // Live < validation on new Plans fields
+    const payLabel0 = within(paymentSection).getByLabelText('Label', {
+      selector: '#pay-label-0',
+    }) as HTMLInputElement;
+    fireEvent.change(payLabel0, { target: { value: '<b>start</b>' } });
+    expect(payLabel0.getAttribute('aria-invalid')).toBe('true');
+
+    const payNote = screen.getByLabelText('Payment note') as HTMLTextAreaElement;
+    fireEvent.change(payNote, { target: { value: 'Note <script>' } });
+    expect(payNote.getAttribute('aria-invalid')).toBe('true');
+
+    const stepDetail0 = within(timelineSection).getByLabelText('Detail', {
+      selector: '#timeline-detail-0',
+    }) as HTMLTextAreaElement;
+    fireEvent.change(stepDetail0, { target: { value: 'Detail > bad' } });
+    expect(stepDetail0.getAttribute('aria-invalid')).toBe('true');
+
+    const spName0 = within(spSection).getByLabelText('Plan name', {
+      selector: '#sp-name-0',
+    }) as HTMLInputElement;
+    fireEvent.change(spName0, { target: { value: 'Care <x>' } });
+    expect(spName0.getAttribute('aria-invalid')).toBe('true');
+
+    expect(screen.getAllByText('Text cannot contain < or >')).toHaveLength(4);
+  });
 });

@@ -1,9 +1,50 @@
 import { api } from '../api';
 
-export type PitchProposalKind = 'proposal' | 'quote_form';
+export type PitchProposalKind = 'proposal' | 'quote_form' | 'final' | 'default';
 export type PitchProposalStatus = 'draft' | 'ready' | 'sent' | 'archived';
 export type PitchSectionKey = 'p2' | 'p3' | 'p4' | 'p5';
 export type PitchPriceSource = 'base' | 'admin' | 'proposal' | 'custom';
+export type PitchServicePlanPeriod = 'one_time' | 'monthly' | 'quarterly' | 'yearly';
+
+export interface PitchPaymentPlanRow {
+  percent: number;
+  label: string;
+  amount?: number;
+}
+
+export interface PitchTimelineStep {
+  title: string;
+  when: string;
+  detail: string;
+}
+
+export interface PitchServicePlan {
+  id: string;
+  name: string;
+  description: string;
+  price: number;
+  period: PitchServicePlanPeriod;
+}
+
+export interface PitchRecurringPlan {
+  id: string;
+  name: string;
+  price: number;
+  period: 'monthly' | 'quarterly' | 'yearly';
+}
+
+export interface PitchRecurringTotals {
+  monthly: number;
+  quarterly: number;
+  yearly: number;
+}
+
+export interface PitchDefaultPlans {
+  payment_plan: PitchPaymentPlanRow[];
+  payment_note: string;
+  timeline: PitchTimelineStep[];
+  service_plans?: PitchServicePlan[];
+}
 
 export interface PitchVersionInfo {
   repo?: string;
@@ -58,6 +99,7 @@ export interface PitchCatalog {
   standalone_fee: number;
   standalone_label: string;
   presets: Record<string, PitchPreset>;
+  default_plans?: PitchDefaultPlans;
 }
 
 export interface PitchCustomItem {
@@ -104,6 +146,10 @@ export interface PitchPricingDiff {
 export interface PitchPricingSummary {
   lines: PitchPricingLine[];
   custom_items: PitchPricingLine[];
+  one_time_plans?: PitchServicePlan[];
+  recurring?: PitchRecurringPlan[];
+  recurring_totals?: PitchRecurringTotals;
+  payment_plan?: PitchPaymentPlanRow[];
   subtotal: number;
   standalone_fee: number;
   standalone_label: string;
@@ -135,6 +181,10 @@ export interface PitchProposal {
   preset: PitchPreset;
   price_overrides: Record<string, number>;
   custom_items: PitchCustomItem[];
+  payment_plan?: PitchPaymentPlanRow[];
+  payment_note?: string;
+  timeline?: PitchTimelineStep[];
+  service_plans?: PitchServicePlan[];
   notes: string;
   created_by: string;
   share_id?: string;
@@ -180,6 +230,10 @@ export interface CreateProposalInput {
   preset?: Partial<PitchPreset>;
   price_overrides?: Record<string, number>;
   custom_items?: PitchCustomItem[];
+  payment_plan?: PitchPaymentPlanRow[];
+  payment_note?: string;
+  timeline?: PitchTimelineStep[];
+  service_plans?: PitchServicePlan[];
   notes?: string;
 }
 
@@ -193,6 +247,19 @@ export interface UpdateProposalInput {
   preset?: Partial<PitchPreset>;
   price_overrides?: Record<string, number>;
   custom_items?: PitchCustomItem[];
+  payment_plan?: PitchPaymentPlanRow[];
+  payment_note?: string;
+  timeline?: PitchTimelineStep[];
+  service_plans?: PitchServicePlan[];
+  notes?: string;
+}
+
+export interface FinalizeProposalInput {
+  slug?: string;
+  status?: PitchProposalStatus;
+  client_name?: string;
+  business_name?: string;
+  contact?: PitchContact;
   notes?: string;
 }
 
@@ -227,12 +294,17 @@ export async function listProposals(filters?: {
   return Array.isArray(res?.proposals) ? res.proposals : [];
 }
 
+/** Fetch the system default quotation (Pitch default options and layout). */
+export function getDefaultProposal(): Promise<PitchProposal> {
+  return api.get<PitchProposal>('/api/pitch/default');
+}
+
 /** Fetch a single proposal enriched with pricing_summary and product-rule warnings. */
 export function getProposal(proposalId: string): Promise<PitchProposal> {
   return api.get<PitchProposal>(`/api/pitch/proposals/${encodeURIComponent(proposalId)}`);
 }
 
-/** Create a new blank proposal, quote form, preset-based proposal, or duplicate. */
+/** Create a new blank proposal, quote form, final quotation, preset-based proposal, or duplicate. */
 export function createProposal(payload: CreateProposalInput): Promise<PitchProposal> {
   return api.post<PitchProposal>('/api/pitch/proposals', payload);
 }
@@ -248,11 +320,26 @@ export function updateProposal(
   );
 }
 
-/** Duplicate an existing proposal onto a new slug. */
-export function duplicateProposal(proposalId: string, slug: string): Promise<PitchProposal> {
+/** Duplicate an existing proposal onto a new slug (optionally converting default to proposal or quote_form). */
+export function duplicateProposal(
+  proposalId: string,
+  slug: string,
+  kind?: PitchProposalKind,
+): Promise<PitchProposal> {
   return api.post<PitchProposal>(
     `/api/pitch/proposals/${encodeURIComponent(proposalId)}/duplicate`,
-    { slug },
+    kind ? { slug, kind } : { slug },
+  );
+}
+
+/** Create a new final quotation from an existing proposal or quote form, keeping the original untouched. */
+export function finalizeProposal(
+  proposalId: string,
+  overrides: FinalizeProposalInput = {},
+): Promise<PitchProposal> {
+  return api.post<PitchProposal>(
+    `/api/pitch/proposals/${encodeURIComponent(proposalId)}/finalize`,
+    overrides,
   );
 }
 

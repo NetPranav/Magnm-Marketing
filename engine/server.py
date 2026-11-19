@@ -321,6 +321,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.send_json(pitch.catalog())
             elif parts == ["version"]:
                 self.send_json(pitch.pitch_version())
+            elif parts == ["default"]:
+                self.send_json(pitch.get_default_proposal())
             elif parts == ["outbox"]:
                 pending_raw = (qs.get("pending", ["0"])[0] or "").strip().lower()
                 pending_only = pending_raw in ("1", "true", "yes")
@@ -398,6 +400,15 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                     pitch.duplicate_proposal(
                         parts[1],
                         params.get("slug"),
+                        created_by=params.get("created_by") or "user",
+                        kind=params.get("kind"),
+                    )
+                )
+            elif len(parts) == 3 and parts[0] == "proposals" and parts[2] == "finalize":
+                self.send_json(
+                    pitch.finalize_proposal(
+                        parts[1],
+                        overrides=params,
                         created_by=params.get("created_by") or "user",
                     )
                 )

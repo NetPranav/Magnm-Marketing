@@ -1,8 +1,10 @@
 import { Card, Field, PillButton, Select, TextArea, TextInput } from '@magnm/design/react';
-import type { PitchRuleViolation } from '../../api/pitch';
+import type { PitchCatalog, PitchRuleViolation } from '../../api/pitch';
 import {
   MAX_ARCH_ROLES,
   MAX_ROLE_POINTS,
+  getDefaultFinalPlans,
+  swapListItems,
   validatePitchText,
   validateSlug,
   type PitchDraftState,
@@ -10,6 +12,7 @@ import {
 
 export interface PitchDetailsTabProps {
   draft: PitchDraftState;
+  catalog?: PitchCatalog | null;
   reservedPresets: string[];
   violations: PitchRuleViolation[];
   onChange: (updater: (prev: PitchDraftState) => PitchDraftState) => void;
@@ -34,20 +37,10 @@ function renderFieldError(err: string | null) {
   return err ? <span className="studio-field-error" role="alert">{err}</span> : undefined;
 }
 
-function swapItems<T>(list: T[], indexA: number, indexB: number): T[] {
-  if (indexA < 0 || indexB < 0 || indexA >= list.length || indexB >= list.length) {
-    return list;
-  }
-  const next = [...list];
-  const tmp = next[indexA];
-  next[indexA] = next[indexB];
-  next[indexB] = tmp;
-  return next;
-}
-
 /** Editor tab 1: Details, contact info, Pitch preset copy, and architecture roles. */
 export function PitchDetailsTab({
   draft,
+  catalog = null,
   reservedPresets,
   violations,
   onChange,
@@ -56,6 +49,10 @@ export function PitchDetailsTab({
   const slugErr = getFieldViolation(violations, 'slug') || liveSlugErr;
   const clientNameErr = getPitchFieldError(violations, 'client_name', draft.client_name);
   const businessNameErr = getPitchFieldError(violations, 'business_name', draft.business_name);
+  const contactNameErr = getPitchFieldError(violations, 'contact.name', draft.contact.name);
+  const contactEmailErr = getPitchFieldError(violations, 'contact.email', draft.contact.email);
+  const contactPhoneErr = getPitchFieldError(violations, 'contact.phone', draft.contact.phone);
+  const contactNotesErr = getPitchFieldError(violations, 'contact.notes', draft.contact.notes);
   const badgeErr = getPitchFieldError(violations, 'preset.badge', draft.preset.badge);
   const titleErr = getPitchFieldError(violations, 'preset.title', draft.preset.title);
   const leadErr = getPitchFieldError(violations, 'preset.lead', draft.preset.lead);
@@ -125,15 +122,27 @@ export function PitchDetailsTab({
               <Select
                 id="pitch-field-kind"
                 value={draft.kind}
-                onChange={(e) =>
-                  onChange((prev) => ({
-                    ...prev,
-                    kind: e.target.value as PitchDraftState['kind'],
-                  }))
-                }
+                onChange={(e) => {
+                  const nextKind = e.target.value as PitchDraftState['kind'];
+                  onChange((prev) => {
+                    if (nextKind === 'final' && prev.kind !== 'final') {
+                      const defaults = getDefaultFinalPlans(catalog);
+                      return {
+                        ...prev,
+                        kind: nextKind,
+                        payment_plan:
+                          prev.payment_plan.length >= 2 ? prev.payment_plan : defaults.payment_plan,
+                        payment_note: prev.payment_note || defaults.payment_note,
+                        timeline: prev.timeline.length >= 1 ? prev.timeline : defaults.timeline,
+                      };
+                    }
+                    return { ...prev, kind: nextKind };
+                  });
+                }}
               >
                 <option value="proposal">Proposal</option>
                 <option value="quote_form">Quote form</option>
+                <option value="final">Final quotation</option>
               </Select>
             </Field>
 
@@ -207,10 +216,11 @@ export function PitchDetailsTab({
             <Field
               label="Contact name"
               htmlFor="pitch-contact-name"
-              hint={getFieldViolation(violations, 'contact.name') ? <span className="studio-field-error" role="alert">{getFieldViolation(violations, 'contact.name')}</span> : undefined}
+              hint={renderFieldError(contactNameErr)}
             >
               <TextInput
                 id="pitch-contact-name"
+                aria-invalid={Boolean(contactNameErr)}
                 value={draft.contact.name}
                 onChange={(e) =>
                   onChange((prev) => ({
@@ -223,11 +233,12 @@ export function PitchDetailsTab({
             <Field
               label="Contact email"
               htmlFor="pitch-contact-email"
-              hint={getFieldViolation(violations, 'contact.email') ? <span className="studio-field-error" role="alert">{getFieldViolation(violations, 'contact.email')}</span> : undefined}
+              hint={renderFieldError(contactEmailErr)}
             >
               <TextInput
                 id="pitch-contact-email"
                 type="email"
+                aria-invalid={Boolean(contactEmailErr)}
                 value={draft.contact.email}
                 onChange={(e) =>
                   onChange((prev) => ({
@@ -240,10 +251,11 @@ export function PitchDetailsTab({
             <Field
               label="Contact phone"
               htmlFor="pitch-contact-phone"
-              hint={getFieldViolation(violations, 'contact.phone') ? <span className="studio-field-error" role="alert">{getFieldViolation(violations, 'contact.phone')}</span> : undefined}
+              hint={renderFieldError(contactPhoneErr)}
             >
               <TextInput
                 id="pitch-contact-phone"
+                aria-invalid={Boolean(contactPhoneErr)}
                 value={draft.contact.phone}
                 onChange={(e) =>
                   onChange((prev) => ({
@@ -257,11 +269,12 @@ export function PitchDetailsTab({
           <Field
             label="Contact notes"
             htmlFor="pitch-contact-notes"
-            hint={getFieldViolation(violations, 'contact.notes') ? <span className="studio-field-error" role="alert">{getFieldViolation(violations, 'contact.notes')}</span> : undefined}
+            hint={renderFieldError(contactNotesErr)}
           >
             <TextArea
               id="pitch-contact-notes"
               rows={2}
+              aria-invalid={Boolean(contactNotesErr)}
               value={draft.contact.notes}
               onChange={(e) =>
                 onChange((prev) => ({
@@ -425,7 +438,7 @@ export function PitchDetailsTab({
                             size="sm"
                             aria-label={`Move role ${rIdx + 1} up`}
                             disabled={rIdx === 0}
-                            onClick={() => updateArch({ roles: swapItems(roles, rIdx, rIdx - 1) })}
+                            onClick={() => updateArch({ roles: swapListItems(roles, rIdx, rIdx - 1) })}
                           >
                             Up
                           </PillButton>
@@ -434,7 +447,7 @@ export function PitchDetailsTab({
                             size="sm"
                             aria-label={`Move role ${rIdx + 1} down`}
                             disabled={rIdx === roles.length - 1}
-                            onClick={() => updateArch({ roles: swapItems(roles, rIdx, rIdx + 1) })}
+                            onClick={() => updateArch({ roles: swapListItems(roles, rIdx, rIdx + 1) })}
                           >
                             Down
                           </PillButton>
@@ -522,7 +535,7 @@ export function PitchDetailsTab({
                                     onClick={() => {
                                       const nextRoles = roles.map((item, idx) =>
                                         idx === rIdx
-                                          ? { ...item, points: swapItems(item.points, pIdx, pIdx - 1) }
+                                          ? { ...item, points: swapListItems(item.points, pIdx, pIdx - 1) }
                                           : item,
                                       );
                                       updateArch({ roles: nextRoles });
@@ -538,7 +551,7 @@ export function PitchDetailsTab({
                                     onClick={() => {
                                       const nextRoles = roles.map((item, idx) =>
                                         idx === rIdx
-                                          ? { ...item, points: swapItems(item.points, pIdx, pIdx + 1) }
+                                          ? { ...item, points: swapListItems(item.points, pIdx, pIdx + 1) }
                                           : item,
                                       );
                                       updateArch({ roles: nextRoles });

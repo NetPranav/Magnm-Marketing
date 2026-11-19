@@ -27,30 +27,21 @@ import { formatTimestamp } from '../../ui/format';
 import { PitchDeliverablesTab } from './PitchDeliverablesTab';
 import { PitchDetailsTab } from './PitchDetailsTab';
 import { DraftWithWriterDialog, UnsavedChangesDialog } from './PitchDialogs';
+import { PitchPlansTab } from './PitchPlansTab';
 import { PitchPricesTab } from './PitchPricesTab';
 import {
   buildLivePreviewPayload,
   extractRuleViolations,
   formatAgentChip,
   formatKindLabel,
+  formatRecurringTotalsLine,
   mapProposalStatusState,
   proposalToDraft,
   type PitchDraftState,
 } from './pitchUtils';
 
-type EditorTabId = 'details' | 'deliverables' | 'prices' | 'preview';
+type EditorTabId = 'details' | 'deliverables' | 'prices' | 'plans' | 'preview';
 type LayoutMode = 'wide' | 'medium' | 'narrow';
-
-const FORM_TABS: TabItem[] = [
-  { id: 'details', label: 'Details' },
-  { id: 'deliverables', label: 'Deliverables' },
-  { id: 'prices', label: 'Prices' },
-];
-
-const ALL_TABS: TabItem[] = [
-  ...FORM_TABS,
-  { id: 'preview', label: 'Preview' },
-];
 
 function useEditorLayoutMode(): LayoutMode {
   const getMode = (): LayoutMode => {
@@ -169,6 +160,12 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
     }
   }, [layoutMode, activeTab]);
 
+  useEffect(() => {
+    if (draft && draft.kind !== 'final' && activeTab === 'plans') {
+      setActiveTab('details');
+    }
+  }, [draft, activeTab]);
+
   // Warn browser tab close/reload when there are unsaved changes.
   useEffect(() => {
     if (!dirty) return undefined;
@@ -255,7 +252,7 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
   );
 
   const handleSave = async () => {
-    if (!draft) return;
+    if (!draft || draft.kind === 'default') return;
     setSaving(true);
     setError(null);
     setNotice(null);
@@ -279,6 +276,14 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
         },
         price_overrides: draft.price_overrides,
         custom_items: draft.custom_items,
+        ...(draft.kind === 'final'
+          ? {
+              payment_plan: draft.payment_plan,
+              payment_note: draft.payment_note,
+              timeline: draft.timeline,
+              service_plans: draft.service_plans,
+            }
+          : {}),
         notes: draft.notes,
       });
       setProposal(updated);
@@ -361,17 +366,28 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
     );
   }
 
-  const iframeMode = draft.kind === 'quote_form' ? 'form' : 'preview';
+  const isDefault = draft.kind === 'default';
+  const isFinal = draft.kind === 'final';
+  const iframeMode = draft.kind === 'quote_form' || isDefault ? 'form' : 'preview';
   const iframeSrc = `/pitch/?proposal=${encodeURIComponent(proposal.id)}&mode=${iframeMode}&rev=${previewRev}`;
   const agentChip = formatAgentChip(proposal.created_by);
   const warnings = proposal.warnings || [];
-  const headerTitle =
-    [draft.business_name, draft.client_name].filter(Boolean).join(' · ') ||
-    draft.preset.name ||
-    draft.slug;
+  const headerTitle = isDefault
+    ? 'Default quotation'
+    : [draft.business_name, draft.client_name].filter(Boolean).join(' · ') ||
+      draft.preset.name ||
+      draft.slug;
 
-  const tabs = layoutMode === 'wide' ? FORM_TABS : ALL_TABS;
+  const formTabs: TabItem[] = [
+    { id: 'details', label: 'Details' },
+    { id: 'deliverables', label: isFinal ? 'Services' : 'Deliverables' },
+    { id: 'prices', label: 'Prices' },
+    ...(isFinal ? [{ id: 'plans', label: 'Plans' }] : []),
+  ];
+  const tabs: TabItem[] =
+    layoutMode === 'wide' ? formTabs : [...formTabs, { id: 'preview', label: 'Preview' }];
   const isPricesFullWidth = layoutMode === 'wide' && activeTab === 'prices';
+  const recurringLine = formatRecurringTotalsLine(proposal.pricing_summary);
 
   const formContent = (
     <div className="studio-stack-sm">
@@ -397,6 +413,7 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
       {activeTab === 'details' ? (
         <PitchDetailsTab
           draft={draft}
+          catalog={catalog}
           reservedPresets={reservedPresets}
           violations={violations}
           onChange={handleDraftChange}
@@ -422,11 +439,23 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
           onChange={handleDraftChange}
         />
       ) : null}
+
+      {activeTab === 'plans' && isFinal ? (
+        <PitchPlansTab
+          draft={draft}
+          catalog={catalog}
+          pricingSummary={proposal.pricing_summary}
+          dirty={dirty}
+          violations={violations}
+          onChange={handleDraftChange}
+        />
+      ) : null}
     </div>
   );
 
-  const previewVisible =
-    layoutMode === 'wide'
+  const previewVisible = isDefault
+    ? true
+    : layoutMode === 'wide'
       ? activeTab !== 'prices' || showPricesPreview
       : activeTab === 'preview';
   const previewPane = (
@@ -436,9 +465,15 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
       aria-hidden={!previewVisible}
     >
       <div className="studio-section-bar">
-        <span className="mg-label">Live Pitch preview</span>
+        <span className="mg-label">
+          {isDefault ? 'Read-only Pitch preview' : 'Live Pitch preview'}
+        </span>
         <span className="studio-mono">
-          {dirty ? 'Draft preview · save to persist' : `Saved · ${iframeMode}`}
+          {isDefault
+            ? 'Read-only · Pitch default'
+            : dirty
+              ? 'Draft preview · save to persist'
+              : `Saved · ${iframeMode}`}
         </span>
       </div>
       <div className="studio-pitch-iframe-frame">
@@ -448,7 +483,7 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
           src={iframeSrc}
           className="studio-pitch-iframe"
           onLoad={() => {
-            if (dirty && draft) {
+            if (!isDefault && dirty && draft) {
               pushLivePreview(draft);
             }
           }}
@@ -473,23 +508,25 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
           {agentChip ? <span className="mg-chip">{agentChip}</span> : null}
         </div>
 
-        <div className="studio-btn-group">
-          {dirty ? <span className="studio-mono">Unsaved changes</span> : null}
-          <PillButton
-            variant="outline"
-            size="sm"
-            onClick={() => setWriterOpen(true)}
-          >
-            Draft with Writer
-          </PillButton>
-          <PillButton
-            size="sm"
-            disabled={saving}
-            onClick={() => void handleSave()}
-          >
-            {saving ? 'Saving...' : 'Save'}
-          </PillButton>
-        </div>
+        {!isDefault ? (
+          <div className="studio-btn-group">
+            {dirty ? <span className="studio-mono">Unsaved changes</span> : null}
+            <PillButton
+              variant="outline"
+              size="sm"
+              onClick={() => setWriterOpen(true)}
+            >
+              Draft with Writer
+            </PillButton>
+            <PillButton
+              size="sm"
+              disabled={saving}
+              onClick={() => void handleSave()}
+            >
+              {saving ? 'Saving...' : 'Save'}
+            </PillButton>
+          </div>
+        ) : null}
       </div>
 
       <SheetHeader
@@ -507,6 +544,18 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
         }
         title={headerTitle}
       />
+
+      {isDefault ? (
+        <div className="mg-notice" role="note">
+          Default quotation (read-only). Duplicate it as a proposal or quote form from the Pitch list to customize.
+        </div>
+      ) : null}
+
+      {isFinal ? (
+        <div className="mg-notice" role="note">
+          Final quotation: the client sees only these services, ticked and locked.
+        </div>
+      ) : null}
 
       {error ? (
         <div className="mg-notice" role="alert">
@@ -527,7 +576,11 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
         </div>
       ) : null}
 
-      {layoutMode === 'wide' ? (
+      {isDefault ? (
+        <div className="studio-pitch-full" data-testid="pitch-default-readonly">
+          {previewPane}
+        </div>
+      ) : layoutMode === 'wide' ? (
         <div
           className={isPricesFullWidth ? 'studio-pitch-full' : 'studio-pitch-split'}
           data-testid="pitch-wide-layout"
@@ -590,8 +643,17 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
       ) : null}
 
       <BottomBar
-        caption="Total"
-        value={formatRupees(proposal.pricing_summary.total)}
+        caption={isFinal ? 'Total (one-time)' : 'Total'}
+        value={
+          <>
+            <span>{formatRupees(proposal.pricing_summary.total)}</span>
+            {recurringLine ? (
+              <span className="studio-mono studio-pitch-bar-recurring">
+                {recurringLine}
+              </span>
+            ) : null}
+          </>
+        }
       >
         <PillButton
           variant="outline"
