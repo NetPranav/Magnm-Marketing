@@ -62,6 +62,18 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
   - 177 engine tests, 41 web tests, 7 adapter tests, 9 design-kit checks.
   - **Waiting for Phase 4:** proposal links, quote-form links with submissions back to the sender, admin
     notifications, admin-only base prices, Send to my phone. Present mode on Android comes with Phase 6.
+- **Phase 3c done (2026-11-19):** default and final quotations (asked for by the user after 3b). Built by agy
+  (Gemini 4 Hydrogen High), reviewed and tested by Claude.
+  - **Default quotation:** a fixed entry that is always Pitch's default planner (same options and layout, admin base
+    prices); it cannot be edited or deleted, only duplicated. Each member gets their own link for it in Phase 4, so
+    submissions return to whoever sent it. New quote forms now also start as Pitch's default.
+  - **Final quotation:** for pricing already agreed with the client. Only the agreed services are shown, ticked and
+    locked, at the agreed prices. Plans: payment plan (2 to 4 milestones summing to 100%, with amounts), payment note,
+    timeline (1 to 8 steps) and service plans (one-time, monthly, quarterly, yearly; recurring plans are listed
+    separately and never added to the one-time total). Any proposal or quote form can be turned into one.
+  - The PDF for a final quotation follows Pitch's PDF layout with the agreed information (plans, recurring section,
+    timeline). A test flags it whenever Pitch's own PDF code changes on a re-pin.
+  - Its read-only web link switches on in Phase 4 with the other links.
 
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.
@@ -566,7 +578,9 @@ Effort estimates assume one developer working part-time.
   - Supabase tables for published proposals (by a random `share_id`) and quote-form submissions; privacy rules so a
     client can read only the proposal behind its link and can only insert a submission.
   - A small change in Magnm-Pitch (its own repo and Vercel site): `/p/<share_id>` loads the published proposal and
-    `/q/<share_id>` opens the quote form whose Submit sends the client's choices and contact details. Same look.
+    `/q/<share_id>` opens the quote form whose Submit sends the client's choices and contact details, and
+    `/f/<share_id>` opens a final quotation read-only (agreed services locked, plans, PDF download). The default
+    quotation uses `/q/` with each member's own share id. Same look.
   - The Studio publishes a proposal on "Copy link", and pulls submissions into the sender's Pitch section
     (with a notification).
   - Send the local `sync_outbox` (proposal created/updated with pricing) to the admin, with a notification.
