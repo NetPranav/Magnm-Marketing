@@ -20,15 +20,20 @@ import paths
 import pitch_host
 import product_rules
 
-VALID_KINDS = ("proposal", "quote_form")
+VALID_KINDS = ("proposal", "quote_form", "final", "default")
 VALID_STATUSES = ("draft", "ready", "sent", "archived")
 VALID_SECTION_KEYS = ("p2", "p3", "p4", "p5")
+VALID_SERVICE_PLAN_PERIODS = ("one_time", "monthly", "quarterly", "yearly")
+RECURRING_PERIODS = ("monthly", "quarterly", "yearly")
 
-# RULES.md #1 & #2: '/', 'general', 'admin', 'clients', and built-in presets are reserved.
-RESERVED_STATIC_SLUGS = frozenset({"general", "admin", "clients"})
+DEFAULT_QUOTATION_SLUG = "default-quotation"
+
+# RULES.md #1 & #2: '/', 'general', 'admin', 'clients', 'default-quotation', and built-in presets are reserved.
+RESERVED_STATIC_SLUGS = frozenset({"general", "admin", "clients", DEFAULT_QUOTATION_SLUG})
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}$")
 CUSTOM_ID_RE = re.compile(r"^custom_[a-zA-Z0-9_-]{1,56}$")
+PLAN_ID_RE = re.compile(r"^plan_[a-z0-9][a-z0-9-]{1,57}$")
 
 MIN_PRICE = 0
 MAX_PRICE = 10_000_000
@@ -37,6 +42,13 @@ MAX_PDF_BYTES = 10 * 1024 * 1024
 MAX_SHORT_TEXT = 200
 MAX_MEDIUM_TEXT = 1000
 MAX_LONG_TEXT = 4000
+MAX_PAYMENT_LABEL = 40
+MAX_PAYMENT_NOTE = 400
+MAX_TIMELINE_TITLE = 60
+MAX_TIMELINE_WHEN = 30
+MAX_TIMELINE_DETAIL = 240
+MAX_PLAN_NAME = 80
+MAX_PLAN_DESC = 240
 
 _GROUP_TO_SECTION = {
     "Web & SaaS": "p2",
@@ -254,21 +266,94 @@ def _generate_unique_share_id():
     raise RuntimeError("Failed to generate unique share_id")
 
 
+def default_final_plans():
+    """Return default payment_plan, payment_note, timeline, and service_plans parsed from Pitch index.html."""
+    parsed = pitch_host.parse_index_defaults()
+    return {
+        "payment_plan": parsed["payment_plan"],
+        "payment_note": parsed["payment_note"],
+        "timeline": parsed["timeline"],
+        "service_plans": [],
+    }
+
+
+def _general_preset():
+    return deepcopy((_raw_catalog().get("presets") or {}).get("general") or {})
+
+
+def _hydrate_proposal(row):
+    """Hydrate dynamic preset for the system default quotation without storing editable preset data."""
+    if row is None:
+        return None
+    if row.get("kind") == "default":
+        hydrated = dict(row)
+        hydrated["preset"] = _general_preset()
+        hydrated["price_overrides"] = {}
+        hydrated["custom_items"] = []
+        hydrated["payment_plan"] = []
+        hydrated["payment_note"] = ""
+        hydrated["timeline"] = []
+        hydrated["service_plans"] = []
+        return hydrated
+    return row
+
+
+def ensure_default_proposal():
+    """Ensure the single system default quotation record exists per data root (idempotent)."""
+    existing = db.get_pitch_proposal_by_kind("default")
+    if existing is None:
+        existing = db.get_pitch_proposal_by_slug(DEFAULT_QUOTATION_SLUG)
+    if existing is not None:
+        return _hydrate_proposal(existing)
+
+    share_id = _generate_unique_share_id()
+    commit = pitch_version().get("commit") or ""
+    try:
+        created = db.create_pitch_proposal(
+            proposal_id="prop_default",
+            slug=DEFAULT_QUOTATION_SLUG,
+            kind="default",
+            status="ready",
+            client_name="",
+            business_name="",
+            contact={},
+            preset={},
+            price_overrides={},
+            custom_items=[],
+            notes="",
+            created_by="system",
+            share_id=share_id,
+            pitch_commit=commit,
+        )
+        return _hydrate_proposal(created)
+    except Exception:
+        existing = db.get_pitch_proposal_by_kind("default") or db.get_pitch_proposal_by_slug(DEFAULT_QUOTATION_SLUG)
+        if existing is not None:
+            return _hydrate_proposal(existing)
+        raise
+
+
+def get_default_proposal():
+    """Return the single system default quotation record (creating it if needed)."""
+    return _enrich_proposal(ensure_default_proposal())
+
+
 def _default_preset_template(kind="proposal", slug=""):
-    general = deepcopy((_raw_catalog().get("presets") or {}).get("general") or {})
+    general = _general_preset()
+    is_quote_form = kind == "quote_form"
     return {
         "slug": slug,
         "name": "",
         "badge": "",
         "clientName": "",
         "businessName": "",
-        "title": "magnm Build Planner",
+        "title": general.get("title", "magnm Software Cost Planner") if is_quote_form else "magnm Build Planner",
         "lead": general.get("lead", ""),
         "whatWeDo": general.get("whatWeDo", ""),
         "portfolio": general.get("portfolio", "magnm-org.vercel.app"),
-        "thisPlan": "" if kind == "quote_form" else general.get("thisPlan", ""),
+        "thisPlan": general.get("thisPlan", ""),
         "architectureBlock": deepcopy(general.get("architectureBlock") or {"heading": "", "sub": "", "roles": []}),
-        "initialSelected": [],
+        "initialSelected": list(general.get("initialSelected") or []) if is_quote_form else [],
         "sections": deepcopy(general.get("sections") or {"p2": [], "p3": [], "p4": [], "p5": []}),
     }
 
@@ -297,23 +382,235 @@ def _trim_and_check_len(val, field, limit, violations, required=False, forbid_an
 
 def _expand_initial_selected(initial_ids, all_items):
     """Port Pitch's addWithDeps(): expand initialSelected with transitive dependencies r."""
-    selected = []
+    return pitch_host.expand_selected_ids(initial_ids, all_items)
+
+
+def _derive_final_sections(selected_ids, all_items):
+    """Derive sections p2..p5 strictly from agreed items in initialSelected."""
+    sections = {k: [] for k in VALID_SECTION_KEYS}
     seen = set()
-    added = []
+    for iid in selected_ids:
+        if iid in seen or iid not in all_items:
+            continue
+        seen.add(iid)
+        sec_key = section_for_group(all_items[iid].get("g", ""))
+        sections[sec_key].append(iid)
+    return sections
 
-    def add_with_deps(item_id, is_dep=False):
-        if item_id in seen or item_id not in all_items:
-            return
-        seen.add(item_id)
-        selected.append(item_id)
-        if is_dep:
-            added.append(item_id)
-        for dep_id in all_items[item_id].get("r") or []:
-            add_with_deps(dep_id, is_dep=True)
 
-    for iid in initial_ids:
-        add_with_deps(iid, is_dep=False)
-    return selected, added
+def _validate_payment_plan(raw_plan, is_final, violations):
+    if raw_plan is None:
+        raw_plan = []
+    if not isinstance(raw_plan, list):
+        _add_violation(violations, "payment_plan", "invalid_type", "payment_plan must be an array")
+        return []
+    if is_final and not (2 <= len(raw_plan) <= 4):
+        _add_violation(
+            violations,
+            "payment_plan",
+            "payment_plan_count",
+            "payment_plan must have between 2 and 4 rows",
+        )
+    elif not is_final and raw_plan and not (2 <= len(raw_plan) <= 4):
+        _add_violation(
+            violations,
+            "payment_plan",
+            "payment_plan_count",
+            "payment_plan must have between 2 and 4 rows",
+        )
+
+    cleaned = []
+    pcts_valid = True
+    for idx, row in enumerate(raw_plan):
+        prefix = f"payment_plan[{idx}]"
+        if not isinstance(row, dict):
+            _add_violation(violations, prefix, "invalid_type", f"{prefix} must be an object")
+            pcts_valid = False
+            continue
+        pct = row.get("percent")
+        if not _is_int(pct) or pct < 1 or pct > 100:
+            _add_violation(
+                violations,
+                f"{prefix}.percent",
+                "payment_plan_percent",
+                f"{prefix}.percent must be an integer between 1 and 100",
+            )
+            pcts_valid = False
+            pct_clean = 0
+        else:
+            pct_clean = int(pct)
+        label_clean = _trim_and_check_len(
+            row.get("label"),
+            f"{prefix}.label",
+            MAX_PAYMENT_LABEL,
+            violations,
+            required=True,
+            forbid_angle_brackets=True,
+        )
+        cleaned.append({"percent": pct_clean, "label": label_clean})
+
+    if raw_plan and pcts_valid and sum(r["percent"] for r in cleaned) != 100:
+        _add_violation(
+            violations,
+            "payment_plan",
+            "payment_plan_sum",
+            "payment_plan percents must sum to exactly 100",
+        )
+    return cleaned
+
+
+def _validate_timeline(raw_timeline, is_final, violations):
+    if raw_timeline is None:
+        raw_timeline = []
+    if not isinstance(raw_timeline, list):
+        _add_violation(violations, "timeline", "invalid_type", "timeline must be an array")
+        return []
+    if is_final and not (1 <= len(raw_timeline) <= 8):
+        _add_violation(
+            violations,
+            "timeline",
+            "timeline_count",
+            "timeline must have between 1 and 8 steps",
+        )
+    elif not is_final and len(raw_timeline) > 8:
+        _add_violation(
+            violations,
+            "timeline",
+            "timeline_count",
+            "timeline must have at most 8 steps",
+        )
+
+    cleaned = []
+    for idx, step in enumerate(raw_timeline):
+        prefix = f"timeline[{idx}]"
+        if not isinstance(step, dict):
+            _add_violation(violations, prefix, "invalid_type", f"{prefix} must be an object")
+            continue
+        title = _trim_and_check_len(
+            step.get("title"),
+            f"{prefix}.title",
+            MAX_TIMELINE_TITLE,
+            violations,
+            required=True,
+            forbid_angle_brackets=True,
+        )
+        when = _trim_and_check_len(
+            step.get("when"),
+            f"{prefix}.when",
+            MAX_TIMELINE_WHEN,
+            violations,
+            required=True,
+            forbid_angle_brackets=True,
+        )
+        detail = _trim_and_check_len(
+            step.get("detail"),
+            f"{prefix}.detail",
+            MAX_TIMELINE_DETAIL,
+            violations,
+            required=True,
+            forbid_angle_brackets=True,
+        )
+        cleaned.append({"title": title, "when": when, "detail": detail})
+    return cleaned
+
+
+def _validate_service_plans(raw_plans, cat_items, custom_by_id, violations):
+    if raw_plans is None:
+        raw_plans = []
+    if not isinstance(raw_plans, list):
+        _add_violation(violations, "service_plans", "invalid_type", "service_plans must be an array")
+        return []
+    if len(raw_plans) > 6:
+        _add_violation(
+            violations,
+            "service_plans",
+            "service_plans_count",
+            "service_plans must have at most 6 rows",
+        )
+
+    cleaned = []
+    seen_ids = set()
+    for idx, plan in enumerate(raw_plans):
+        prefix = f"service_plans[{idx}]"
+        if not isinstance(plan, dict):
+            _add_violation(violations, prefix, "invalid_type", f"{prefix} must be an object")
+            continue
+        pid = plan.get("id")
+        if not isinstance(pid, str) or not PLAN_ID_RE.match(pid.strip()):
+            _add_violation(
+                violations,
+                f"{prefix}.id",
+                "service_plan_id",
+                f"{prefix}.id must match plan_<slug> (lowercase letters, digits, hyphens)",
+            )
+            pid_clean = ""
+        else:
+            pid_clean = pid.strip()
+            if pid_clean in cat_items or pid_clean in custom_by_id:
+                _add_violation(
+                    violations,
+                    f"{prefix}.id",
+                    "service_plan_id",
+                    f"{prefix}.id collides with existing item '{pid_clean}'",
+                )
+            elif pid_clean in seen_ids:
+                _add_violation(
+                    violations,
+                    f"{prefix}.id",
+                    "service_plan_id",
+                    f"Duplicate service_plan id '{pid_clean}'",
+                )
+            else:
+                seen_ids.add(pid_clean)
+
+        name = _trim_and_check_len(
+            plan.get("name"),
+            f"{prefix}.name",
+            MAX_PLAN_NAME,
+            violations,
+            required=True,
+            forbid_angle_brackets=True,
+        )
+        description = _trim_and_check_len(
+            plan.get("description"),
+            f"{prefix}.description",
+            MAX_PLAN_DESC,
+            violations,
+            required=False,
+            forbid_angle_brackets=True,
+        )
+        price = plan.get("price")
+        if not _is_int(price) or price < MIN_PRICE or price > MAX_PRICE:
+            _add_violation(
+                violations,
+                f"{prefix}.price",
+                "price_range",
+                f"{prefix}.price must be an integer between {MIN_PRICE} and {MAX_PRICE}",
+            )
+            price_clean = 0
+        else:
+            price_clean = int(price)
+
+        period = plan.get("period")
+        if not isinstance(period, str) or period.strip() not in VALID_SERVICE_PLAN_PERIODS:
+            _add_violation(
+                violations,
+                f"{prefix}.period",
+                "service_plan_period",
+                f"{prefix}.period must be one of: {', '.join(VALID_SERVICE_PLAN_PERIODS)}",
+            )
+            period_clean = ""
+        else:
+            period_clean = period.strip()
+
+        cleaned.append({
+            "id": pid_clean,
+            "name": name,
+            "description": description,
+            "price": price_clean,
+            "period": period_clean,
+        })
+    return cleaned
 
 
 def _validate_and_normalize(candidate, existing_id=None):
@@ -328,13 +625,15 @@ def _validate_and_normalize(candidate, existing_id=None):
     kind = str(candidate.get("kind") or "proposal").strip()
     if kind not in VALID_KINDS:
         _add_violation(violations, "kind", "invalid_kind", f"kind must be one of: {', '.join(VALID_KINDS)}")
+    elif kind == "default":
+        _add_violation(violations, "kind", "reserved_kind", "The 'default' quotation is system-managed and cannot be created or edited")
 
     status = str(candidate.get("status") or "draft").strip()
     if status not in VALID_STATUSES:
         _add_violation(violations, "status", "invalid_status", f"status must be one of: {', '.join(VALID_STATUSES)}")
 
     # Rule (RULES.md #1 & #2, check-rules.js #1 & #2): Slug format, reserved slugs, and uniqueness.
-    # General planner ('general') and '/admin', '/clients', and built-in presets are never modified.
+    # General planner ('general') and '/admin', '/clients', 'default-quotation', and built-in presets are never modified.
     raw_slug = candidate.get("slug")
     if not isinstance(raw_slug, str):
         _add_violation(violations, "slug", "slug_format", "slug must be a string")
@@ -375,9 +674,17 @@ def _validate_and_normalize(candidate, existing_id=None):
         if not isinstance(raw_contact, dict):
             _add_violation(violations, "contact", "invalid_type", "contact must be an object")
         else:
-            for cfield, climit in (("name", MAX_SHORT_TEXT), ("email", MAX_SHORT_TEXT), ("phone", MAX_SHORT_TEXT), ("notes", MAX_MEDIUM_TEXT)):
+            for cfield, climit in (
+                ("name", MAX_SHORT_TEXT),
+                ("business", MAX_SHORT_TEXT),
+                ("email", MAX_SHORT_TEXT),
+                ("phone", MAX_SHORT_TEXT),
+                ("notes", MAX_MEDIUM_TEXT),
+            ):
                 if cfield in raw_contact and raw_contact[cfield] is not None:
-                    contact[cfield] = _trim_and_check_len(raw_contact[cfield], f"contact.{cfield}", climit, violations)
+                    contact[cfield] = _trim_and_check_len(
+                        raw_contact[cfield], f"contact.{cfield}", climit, violations, forbid_angle_brackets=True
+                    )
 
     # Rule (check-rules.js #3): Validate custom items (id prefix custom_, 5 groups, integer price, non-empty n/d).
     raw_custom = candidate.get("custom_items")
@@ -594,52 +901,54 @@ def _validate_and_normalize(candidate, existing_id=None):
                     arch_clean["roles"].append({"label": rlabel, "points": pts_clean})
     preset["architectureBlock"] = arch_clean
 
-    # Sections check: keys must be in p2..p5 and every id must exist in catalog or custom_items.
-    raw_sections = raw_preset.get("sections")
-    if raw_sections is None:
-        raw_sections = {"p2": [], "p3": [], "p4": [], "p5": []}
+    # Sections check: for 'final', sections are derived from agreed services and client-sent sections are ignored.
+    is_final = kind == "final"
     sections_clean = {"p2": [], "p3": [], "p4": [], "p5": []}
-    if not isinstance(raw_sections, dict):
-        _add_violation(violations, "preset.sections", "invalid_type", "preset.sections must be an object")
-    else:
-        for skey, svals in raw_sections.items():
-            if skey not in VALID_SECTION_KEYS:
-                _add_violation(
-                    violations,
-                    f"preset.sections.{skey}",
-                    "invalid_section",
-                    f"Section key '{skey}' must be one of: {', '.join(VALID_SECTION_KEYS)}",
-                )
-                continue
-            if not isinstance(svals, list):
-                _add_violation(
-                    violations,
-                    f"preset.sections.{skey}",
-                    "invalid_type",
-                    f"preset.sections.{skey} must be an array",
-                )
-                continue
-            seen_sec = set()
-            for idx, sid in enumerate(svals):
-                if not isinstance(sid, str) or not sid.strip():
-                    _add_violation(
-                        violations,
-                        f"preset.sections.{skey}[{idx}]",
-                        "invalid_type",
-                        f"preset.sections.{skey}[{idx}] must be a non-empty string",
-                    )
-                    continue
-                sid_clean = sid.strip()
-                if sid_clean not in all_items:
+    if not is_final:
+        raw_sections = raw_preset.get("sections")
+        if raw_sections is None:
+            raw_sections = {"p2": [], "p3": [], "p4": [], "p5": []}
+        if not isinstance(raw_sections, dict):
+            _add_violation(violations, "preset.sections", "invalid_type", "preset.sections must be an object")
+        else:
+            for skey, svals in raw_sections.items():
+                if skey not in VALID_SECTION_KEYS:
                     _add_violation(
                         violations,
                         f"preset.sections.{skey}",
-                        "unknown_item_id",
-                        f"preset.sections.{skey} references unknown item '{sid_clean}'",
+                        "invalid_section",
+                        f"Section key '{skey}' must be one of: {', '.join(VALID_SECTION_KEYS)}",
                     )
-                elif sid_clean not in seen_sec:
-                    seen_sec.add(sid_clean)
-                    sections_clean[skey].append(sid_clean)
+                    continue
+                if not isinstance(svals, list):
+                    _add_violation(
+                        violations,
+                        f"preset.sections.{skey}",
+                        "invalid_type",
+                        f"preset.sections.{skey} must be an array",
+                    )
+                    continue
+                seen_sec = set()
+                for idx, sid in enumerate(svals):
+                    if not isinstance(sid, str) or not sid.strip():
+                        _add_violation(
+                            violations,
+                            f"preset.sections.{skey}[{idx}]",
+                            "invalid_type",
+                            f"preset.sections.{skey}[{idx}] must be a non-empty string",
+                        )
+                        continue
+                    sid_clean = sid.strip()
+                    if sid_clean not in all_items:
+                        _add_violation(
+                            violations,
+                            f"preset.sections.{skey}",
+                            "unknown_item_id",
+                            f"preset.sections.{skey} references unknown item '{sid_clean}'",
+                        )
+                    elif sid_clean not in seen_sec:
+                        seen_sec.add(sid_clean)
+                        sections_clean[skey].append(sid_clean)
     preset["sections"] = sections_clean
 
     # initialSelected check: every id must exist, then expand required dependencies (addWithDeps).
@@ -670,12 +979,34 @@ def _validate_and_normalize(candidate, existing_id=None):
             else:
                 initial_valid.append(sid_clean)
 
+    if is_final and len(initial_valid) == 0:
+        _add_violation(
+            violations,
+            "preset.initialSelected",
+            "required",
+            "Final quotations require at least one agreed item in preset.initialSelected",
+        )
+
+    payment_plan = _validate_payment_plan(candidate.get("payment_plan"), is_final, violations)
+    payment_note = _trim_and_check_len(
+        candidate.get("payment_note"),
+        "payment_note",
+        MAX_PAYMENT_NOTE,
+        violations,
+        required=False,
+        forbid_angle_brackets=True,
+    )
+    timeline = _validate_timeline(candidate.get("timeline"), is_final, violations)
+    service_plans = _validate_service_plans(candidate.get("service_plans"), cat_items, custom_by_id, violations)
+
     if violations:
         summary = "; ".join(v["message"] for v in violations)
         raise ValidationError(summary, errors=violations)
 
     expanded_selected, added_deps = _expand_initial_selected(initial_valid, all_items)
     preset["initialSelected"] = expanded_selected
+    if is_final:
+        preset["sections"] = _derive_final_sections(expanded_selected, all_items)
 
     normalized = {
         "slug": slug,
@@ -687,6 +1018,10 @@ def _validate_and_normalize(candidate, existing_id=None):
         "preset": preset,
         "price_overrides": price_overrides,
         "custom_items": custom_items,
+        "payment_plan": payment_plan,
+        "payment_note": payment_note,
+        "timeline": timeline,
+        "service_plans": service_plans,
         "notes": notes,
     }
     return normalized, added_deps
@@ -736,21 +1071,39 @@ def check_proposal_product_rules(proposal):
             if isinstance(citem.get("d"), str) and citem["d"].strip():
                 parts.append(citem["d"])
 
+    if isinstance(proposal.get("payment_note"), str) and proposal["payment_note"].strip():
+        parts.append(proposal["payment_note"])
+    for prow in proposal.get("payment_plan") or []:
+        if isinstance(prow, dict) and isinstance(prow.get("label"), str) and prow["label"].strip():
+            parts.append(prow["label"])
+    for step in proposal.get("timeline") or []:
+        if isinstance(step, dict):
+            for sfield in ("title", "when", "detail"):
+                if isinstance(step.get(sfield), str) and step[sfield].strip():
+                    parts.append(step[sfield])
+    for sp in proposal.get("service_plans") or []:
+        if isinstance(sp, dict):
+            for sfield in ("name", "description"):
+                if isinstance(sp.get(sfield), str) and sp[sfield].strip():
+                    parts.append(sp[sfield])
+
     combined = "\n".join(p for p in parts if p)
     return list(product_rules.check_text(combined, path=rules_file))
 
 
 def pricing_summary(proposal):
-    """Compute effective pricing lines, standalone fee, total, and differs_from_base for proposal."""
+    """Compute effective pricing lines, standalone fee, total, plans, and differs_from_base."""
     cat = catalog()
     cat_items = cat["items"]
     standalone_amount = int(cat["standalone_fee"])
     standalone_label = cat["standalone_label"]
 
-    preset = proposal.get("preset") or {}
+    is_default = proposal.get("kind") == "default"
+    is_final = proposal.get("kind") == "final"
+    preset = _general_preset() if is_default else (proposal.get("preset") or {})
     selected_ids = list(preset.get("initialSelected") or [])
-    prop_overrides = proposal.get("price_overrides") or {}
-    custom_map = {
+    prop_overrides = {} if is_default else (proposal.get("price_overrides") or {})
+    custom_map = {} if is_default else {
         c["id"]: c
         for c in (proposal.get("custom_items") or [])
         if isinstance(c, dict) and c.get("id")
@@ -811,8 +1164,44 @@ def pricing_summary(proposal):
     has_web = any(g == "Web & SaaS" for g in selected_groups)
     standalone_fee = standalone_amount if (has_mobile and not has_web) else 0
 
-    subtotal = sum(ln["effective"] for ln in lines) + sum(cl["effective"] for cl in custom_lines)
+    one_time_plans = []
+    recurring = []
+    recurring_totals = {p: 0 for p in RECURRING_PERIODS}
+    raw_service_plans = list(proposal.get("service_plans") or []) if is_final else []
+    for sp in raw_service_plans:
+        if not isinstance(sp, dict):
+            continue
+        period = sp.get("period")
+        price = int(sp.get("price", 0))
+        if period == "one_time":
+            one_time_plans.append({
+                "id": sp.get("id", ""),
+                "name": sp.get("name", ""),
+                "description": sp.get("description", ""),
+                "price": price,
+                "period": "one_time",
+            })
+        elif period in RECURRING_PERIODS:
+            recurring.append({
+                "id": sp.get("id", ""),
+                "name": sp.get("name", ""),
+                "price": price,
+                "period": period,
+            })
+            recurring_totals[period] += price
+
+    subtotal = (
+        sum(ln["effective"] for ln in lines)
+        + sum(cl["effective"] for cl in custom_lines)
+        + sum(op["price"] for op in one_time_plans)
+    )
     total = subtotal + standalone_fee
+
+    payment_plan_amounts = (
+        pitch_host.compute_payment_plan_amounts(proposal.get("payment_plan") or [], total)
+        if is_final
+        else []
+    )
 
     differs_from_base = []
     checked_diff = set()
@@ -846,9 +1235,74 @@ def pricing_summary(proposal):
                 "selected": iid in seen_selected,
             })
 
+    if is_final:
+        for sp in raw_service_plans:
+            if not isinstance(sp, dict):
+                continue
+            sp_price = int(sp.get("price", 0))
+            sp_period = sp.get("period", "")
+            differs_from_base.append({
+                "item": sp.get("id", ""),
+                "item_id": sp.get("id", ""),
+                "name": sp.get("name", ""),
+                "base": 0,
+                "effective": sp_price,
+                "base_price": 0,
+                "effective_price": sp_price,
+                "delta": sp_price,
+                "source": "service_plan",
+                "period": sp_period,
+                "recurring": sp_period in RECURRING_PERIODS,
+                "selected": True,
+            })
+        base_defaults = default_final_plans()
+        if (proposal.get("payment_plan") or []) != base_defaults["payment_plan"]:
+            differs_from_base.append({
+                "item": "payment_plan",
+                "item_id": "payment_plan",
+                "name": "Payment plan",
+                "base": 0,
+                "effective": 0,
+                "base_price": 0,
+                "effective_price": 0,
+                "delta": 0,
+                "source": "plan",
+                "selected": True,
+            })
+        if (proposal.get("payment_note") or "") != base_defaults["payment_note"]:
+            differs_from_base.append({
+                "item": "payment_note",
+                "item_id": "payment_note",
+                "name": "Payment note",
+                "base": 0,
+                "effective": 0,
+                "base_price": 0,
+                "effective_price": 0,
+                "delta": 0,
+                "source": "plan",
+                "selected": True,
+            })
+        if (proposal.get("timeline") or []) != base_defaults["timeline"]:
+            differs_from_base.append({
+                "item": "timeline",
+                "item_id": "timeline",
+                "name": "Timeline",
+                "base": 0,
+                "effective": 0,
+                "base_price": 0,
+                "effective_price": 0,
+                "delta": 0,
+                "source": "plan",
+                "selected": True,
+            })
+
     return {
         "lines": lines,
         "custom_items": custom_lines,
+        "one_time_plans": one_time_plans,
+        "recurring": recurring,
+        "recurring_totals": recurring_totals,
+        "payment_plan": payment_plan_amounts,
         "subtotal": subtotal,
         "standalone_fee": standalone_fee,
         "standalone_label": standalone_label,
@@ -858,10 +1312,11 @@ def pricing_summary(proposal):
 
 
 def _enrich_proposal(proposal, added_dependencies=None):
-    pricing = pricing_summary(proposal)
-    warnings = check_proposal_product_rules(proposal)
+    hydrated = _hydrate_proposal(proposal)
+    pricing = pricing_summary(hydrated)
+    warnings = check_proposal_product_rules(hydrated)
     out = {
-        **proposal,
+        **hydrated,
         "pricing_summary": pricing,
         "warnings": warnings,
         "pitch_version": pitch_version(),
@@ -869,6 +1324,21 @@ def _enrich_proposal(proposal, added_dependencies=None):
     if added_dependencies is not None:
         out["added_dependencies"] = list(added_dependencies)
     return out
+
+
+def _apply_final_plan_defaults(candidate, data):
+    """Populate omitted plan fields with defaults parsed from Pitch index.html for final quotations."""
+    if str(candidate.get("kind") or "").strip() != "final":
+        return
+    defaults = default_final_plans()
+    if "payment_plan" not in data or data.get("payment_plan") is None:
+        candidate["payment_plan"] = deepcopy(defaults["payment_plan"])
+    if "payment_note" not in data or data.get("payment_note") is None:
+        candidate["payment_note"] = defaults["payment_note"]
+    if "timeline" not in data or data.get("timeline") is None:
+        candidate["timeline"] = deepcopy(defaults["timeline"])
+    if "service_plans" not in data or data.get("service_plans") is None:
+        candidate["service_plans"] = []
 
 
 def _build_create_candidate(data, strip_prices=False):
@@ -896,15 +1366,23 @@ def _build_create_candidate(data, strip_prices=False):
             "preset": base_preset,
             "price_overrides": {} if strip_prices else (data.get("price_overrides") or {}),
             "custom_items": [] if strip_prices else (data.get("custom_items") or []),
+            "payment_plan": data.get("payment_plan") or [],
+            "payment_note": data.get("payment_note") or "",
+            "timeline": data.get("timeline") or [],
+            "service_plans": [] if strip_prices else (data.get("service_plans") or []),
             "notes": data.get("notes", ""),
         }
     elif duplicate_of:
         src = db.get_pitch_proposal(str(duplicate_of).strip())
         if src is None:
             raise NotFoundError(f"Source proposal '{duplicate_of}' not found")
+        src = _hydrate_proposal(src)
+        default_dup_kind = "proposal" if src["kind"] == "default" else src["kind"]
+        target_kind = data.get("kind") if data.get("kind") is not None else default_dup_kind
+        keep_final_fields = str(target_kind).strip() == "final" and src["kind"] == "final"
         candidate = {
             "slug": data.get("slug", ""),
-            "kind": data.get("kind", src["kind"]),
+            "kind": target_kind,
             "status": data.get("status", "draft"),
             "client_name": data.get("client_name", src["client_name"]),
             "business_name": data.get("business_name", src["business_name"]),
@@ -912,6 +1390,10 @@ def _build_create_candidate(data, strip_prices=False):
             "preset": deepcopy(src["preset"]),
             "price_overrides": {} if strip_prices else deepcopy(data.get("price_overrides", src["price_overrides"])),
             "custom_items": [] if strip_prices else deepcopy(data.get("custom_items", src["custom_items"])),
+            "payment_plan": deepcopy(data["payment_plan"]) if "payment_plan" in data else (deepcopy(src["payment_plan"]) if keep_final_fields else []),
+            "payment_note": data["payment_note"] if "payment_note" in data else (src["payment_note"] if keep_final_fields else ""),
+            "timeline": deepcopy(data["timeline"]) if "timeline" in data else (deepcopy(src["timeline"]) if keep_final_fields else []),
+            "service_plans": [] if strip_prices else (deepcopy(data["service_plans"]) if "service_plans" in data else (deepcopy(src["service_plans"]) if keep_final_fields else [])),
             "notes": data.get("notes", src["notes"]),
         }
     else:
@@ -926,6 +1408,10 @@ def _build_create_candidate(data, strip_prices=False):
             "preset": base_preset,
             "price_overrides": {} if strip_prices else (data.get("price_overrides") or {}),
             "custom_items": [] if strip_prices else (data.get("custom_items") or []),
+            "payment_plan": data.get("payment_plan") or [],
+            "payment_note": data.get("payment_note") or "",
+            "timeline": data.get("timeline") or [],
+            "service_plans": [] if strip_prices else (data.get("service_plans") or []),
             "notes": data.get("notes", ""),
         }
 
@@ -944,15 +1430,22 @@ def _build_create_candidate(data, strip_prices=False):
         if "business_name" in data and not candidate["preset"].get("businessName"):
             candidate["preset"]["businessName"] = data["business_name"]
 
+    if not duplicate_of or (
+        str(candidate.get("kind") or "").strip() == "final"
+        and db.get_pitch_proposal(str(duplicate_of).strip())["kind"] != "final"
+    ):
+        _apply_final_plan_defaults(candidate, data)
+
     if strip_prices:
         candidate["price_overrides"] = {}
         candidate["custom_items"] = []
+        candidate["service_plans"] = []
 
     return candidate
 
 
 def _outbox_base_payload(proposal, pricing):
-    return {
+    payload = {
         "proposal_id": proposal["id"],
         "slug": proposal["slug"],
         "kind": proposal["kind"],
@@ -962,6 +1455,14 @@ def _outbox_base_payload(proposal, pricing):
         "pricing_summary": pricing,
         "differs_from_base": pricing["differs_from_base"],
     }
+    if proposal.get("kind") == "final":
+        payload["payment_plan"] = pricing["payment_plan"]
+        payload["payment_note"] = proposal.get("payment_note", "")
+        payload["timeline"] = list(proposal.get("timeline") or [])
+        payload["service_plans"] = list(proposal.get("service_plans") or [])
+        payload["recurring"] = pricing["recurring"]
+        payload["recurring_totals"] = pricing["recurring_totals"]
+    return payload
 
 
 def create_proposal(data, created_by="user", strip_prices=False):
@@ -991,6 +1492,10 @@ def create_proposal(data, created_by="user", strip_prices=False):
         created_by=str(created_by or "user"),
         share_id=share_id,
         pitch_commit=commit,
+        payment_plan=normalized["payment_plan"],
+        payment_note=normalized["payment_note"],
+        timeline=normalized["timeline"],
+        service_plans=normalized["service_plans"],
     )
 
     pricing = pricing_summary(created)
@@ -1026,14 +1531,18 @@ def list_proposals(status=None, kind=None, limit=100):
     else:
         norm_kind = None
 
+    if norm_kind in (None, "default"):
+        ensure_default_proposal()
+
     rows = db.list_pitch_proposals(status=norm_status, kind=norm_kind, limit=limit)
-    return [
-        {
-            **row,
-            "pricing_summary": pricing_summary(row),
-        }
-        for row in rows
-    ]
+    out = []
+    for row in rows:
+        hydrated = _hydrate_proposal(row)
+        out.append({
+            **hydrated,
+            "pricing_summary": pricing_summary(hydrated),
+        })
+    return out
 
 
 def update_proposal(proposal_id, updates):
@@ -1047,10 +1556,16 @@ def update_proposal(proposal_id, updates):
     existing = db.get_pitch_proposal(pid)
     if existing is None:
         raise NotFoundError(f"Proposal '{pid}' not found")
+    if existing["kind"] == "default":
+        raise ValidationError(
+            "The default quotation cannot be edited.",
+            errors=[{"field": "kind", "rule": "immutable_default", "message": "The default quotation cannot be edited."}],
+        )
 
+    target_kind = updates.get("kind", existing["kind"])
     candidate = {
         "slug": updates.get("slug", existing["slug"]),
-        "kind": updates.get("kind", existing["kind"]),
+        "kind": target_kind,
         "status": updates.get("status", existing["status"]),
         "client_name": updates.get("client_name", existing["client_name"]),
         "business_name": updates.get("business_name", existing["business_name"]),
@@ -1058,8 +1573,21 @@ def update_proposal(proposal_id, updates):
         "preset": deepcopy(existing["preset"]),
         "price_overrides": updates.get("price_overrides", existing["price_overrides"]),
         "custom_items": updates.get("custom_items", existing["custom_items"]),
+        "payment_plan": updates.get("payment_plan", existing.get("payment_plan") or []),
+        "payment_note": updates.get("payment_note", existing.get("payment_note") or ""),
+        "timeline": updates.get("timeline", existing.get("timeline") or []),
+        "service_plans": updates.get("service_plans", existing.get("service_plans") or []),
         "notes": updates.get("notes", existing["notes"]),
     }
+
+    if existing["kind"] != "final" and str(target_kind or "").strip() == "final":
+        defaults = default_final_plans()
+        if "payment_plan" not in updates and not candidate["payment_plan"]:
+            candidate["payment_plan"] = deepcopy(defaults["payment_plan"])
+        if "payment_note" not in updates and not candidate["payment_note"]:
+            candidate["payment_note"] = defaults["payment_note"]
+        if "timeline" not in updates and not candidate["timeline"]:
+            candidate["timeline"] = deepcopy(defaults["timeline"])
 
     if "preset" in updates:
         if not isinstance(updates["preset"], dict):
@@ -1082,9 +1610,13 @@ def update_proposal(proposal_id, updates):
         "preset",
         "price_overrides",
         "custom_items",
+        "payment_plan",
+        "payment_note",
+        "timeline",
+        "service_plans",
         "notes",
     ):
-        if normalized[field] != existing[field]:
+        if normalized[field] != existing.get(field):
             changed_fields.append(field)
 
     updated = db.update_pitch_proposal(pid, normalized)
@@ -1104,6 +1636,11 @@ def delete_proposal(proposal_id, hard=False):
     existing = db.get_pitch_proposal(pid)
     if existing is None:
         raise NotFoundError(f"Proposal '{pid}' not found")
+    if existing["kind"] == "default":
+        raise ValidationError(
+            "The default quotation cannot be deleted or archived.",
+            errors=[{"field": "kind", "rule": "immutable_default", "message": "The default quotation cannot be deleted or archived."}],
+        )
 
     pricing = pricing_summary(existing)
     if hard:
@@ -1131,15 +1668,68 @@ def delete_proposal(proposal_id, hard=False):
     return result
 
 
-def duplicate_proposal(proposal_id, slug, created_by="user"):
+def duplicate_proposal(proposal_id, slug, created_by="user", kind=None):
     """Duplicate an existing proposal onto a new slug with a fresh share_id and draft status."""
     pid = str(proposal_id or "").strip()
     if not pid:
         raise ValidationError("proposal_id is required")
-    return create_proposal(
-        {"duplicate_of": pid, "slug": slug, "status": "draft"},
-        created_by=created_by,
-    )
+    payload = {"duplicate_of": pid, "slug": slug, "status": "draft"}
+    if kind is not None and kind != "":
+        payload["kind"] = kind
+    return create_proposal(payload, created_by=created_by)
+
+
+def _generate_final_slug(base_slug):
+    seed = f"{str(base_slug or 'quote')[:50].rstrip('-')}-final"
+    if not SLUG_RE.match(seed):
+        seed = f"final-{uuid.uuid4().hex[:8]}"
+    reserved = reserved_slugs()
+    if seed not in reserved and db.get_pitch_proposal_by_slug(seed) is None:
+        return seed
+    return f"{seed[:55].rstrip('-')}-{uuid.uuid4().hex[:6]}"
+
+
+def finalize_proposal(proposal_id, overrides=None, created_by="user"):
+    """Create a NEW final quotation from an existing proposal or quote form, keeping the original."""
+    pid = str(proposal_id or "").strip()
+    if not pid:
+        raise ValidationError("proposal_id is required")
+    if overrides is not None and not isinstance(overrides, dict):
+        raise ValidationError("Finalize payload must be an object")
+    opts = dict(overrides or {})
+
+    src = db.get_pitch_proposal(pid)
+    if src is None:
+        raise NotFoundError(f"Proposal '{pid}' not found")
+    src = _hydrate_proposal(src)
+
+    if "slug" in opts and opts["slug"] is not None:
+        target_slug = opts["slug"]
+    else:
+        target_slug = _generate_final_slug(src["slug"])
+
+    defaults = default_final_plans()
+    preset_copy = deepcopy(src["preset"])
+    if isinstance(opts.get("preset"), dict):
+        preset_copy.update(opts["preset"])
+
+    create_payload = {
+        "slug": target_slug,
+        "kind": "final",
+        "status": opts.get("status", "draft"),
+        "client_name": opts.get("client_name", src["client_name"]),
+        "business_name": opts.get("business_name", src["business_name"]),
+        "contact": opts["contact"] if "contact" in opts else deepcopy(src["contact"]),
+        "preset": preset_copy,
+        "price_overrides": opts["price_overrides"] if "price_overrides" in opts else deepcopy(src["price_overrides"]),
+        "custom_items": opts["custom_items"] if "custom_items" in opts else deepcopy(src["custom_items"]),
+        "payment_plan": opts["payment_plan"] if "payment_plan" in opts else deepcopy(defaults["payment_plan"]),
+        "payment_note": opts["payment_note"] if "payment_note" in opts else defaults["payment_note"],
+        "timeline": opts["timeline"] if "timeline" in opts else deepcopy(defaults["timeline"]),
+        "service_plans": opts["service_plans"] if "service_plans" in opts else [],
+        "notes": opts.get("notes", src["notes"]),
+    }
+    return create_proposal(create_payload, created_by=created_by)
 
 
 def save_proposal_pdf(proposal_id, raw_bytes, content_type=""):

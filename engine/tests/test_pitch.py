@@ -401,10 +401,12 @@ class PitchTests(unittest.TestCase):
         self.assertEqual(dup["preset"]["slug"], "home-fix-v2")
 
         all_props = pitch.list_proposals()
-        self.assertEqual(len(all_props), 3)
+        self.assertEqual(len(all_props), 4)
+        self.assertEqual(len(pitch.list_proposals(kind="proposal")), 2)
         self.assertEqual(len(pitch.list_proposals(kind="quote_form")), 1)
         self.assertEqual(pitch.list_proposals(kind="quote_form")[0]["id"], qform["id"])
-        self.assertEqual(len(pitch.list_proposals(status="ready")), 1)
+        self.assertEqual(len(pitch.list_proposals(kind="default")), 1)
+        self.assertEqual(len(pitch.list_proposals(status="ready")), 2)
 
     def test_10_agent_tools_permissions_prompt_and_price_stripping(self):
         """cmo and writer have catalog/draft tools and prompt rule; prices stripped and unknown ids rejected."""
@@ -799,6 +801,341 @@ class PitchTests(unittest.TestCase):
             )
         )
         self.assertEqual(len(pitch.list_proposals()), before_count)
+
+    def test_15_default_quotation_lifecycle_immutability_and_duplication(self):
+        """Default quotation auto-creates once, mirrors general preset + admin prices, is immutable, and duplicates."""
+        general = pitch.catalog()["presets"]["general"]
+
+        # Auto-created once at migration and idempotent across repeated calls / restarts / re-init.
+        d1 = pitch.get_default_proposal()
+        d2 = pitch.get_default_proposal()
+        db.init_db()
+        d3 = pitch.get_default_proposal()
+        self.assertEqual(d1["id"], d2["id"])
+        self.assertEqual(d1["id"], d3["id"])
+        self.assertEqual(d1["share_id"], d3["share_id"])
+        self.assertEqual(len(pitch.list_proposals(kind="default")), 1)
+
+        self.assertEqual(d1["kind"], "default")
+        self.assertEqual(d1["slug"], "default-quotation")
+        self.assertEqual(d1["status"], "ready")
+        self.assertEqual(d1["created_by"], "system")
+        self.assertTrue(bool(d1["share_id"]))
+        self.assertEqual(d1["preset"], general)
+        self.assertEqual(d1["price_overrides"], {})
+        self.assertEqual(d1["custom_items"], [])
+
+        # Uses admin base price overrides dynamically.
+        pitch.set_base_price("w_front", 7700, actor="admin")
+        d_updated_price = pitch.get_default_proposal()
+        line_map = {ln["item_id"]: ln for ln in d_updated_price["pricing_summary"]["lines"]}
+        self.assertEqual(line_map["w_front"]["effective"], 7700)
+        self.assertEqual(line_map["w_front"]["source"], "admin")
+
+        # Cannot be created manually, edited, deleted, archived, or have its slug reused.
+        with self.assertRaises(pitch.ValidationError):
+            pitch.create_proposal({"slug": "other-default", "kind": "default"})
+        with self.assertRaises(pitch.ValidationError) as slug_err:
+            pitch.create_proposal({"slug": "default-quotation", "kind": "proposal"})
+        self.assertTrue(any(e["rule"] == "reserved_slug" for e in slug_err.exception.errors))
+
+        with self.assertRaises(pitch.ValidationError):
+            pitch.update_proposal(d1["id"], {"status": "archived"})
+        with self.assertRaises(pitch.ValidationError):
+            pitch.update_proposal(d1["id"], {"notes": "attempt edit"})
+        with self.assertRaises(pitch.ValidationError):
+            pitch.delete_proposal(d1["id"], hard=False)
+        with self.assertRaises(pitch.ValidationError):
+            pitch.delete_proposal(d1["id"], hard=True)
+
+        # Can be duplicated into proposal or quote_form, but not into default.
+        dup_prop = pitch.duplicate_proposal(d1["id"], "copy-from-default")
+        self.assertEqual(dup_prop["kind"], "proposal")
+        self.assertEqual(dup_prop["status"], "draft")
+        self.assertNotEqual(dup_prop["share_id"], d1["share_id"])
+        self.assertEqual(dup_prop["preset"]["title"], general["title"])
+        self.assertEqual(dup_prop["preset"]["slug"], "copy-from-default")
+
+        dup_qf = pitch.duplicate_proposal(d1["id"], "qf-from-default", kind="quote_form")
+        self.assertEqual(dup_qf["kind"], "quote_form")
+        self.assertEqual(dup_qf["preset"]["initialSelected"], general["initialSelected"])
+
+        with self.assertRaises(pitch.ValidationError):
+            pitch.duplicate_proposal(d1["id"], "bad-dup-default", kind="default")
+
+    def test_16_quote_form_blank_template_matches_general_default(self):
+        """New blank quote_form equals Pitch's general preset title, thisPlan, and initialSelected."""
+        general = pitch.catalog()["presets"]["general"]
+        qf = pitch.create_proposal({"slug": "blank-quote-form", "kind": "quote_form"})
+        self.assertEqual(qf["preset"]["title"], general["title"])
+        self.assertEqual(qf["preset"]["title"], "magnm Software Cost Planner")
+        self.assertEqual(qf["preset"]["lead"], general["lead"])
+        self.assertEqual(qf["preset"]["whatWeDo"], general["whatWeDo"])
+        self.assertEqual(qf["preset"]["thisPlan"], general["thisPlan"])
+        self.assertEqual(qf["preset"]["initialSelected"], general["initialSelected"])
+        self.assertEqual(qf["preset"]["sections"], general["sections"])
+        self.assertEqual(qf["preset"]["architectureBlock"], general["architectureBlock"])
+
+    def test_17_index_html_defaults_parser_and_strict_failure(self):
+        """Default plans parse from vendored index.html at runtime and fail loudly if markup changes."""
+        defaults = pitch.default_final_plans()
+        self.assertEqual(
+            defaults["payment_plan"],
+            [
+                {"percent": 40, "label": "to start"},
+                {"percent": 30, "label": "at demo"},
+                {"percent": 30, "label": "at launch"},
+            ],
+        )
+        self.assertIn("Third-party infrastructure", defaults["payment_note"])
+        self.assertEqual(len(defaults["timeline"]), 4)
+        self.assertEqual(defaults["timeline"][0]["title"], "Scope & Cost Estimation")
+        self.assertEqual(defaults["timeline"][0]["when"], "Day 1")
+        self.assertEqual(defaults["timeline"][3]["when"], "Final Week")
+
+        for broken_html in (
+            "",
+            "<html><body><p>no blocks here</p></body></html>",
+            '<div class="block"><h2>How you pay</h2><div class="pay"><div><b>50%</b><span>only</span></div></div></div>',
+        ):
+            with self.assertRaises(RuntimeError):
+                pitch_host.parse_index_defaults(broken_html)
+
+    def test_18_final_quotation_derived_sections_validation_and_angle_brackets(self):
+        """Final quotations derive sections, ignore client sections, and validate all plan fields + angle brackets."""
+        # Derived sections + ignored client sections + auto dependency expansion.
+        final_prop = pitch.create_proposal({
+            "slug": "final-derived",
+            "kind": "final",
+            "preset": {
+                "initialSelected": ["a_push"],  # expands to a_push, a_base, b_db, b_notif
+                "sections": {"p2": ["w_front", "nonexistent_ignored"], "p3": [], "p4": [], "p5": []},
+            },
+        })
+        self.assertEqual(final_prop["preset"]["sections"]["p2"], [])
+        self.assertEqual(set(final_prop["preset"]["sections"]["p3"]), {"a_push", "a_base"})
+        self.assertEqual(set(final_prop["preset"]["sections"]["p4"]), {"b_db", "b_notif"})
+        self.assertEqual(final_prop["preset"]["sections"]["p5"], [])
+        self.assertEqual(set(final_prop["added_dependencies"]), {"a_base", "b_db", "b_notif"})
+
+        # Validation failures for final quotation fields + angle brackets all collected at once.
+        bad = "Bad <script> text"
+        with self.assertRaises(pitch.ValidationError) as ctx:
+            pitch.create_proposal({
+                "slug": "final-invalid",
+                "kind": "final",
+                "contact": {"name": bad, "business": "Biz > Co"},
+                "preset": {"initialSelected": []},
+                "payment_plan": [
+                    {"percent": 0, "label": bad},
+                    {"percent": 50, "label": "x" * 41},
+                    {"percent": 20, "label": "three"},
+                    {"percent": 20, "label": "four"},
+                    {"percent": 10, "label": "five"},
+                ],
+                "payment_note": "<img src=x>" + ("n" * 400),
+                "timeline": [
+                    {"title": bad, "when": "w" * 31, "detail": "d" * 241},
+                ],
+                "service_plans": [
+                    {"id": "bad_plan", "name": bad, "description": "<bad>", "price": -5, "period": "weekly"},
+                    {"id": "plan_ok-one", "name": "Ok", "description": "", "price": 500, "period": "monthly"},
+                    {"id": "plan_ok-one", "name": "Dup", "description": "", "price": 500, "period": "monthly"},
+                    {"id": "plan_three", "name": "3", "description": "", "price": 100, "period": "yearly"},
+                    {"id": "plan_four", "name": "4", "description": "", "price": 100, "period": "quarterly"},
+                    {"id": "plan_five", "name": "5", "description": "", "price": 100, "period": "one_time"},
+                    {"id": "plan_six", "name": "6", "description": "", "price": 100, "period": "one_time"},
+                ],
+            })
+        err_by_field = {}
+        for err in ctx.exception.errors:
+            err_by_field.setdefault(err["field"], []).append(err)
+
+        self.assertIn("preset.initialSelected", err_by_field)
+        self.assertIn("payment_plan", err_by_field)
+        self.assertIn("payment_plan[0].percent", err_by_field)
+        self.assertIn("payment_plan[0].label", err_by_field)
+        self.assertIn("payment_plan[1].label", err_by_field)
+        self.assertIn("payment_note", err_by_field)
+        self.assertIn("timeline[0].title", err_by_field)
+        self.assertIn("timeline[0].when", err_by_field)
+        self.assertIn("timeline[0].detail", err_by_field)
+        self.assertIn("service_plans", err_by_field)
+        self.assertIn("service_plans[0].id", err_by_field)
+        self.assertIn("service_plans[0].name", err_by_field)
+        self.assertIn("service_plans[0].description", err_by_field)
+        self.assertIn("service_plans[0].price", err_by_field)
+        self.assertIn("service_plans[0].period", err_by_field)
+        self.assertIn("contact.name", err_by_field)
+        self.assertIn("contact.business", err_by_field)
+
+        # Sum != 100, too few payment rows, empty timeline.
+        with self.assertRaises(pitch.ValidationError) as ctx2:
+            pitch.create_proposal({
+                "slug": "final-sum-bad",
+                "kind": "final",
+                "preset": {"initialSelected": ["w_front"]},
+                "payment_plan": [{"percent": 60, "label": "Start"}, {"percent": 30, "label": "End"}],
+                "timeline": [],
+            })
+        rules2 = {e["rule"] for e in ctx2.exception.errors}
+        self.assertIn("payment_plan_sum", rules2)
+        self.assertIn("timeline_count", rules2)
+
+        with self.assertRaises(pitch.ValidationError) as ctx3:
+            pitch.create_proposal({
+                "slug": "final-one-row",
+                "kind": "final",
+                "preset": {"initialSelected": ["w_front"]},
+                "payment_plan": [{"percent": 100, "label": "All"}],
+            })
+        self.assertTrue(any(e["rule"] == "payment_plan_count" for e in ctx3.exception.errors))
+
+    def test_19_final_pricing_summary_recurring_rounding_differs_and_outbox(self):
+        """One-time plans add to total, recurring plans stay separate, payment amounts sum exactly, outbox captures plans."""
+        final_prop = pitch.create_proposal({
+            "slug": "final-pricing",
+            "kind": "final",
+            "client_name": "Asha Nair",
+            "business_name": "Nair Health",
+            "price_overrides": {"w_front": 1000},
+            "preset": {"initialSelected": ["w_front"]},
+            "payment_plan": [
+                {"percent": 40, "label": "to start"},
+                {"percent": 30, "label": "at demo"},
+                {"percent": 30, "label": "at launch"},
+            ],
+            "service_plans": [
+                {"id": "plan_setup", "name": "Onboarding", "description": "Initial setup", "price": 1, "period": "one_time"},
+                {"id": "plan_care", "name": "Monthly Care", "description": "Updates", "price": 2500, "period": "monthly"},
+                {"id": "plan_audit", "name": "Quarterly Audit", "description": "QA", "price": 4000, "period": "quarterly"},
+                {"id": "plan_domain", "name": "Annual Ops", "description": "Renewal", "price": 12000, "period": "yearly"},
+            ],
+        })
+
+        ps = final_prop["pricing_summary"]
+        # One-time total = w_front (1000) + plan_setup (1) = 1001. Recurring excluded from total.
+        self.assertEqual(ps["total"], 1001)
+        self.assertEqual(len(ps["one_time_plans"]), 1)
+        self.assertEqual(len(ps["recurring"]), 3)
+        self.assertEqual(ps["recurring_totals"], {"monthly": 2500, "quarterly": 4000, "yearly": 12000})
+
+        # Payment amounts: 400 + 300 + remainder 301 == 1001.
+        amounts = [row["amount"] for row in ps["payment_plan"]]
+        self.assertEqual(amounts, [400, 300, 301])
+        self.assertEqual(sum(amounts), ps["total"])
+
+        diff_ids = {d["item_id"]: d for d in ps["differs_from_base"]}
+        self.assertIn("w_front", diff_ids)
+        self.assertIn("plan_setup", diff_ids)
+        self.assertIn("plan_care", diff_ids)
+        self.assertTrue(diff_ids["plan_care"]["recurring"])
+        self.assertFalse(diff_ids["plan_setup"]["recurring"])
+
+        # Outbox carries final pricing, plans, and recurring items.
+        outbox = pitch.list_outbox(pending_only=True)
+        ev = next(e["payload"] for e in outbox["events"] if e["kind"] == "proposal.created")
+        self.assertEqual(ev["kind"], "final")
+        self.assertEqual(ev["payment_plan"], ps["payment_plan"])
+        self.assertEqual(ev["recurring_totals"], ps["recurring_totals"])
+        self.assertEqual(len(ev["service_plans"]), 4)
+        self.assertEqual({d["item_id"] for d in ev["differs_from_base"]}, set(diff_ids.keys()))
+
+    def test_20_finalize_payload_and_new_http_routes(self):
+        """Finalize copies and keeps original, payload includes locked/plans/contact, and new routes pass happy/400/404/401."""
+        pitch.set_base_price("b_db", 2500, actor="admin")
+        src = pitch.create_proposal({
+            "slug": "src-quote",
+            "kind": "quote_form",
+            "client_name": "Karan",
+            "business_name": "Karan Labs",
+            "contact": {"phone": "9999999999", "email": "k@example.com"},
+            "price_overrides": {"w_front": 7001},
+            "custom_items": [{"id": "custom_api", "g": "Backend", "n": "API Bridge", "d": "Sync", "p": 1000, "r": []}],
+            "preset": {
+                "title": "Karan Custom Planner",
+                "lead": "Custom lead",
+                "initialSelected": ["w_front", "custom_api"],
+                "sections": {"p2": ["w_front", "w_seo"], "p3": [], "p4": ["custom_api"], "p5": []},
+            },
+            "notes": "Original scope",
+        })
+
+        # GET /api/pitch/default
+        def_resp = _dispatch("/api/pitch/default")
+        self.assertEqual(def_resp.status_code, 200)
+        def_json = def_resp.response_json()
+        self.assertEqual(def_json["kind"], "default")
+        self.assertEqual(def_json["slug"], "default-quotation")
+
+        # Update/delete/archive default via HTTP returns 400
+        self.assertEqual(_dispatch(f"/api/pitch/proposals/{def_json['id']}", method="POST", body_dict={"notes": "x"}).status_code, 400)
+        self.assertEqual(_dispatch(f"/api/pitch/proposals/{def_json['id']}/delete", method="POST", body_dict={}).status_code, 400)
+        self.assertEqual(_dispatch(f"/api/pitch/proposals/{def_json['id']}/delete", method="POST", body_dict={"hard": True}).status_code, 400)
+
+        # POST /api/pitch/proposals/<id>/finalize (happy path)
+        fin_resp = _dispatch(f"/api/pitch/proposals/{src['id']}/finalize", method="POST", body_dict={"slug": "karan-final"})
+        self.assertEqual(fin_resp.status_code, 200)
+        fin = fin_resp.response_json()
+        self.assertNotEqual(fin["id"], src["id"])
+        self.assertEqual(fin["kind"], "final")
+        self.assertEqual(fin["slug"], "karan-final")
+        self.assertEqual(fin["client_name"], "Karan")
+        self.assertEqual(fin["business_name"], "Karan Labs")
+        self.assertEqual(fin["price_overrides"], {"w_front": 7001})
+        self.assertEqual(len(fin["custom_items"]), 1)
+        self.assertEqual(fin["preset"]["sections"], {"p2": ["w_front"], "p3": [], "p4": ["custom_api"], "p5": []})
+        self.assertEqual(len(fin["payment_plan"]), 3)
+        self.assertEqual(len(fin["timeline"]), 4)
+
+        # Original kept untouched
+        src_after = pitch.get_proposal(src["id"])
+        self.assertEqual(src_after["kind"], "quote_form")
+        self.assertIn("w_seo", src_after["preset"]["sections"]["p2"])
+
+        # Finalize bad input (400) and missing id (404)
+        self.assertEqual(_dispatch(f"/api/pitch/proposals/{src['id']}/finalize", method="POST", body_dict={"slug": "general"}).status_code, 400)
+        empty_prop = pitch.create_proposal({"slug": "empty-sel", "preset": {"initialSelected": []}})
+        self.assertEqual(_dispatch(f"/api/pitch/proposals/{empty_prop['id']}/finalize", method="POST", body_dict={}).status_code, 400)
+        self.assertEqual(_dispatch("/api/pitch/proposals/prop_missing/finalize", method="POST", body_dict={}).status_code, 404)
+
+        # Payload check for final (/pitch/?proposal=<fin_id>)
+        h_fin = _dispatch(f"/pitch/?proposal={fin['id']}")
+        self.assertEqual(h_fin.status_code, 200)
+        m_fin = re.search(
+            r'<script type="application/json" id="magnm-pitch-data">(.*?)</script>',
+            h_fin.wfile.getvalue().decode("utf-8"),
+            re.DOTALL,
+        )
+        p_fin = json.loads(m_fin.group(1))
+        self.assertEqual(p_fin["kind"], "final")
+        self.assertTrue(p_fin["locked"])
+        self.assertEqual(p_fin["contact"]["name"], "Karan")
+        self.assertEqual(p_fin["contact"]["business"], "Karan Labs")
+        self.assertEqual(p_fin["contact"]["phone"], "9999999999")
+        self.assertEqual(sum(r["amount"] for r in p_fin["payment_plan"]), 8001)
+        self.assertEqual(len(p_fin["timeline"]), 4)
+        self.assertEqual(p_fin["service_plans"], [])
+
+        # Payload check for default (/pitch/?proposal=<def_id>)
+        h_def = _dispatch(f"/pitch/?proposal={def_json['id']}&mode=present")
+        self.assertEqual(h_def.status_code, 200)
+        m_def = re.search(
+            r'<script type="application/json" id="magnm-pitch-data">(.*?)</script>',
+            h_def.wfile.getvalue().decode("utf-8"),
+            re.DOTALL,
+        )
+        p_def = json.loads(m_def.group(1))
+        self.assertEqual(p_def["kind"], "default")
+        self.assertFalse(p_def["locked"])
+        self.assertEqual(p_def["mode"], "form")
+        self.assertEqual(p_def["preset"], pitch.catalog()["presets"]["general"])
+        self.assertEqual(p_def["prices"]["b_db"], 2500)
+
+        # 401 when ENGINE_TOKEN is set
+        server.ENGINE_TOKEN = "secret-token"
+        self.assertEqual(_dispatch("/api/pitch/default").status_code, 401)
+        self.assertEqual(_dispatch(f"/api/pitch/proposals/{src['id']}/finalize", method="POST", body_dict={}).status_code, 401)
 
 
 if __name__ == "__main__":
