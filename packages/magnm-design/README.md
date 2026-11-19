@@ -59,5 +59,5 @@ Link `./magnm.css` (or import `@magnm/design/magnm.css` / `tokens.css` + `fonts.
 ## Tests
 
 ```bash
-node --test packages/magnm-design/scripts/
+node --test "packages/magnm-design/scripts/*.test.mjs"
 ```

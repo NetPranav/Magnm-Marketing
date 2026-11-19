@@ -77,7 +77,7 @@ jobs:
         with:
           node-version: "22"
       - name: Design kit tests
-        run: node --test packages/magnm-design/scripts/
+        run: node --test "packages/magnm-design/scripts/*.test.mjs"
 
   web:
     name: Web app (Node 22, pnpm)

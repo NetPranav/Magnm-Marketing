@@ -20,6 +20,6 @@
     }
   },
   "scripts": {
-    "test": "node --test scripts/"
+    "test": "node --test \"scripts/*.test.mjs\""
   }
 }
