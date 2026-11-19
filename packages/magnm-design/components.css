@@ -77,6 +77,13 @@
   color: var(--fg);
 }
 
+.mg-wordmark--compact {
+  font-size: 38px;
+  line-height: 1;
+  letter-spacing: -.03em;
+  margin: 0;
+}
+
 .mg-display {
   font-family: var(--f-display);
   font-weight: 400;

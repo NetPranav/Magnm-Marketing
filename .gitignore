@@ -17,8 +17,9 @@ __pycache__/
 # Tauri packaged sidecar binaries
 apps/desktop/src-tauri/binaries/
 
-# Node dependencies
+# Node dependencies & web build output
 node_modules/
+apps/web/dist/
 
 # Runtime logs, locks & temp files
 logs/jobs/

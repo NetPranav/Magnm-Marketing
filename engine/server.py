@@ -47,6 +47,7 @@ import review
 import scheduler
 import setup_check
 import team_room
+import web_ui
 import workflows
 
 ROOT = paths.DATA_ROOT
@@ -331,6 +332,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             return
 
         if url.path == "/" or url.path == "/index.html":
+            if not web_ui.serve_static(self, "/index.html"):
+                self.serve_ui()
+        elif url.path == "/legacy":
             self.serve_ui()
         elif url.path == "/api/events":
             self._serve_sse()
@@ -636,6 +640,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Asset not found")
 
         else:
+            if not url.path.startswith("/api/") and web_ui.serve_static(self, url.path):
+                return
             self.send_error(404, "Not Found")
 
     def do_DELETE(self):
@@ -1293,6 +1299,11 @@ Hard Rules:
             self.send_error(404, "Unknown endpoint")
 
     def serve_ui(self):
+        new_studio_link = (
+            '<a href="/" class="btn btn-sm" style="text-decoration:none;">Try the new Studio</a>'
+            if web_ui.dist_dir() is not None
+            else ""
+        )
         html = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2000,6 +2011,7 @@ Hard Rules:
         </div>
       </div>
       <div class="topbar-right">
+        __NEW_STUDIO_LINK__
         <div><span class="status-dot" id="systemDot"></span> <span id="systemText">SYSTEM READY</span></div>
         <button class="btn btn-sm" onclick="switchTab('tab-models', document.querySelector('[data-tab=tab-models]'))">
           <svg class="icon"><use href="#icon-cpu"/></svg> <span id="topGatewayBadge">Configure .env</span>
@@ -3931,7 +3943,7 @@ FIRST.</textarea>
 </body>
 </html>
 """
-        body = html.encode("utf-8")
+        body = html.replace("__NEW_STUDIO_LINK__", new_studio_link).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))

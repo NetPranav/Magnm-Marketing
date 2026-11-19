@@ -205,3 +205,11 @@ test('7. no emoji characters in any text file in packages/magnm-design', () => {
     );
   }
 });
+
+test('8. compact wordmark variant is defined in CSS and React Typography', () => {
+  const componentsCss = stripComments(readText('components.css'));
+  const typographyTsx = readText('react/Typography.tsx');
+  assert.match(componentsCss, /\.mg-wordmark--compact\s*\{/);
+  assert.match(typographyTsx, /compact\?:\s*boolean/);
+  assert.match(typographyTsx, /mg-wordmark--compact/);
+});

@@ -4,17 +4,20 @@ import { cx } from './cx';
 export interface WordmarkProps extends HTMLAttributes<HTMLElement> {
   /** Element tag to render (defaults to span). */
   as?: 'h1' | 'span' | 'div';
+  /** Compact scale for sidebars and top bars. */
+  compact?: boolean;
 }
 
 /** Lowercase Instrument Serif "magnm" wordmark. */
 export function Wordmark({
   as: Tag = 'span',
+  compact = false,
   className,
   children = 'magnm',
   ...rest
 }: WordmarkProps) {
   return (
-    <Tag className={cx('mg-wordmark', className)} {...rest}>
+    <Tag className={cx('mg-wordmark', compact && 'mg-wordmark--compact', className)} {...rest}>
       {children}
     </Tag>
   );

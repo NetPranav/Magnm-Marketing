@@ -38,9 +38,6 @@ jobs:
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build magnm-engine sidecar binary
-        run: python scripts/build_engine.py
-
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -51,7 +48,12 @@ jobs:
         with:
           node-version: "22"
           cache: "pnpm"
-          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+          cache-dependency-path: |
+            apps/desktop/pnpm-lock.yaml
+            apps/web/pnpm-lock.yaml
+
+      - name: Build magnm-engine sidecar binary
+        run: python scripts/build_engine.py
 
       - name: Install Linux desktop dependencies
         if: matrix.os == 'ubuntu-22.04'

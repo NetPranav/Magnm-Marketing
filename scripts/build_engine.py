@@ -48,6 +48,35 @@ def _discover_hidden_imports(engine_dir):
     return modules
 
 
+def _ensure_web_dist(root):
+    """Build apps/web with pnpm so the bundled UI is never stale.
+
+    Set MAGNM_SKIP_WEB_BUILD=1 to reuse an existing apps/web/dist (for example right after building it).
+    """
+    web_dist = os.path.join(root, "apps", "web", "dist")
+    index_html = os.path.join(web_dist, "index.html")
+    if os.environ.get("MAGNM_SKIP_WEB_BUILD") == "1":
+        if not os.path.isfile(index_html):
+            raise SystemExit("MAGNM_SKIP_WEB_BUILD=1 but apps/web/dist/index.html does not exist.")
+        print("Reusing existing apps/web/dist (MAGNM_SKIP_WEB_BUILD=1).")
+        return web_dist
+
+    pnpm_bin = shutil.which("pnpm")
+    if not pnpm_bin:
+        raise SystemExit(
+            "'pnpm' is not installed or not in PATH; it is needed to build the web UI. "
+            "Install Node 22+ and pnpm, then run this script again."
+        )
+
+    web_dir = os.path.join(root, "apps", "web")
+    print(f"Building web UI in {web_dir} ...")
+    subprocess.run([pnpm_bin, "--dir", web_dir, "install", "--frozen-lockfile"], check=True)
+    subprocess.run([pnpm_bin, "--dir", web_dir, "build"], check=True)
+    if not os.path.isfile(index_html):
+        raise FileNotFoundError(f"Expected built web UI at {index_html}")
+    return web_dist
+
+
 def main():
     if sys.version_info < (3, 10):
         raise SystemExit(f"Python 3.10+ required (got {sys.version})")
@@ -69,6 +98,8 @@ def main():
         check=True,
     )
 
+    web_dist = _ensure_web_dist(root)
+
     pyi_root = os.path.join(venv_dir, "pyinstaller")
     dist_dir = os.path.join(pyi_root, "dist")
     work_dir = os.path.join(pyi_root, "build")
@@ -82,6 +113,7 @@ def main():
         (os.path.join(root, "templates"), "templates"),
         (os.path.join(root, "research", "product-facts.md"), "research"),
         (os.path.join(root, "config.md"), "."),
+        (web_dist, "web"),
     ]
     for src, _ in data_specs:
         if not os.path.exists(src):
