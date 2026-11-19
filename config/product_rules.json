@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "show_levels": {
+    "everything": "Agents may describe and show the product, using approved facts only.",
+    "text_only": "Agents may describe the product in text, but no images, video or UI visuals of it.",
+    "teasers_only": "At most a short text-only teaser such as 'something else is coming'. Never name features, never show visuals or demos. Needs CEO approval per post.",
+    "nothing": "Do not mention the product at all."
+  },
+  "products": [
+    {
+      "id": "cero",
+      "name": "Cero",
+      "status": "released",
+      "show": "everything",
+      "facts_file": "research/product-facts.md",
+      "blocked_terms": ["ROS", "robotics"],
+      "confidential": false,
+      "notes": "Claims only from approved facts. ROS / robotics support is not verified, so never claim it."
+    },
+    {
+      "id": "lazylayout",
+      "name": "LazyLayout",
+      "status": "in_development",
+      "show": "teasers_only",
+      "facts_file": null,
+      "blocked_terms": [],
+      "confidential": true,
+      "notes": "CEO rule 2026-10-17: LazyLayout is not built. Never show, demo or describe its features or put its visuals in any post or video. At most a text-only 'something else is coming' line, and only if the CEO approves it per post."
+    }
+  ]
+}

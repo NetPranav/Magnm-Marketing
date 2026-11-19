@@ -1,0 +1,42 @@
+{
+  "id": "20261024-film",
+  "created_at": "2026-11-12T06:01:51.812213+00:00",
+  "status": "draft",
+  "target_platforms": [
+    "x",
+    "linkedin",
+    "instagram"
+  ],
+  "assets": {
+    "images": [
+      "outputs/posts/20261024-film/cero-asks-first_9x16.png",
+      "outputs/posts/20261024-film/cero-asks-first_1x1.png",
+      "outputs/posts/20261024-film/cero-asks-first_16x9.png"
+    ],
+    "videos": [
+      "outputs/video/20261024-film/cero_see-it-before-it-runs_9x16.mp4",
+      "outputs/video/20261024-film/upload_16x9_8mb.mp4",
+      "outputs/video/20261024-film/upload_9x16_8mb.mp4",
+      "outputs/video/20261024-film/upload_16x9_copy.mp4",
+      "outputs/video/20261024-film/cero_see-it-before-it-runs_16x9.mp4"
+    ]
+  },
+  "review": {
+    "verdict": "pending",
+    "reviewed_by": null,
+    "reviewed_at": null,
+    "report_file": null
+  },
+  "approval": {
+    "approved": false,
+    "approved_by": null,
+    "approved_at": null
+  },
+  "publication": {
+    "published": false,
+    "published_at": null,
+    "platform_urls": {}
+  },
+  "updated_at": "2026-11-12T06:02:43.816455+00:00",
+  "posting_kit": "outputs/posts/20261024-film/POSTING-KIT.md"
+}

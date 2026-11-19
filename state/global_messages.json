@@ -1,0 +1,36 @@
+{
+  "messages": [
+    {
+      "id": "msg_1794468241399",
+      "sender": "CEO",
+      "sender_name": "CEO (Founder)",
+      "sender_code": "CEO",
+      "text": "Good morning @cmo! What are our marketing priorities today?",
+      "mentions": [
+        "cmo"
+      ],
+      "attached_assets": [],
+      "timestamp": "2026-11-12T07:24:01.399809+00:00"
+    },
+    {
+      "id": "msg_1794468263768",
+      "sender": "cmo",
+      "sender_name": "CMO (Chief Marketing Officer)",
+      "sender_code": "CMO",
+      "text": "DECISION: APPROVED FOR PRODUCTION\n\nCampaign: Cero 2.2.3 Linux Release\nPriority: High\nObjective: Build awareness of Cero's Linux release, communicate its practical value to developers, and drive GitHub visits and downloads.\n\nTeam delegation\n\n@strategist \u2014 Define the positioning and messaging angle. Focus on Cero as an AI-powered terminal that asks before executing, now available in its Linux 2.2.3 release.\n\n@researcher \u2014 Verify release details, identify Linux developer audience segments, and research relevant communities and distribution channels.\n\n@blog-writer \u2014 Prepare a technical deep-dive explaining Cero's Linux release and its asks-first execution philosophy.\n\n@writer \u2014 Draft the primary launch announcement, X thread (5 posts), and LinkedIn announcement.\n\n@designer \u2014 Prepare launch-card concepts and specifications for 4:5, 1:1 and 16:9 formats using Magnm's brand identity.\n\n@video-producer \u2014 Create a 30\u201345-second release reel using authentic Cero footage. No fabricated UI.\n\n@reviewer \u2014 Verify every technical claim against Cero v2.2.3, check brand consistency and review all deliverables before approval.\n\n@analyst \u2014 Define campaign KPIs: reach, engagement, GitHub traffic and release-page visits.\n\n@growth \u2014 Recommend relevant Linux developer communities and launch experiments. No unsolicited spam.\n\nCampaign messaging direction\n\nCore message: Your terminal can understand natural language without blindly executing commands.\n\nCreative angle: \"Linux developers, meet Cero 2.2.3.\"\n\nPrimary CTA: Explore Cero on GitHub: https://github.com/NetPranav/Cero-Terminal\n\nExecution rules\n\nUse genuine Cero 2.2.3 Linux footage and verified release information.\n\nDo not invent performance benchmarks or capabilities.\n\nDo not introduce LazyLayout.\n\nSubmit all deliverables to the CMO for coordination.\n\nNothing gets published until the Reviewer clears it and the CEO gives final approval.\n\nCMO decision: Proceed with the Linux release campaign. First deliver the messaging, research and creative concepts; then consolidate them into one campaign package for review.",
+      "mentions": [
+        "strategist",
+        "researcher",
+        "blog-writer",
+        "writer",
+        "designer",
+        "video-producer",
+        "reviewer",
+        "analyst",
+        "growth"
+      ],
+      "timestamp": "2026-11-12T07:24:23.768912+00:00"
+    }
+  ],
+  "updated_at": "2026-11-12T07:24:23.769158+00:00"
+}

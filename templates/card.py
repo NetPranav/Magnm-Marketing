@@ -67,7 +67,8 @@ def draw_text(d, x, y_bottom, lines, serif, big, ser, lh, ser_h, fg):
         d.text((x, y + int(ser.size * 0.25)), serif, font=ser, fill=fg)
 
 
-def render(spec, size_key, out_dir):
+def render_size(spec, size_key, out_dir):
+    """Render a single card size from spec into out_dir and return its file path."""
     W, H = SIZES[size_key]
     bg = PALETTE.get(spec.get("field", "stone"), spec.get("field", "#EFEFEC"))
     fg = PALETTE["stone"] if spec.get("field") == "ink" else PALETTE["ink"]
@@ -112,8 +113,15 @@ def render(spec, size_key, out_dir):
     return p
 
 
+def render(spec: dict, out_dir: str) -> list[str]:
+    """Render all requested sizes from spec into out_dir and return written paths."""
+    sizes = spec.get("sizes") or ["4x5"]
+    return [render_size(spec, k, out_dir) for k in sizes]
+
+
 if __name__ == "__main__":
-    spec = json.load(open(sys.argv[1]))
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        spec = json.load(f)
     out = sys.argv[2] if len(sys.argv) > 2 else "."
-    for k in spec.get("sizes", ["4x5"]):
-        print(render(spec, k, out))
+    for written in render(spec, out):
+        print(written)

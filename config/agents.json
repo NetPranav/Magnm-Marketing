@@ -1,0 +1,175 @@
+{
+  "version": 1,
+  "agents": [
+    {
+      "id": "cmo",
+      "name": "CMO",
+      "code": "CMO",
+      "role": "Plans the week, splits work, and coordinates the marketing team.",
+      "prompt_file": "agents/cmo.md",
+      "skills": [
+        "strategy",
+        "editorial-advice",
+        "growth"
+      ],
+      "tools": [
+        "read_product_facts",
+        "list_repos",
+        "read_repo_changes",
+        "shipped_this_week",
+        "list_repo_media",
+        "search_research",
+        "web_search",
+        "list_content",
+        "read_content",
+        "delegate",
+        "ask_user",
+        "check_text",
+        "remember",
+        "recall_memory"
+      ],
+      "legacy_ids": [
+        "strategist",
+        "advisor",
+        "growth"
+      ]
+    },
+    {
+      "id": "researcher",
+      "name": "Researcher",
+      "code": "RES",
+      "role": "Researches market signals and repository changes, saving sourced notes.",
+      "prompt_file": "agents/researcher.md",
+      "skills": [
+        "listening"
+      ],
+      "tools": [
+        "read_product_facts",
+        "list_repos",
+        "read_repo_changes",
+        "read_repo_file",
+        "list_repo_media",
+        "shipped_this_week",
+        "draft_repo_facts",
+        "propose_fact",
+        "search_research",
+        "web_search",
+        "read_page",
+        "screenshot_page",
+        "save_research_note",
+        "ask_user",
+        "recall_memory"
+      ],
+      "legacy_ids": [
+        "listener"
+      ]
+    },
+    {
+      "id": "writer",
+      "name": "Writer",
+      "code": "WRT",
+      "role": "Drafts posts, threads, captions, scripts, and engineering blogs.",
+      "prompt_file": "agents/writer.md",
+      "skills": [
+        "blog-writing",
+        "community-replies",
+        "crisis"
+      ],
+      "tools": [
+        "read_product_facts",
+        "read_repo_changes",
+        "shipped_this_week",
+        "search_research",
+        "web_search",
+        "read_page",
+        "write_draft",
+        "read_content",
+        "check_text",
+        "ask_user",
+        "remember",
+        "recall_memory"
+      ],
+      "legacy_ids": [
+        "blog-writer",
+        "community"
+      ]
+    },
+    {
+      "id": "designer",
+      "name": "Designer",
+      "code": "DSG",
+      "role": "Creates typographic cards, AI images, and runs visual checks.",
+      "prompt_file": "agents/designer.md",
+      "skills": [],
+      "tools": [
+        "read_product_facts",
+        "list_repo_media",
+        "read_content",
+        "render_card",
+        "generate_image",
+        "check_image",
+        "screenshot_page",
+        "write_draft",
+        "ask_user",
+        "remember",
+        "recall_memory"
+      ],
+      "legacy_ids": []
+    },
+    {
+      "id": "video-producer",
+      "name": "Video Producer",
+      "code": "VID",
+      "role": "Writes video scripts, shot lists, captions, and voice-over text.",
+      "prompt_file": "agents/video-producer.md",
+      "skills": [],
+      "tools": [
+        "read_product_facts",
+        "read_repo_changes",
+        "list_repo_media",
+        "write_draft",
+        "read_content",
+        "check_text",
+        "ask_user",
+        "recall_memory"
+      ],
+      "legacy_ids": []
+    },
+    {
+      "id": "reviewer",
+      "name": "Reviewer",
+      "code": "REV",
+      "role": "Checks facts, product rules, and platform fit; warns without blocking.",
+      "prompt_file": "agents/reviewer.md",
+      "skills": [],
+      "tools": [
+        "read_product_facts",
+        "read_content",
+        "check_text",
+        "check_image",
+        "write_review",
+        "recall_memory"
+      ],
+      "legacy_ids": []
+    },
+    {
+      "id": "analyst",
+      "name": "Analyst",
+      "code": "ANA",
+      "role": "Records and explains post performance from numbers or screenshots.",
+      "prompt_file": "agents/analyst.md",
+      "skills": [],
+      "tools": [
+        "read_content",
+        "list_content",
+        "record_metrics",
+        "read_metrics",
+        "check_image",
+        "ask_user",
+        "remember",
+        "recall_memory"
+      ],
+      "legacy_ids": []
+    }
+  ]
+}

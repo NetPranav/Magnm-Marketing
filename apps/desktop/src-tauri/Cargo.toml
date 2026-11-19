@@ -1,0 +1,23 @@
+[package]
+name = "magnm-studio"
+version = "0.1.0"
+description = "Magnm Studio desktop application"
+authors = ["Magnm"]
+edition = "2021"
+
+[lib]
+name = "magnm_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+getrandom = "0.2"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"

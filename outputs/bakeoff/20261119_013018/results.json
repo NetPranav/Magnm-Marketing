@@ -1,0 +1,215 @@
+{
+  "timestamp": "20261119_013018",
+  "role": "writer",
+  "models": [
+    "minimaxai/minimax-m3.1-flash",
+    "nvidia/nemotron-3-ultra-550b-a55b",
+    "mistralai/mistral-large-4-1t-a52b"
+  ],
+  "briefs": [
+    {
+      "id": "linkedin_post",
+      "title": "LinkedIn post: Cero asks before running mutating commands",
+      "platform": "linkedin",
+      "type": "post",
+      "product_id": "cero",
+      "prompt": "Write a LinkedIn post for developers explaining how starting a line with '>' in Cero makes a plain-language request, and how Cero shows commands that change things for approval before running them in a real shell. Hook in the first 210 characters, 3 to 5 hashtags at the end, zero emojis, no hype words. Stick strictly to the verified facts."
+    },
+    {
+      "id": "x_post",
+      "title": "X post: Cero local SLM and system keychain",
+      "platform": "x",
+      "type": "post",
+      "product_id": "cero",
+      "prompt": "Write a single X post (280 characters max, max 2 hashtags, zero emojis, no hype words) about Cero running its built-in local model (3B default, 2.1 GB) on your computer or using Ollama/an API of your choice with keys kept in the system keychain. Stick strictly to the verified facts."
+    },
+    {
+      "id": "instagram_caption",
+      "title": "Instagram caption: Cero .flow files",
+      "platform": "instagram",
+      "type": "post",
+      "product_id": "cero",
+      "prompt": "Write an Instagram caption (strong hook in the first 125 characters, up to 5 hashtags, zero emojis, no hype words) about Cero .flow files: one file, double-click, works on macOS/Linux/Windows, and nothing runs until you click Run. Stick strictly to the verified facts."
+    }
+  ],
+  "outputs": {
+    "linkedin_post": [
+      {
+        "model": "nvidia/nemotron-3-ultra-550b-a55b",
+        "model_used": "nvidia/nemotron-3-ultra-550b-a55b",
+        "latency_ms": 7983,
+        "chars": 949,
+        "auto_review": {
+          "verdict": "warn",
+          "findings": [
+            {
+              "code": "hook_too_long",
+              "severity": "warn",
+              "message": "First line (330 chars) exceeds linkedin visible hook (210 chars)."
+            }
+          ]
+        },
+        "text": "Most developers type commands. Cero lets you start a line with \">\" and describe what you want in plain language. It translates that into shell commands, shows you every command that would change something, waits for your approval, then runs them in a real shell (zsh, bash, or PowerShell on Windows) and returns the actual output.\n\nThe model runs locally by default — a 3B parameter model (2.1 GB) or an optional 4B variant — so nothing leaves your machine unless you configure Ollama or an external API. API keys are stored in the system keychain. You can stop a running request with Ctrl+C. Cero learns only when you explicitly use /learn and forgets with /forget. It resolves folder and app names by asking when there are multiple matches.\n\nNo hidden execution. No cloud dependency unless you choose one. Just a terminal that shows you what it's about to do before it does it.\n\n#CeroTerminal #DeveloperTools #LocalAI #TerminalWorkflow #OpenSource",
+        "error": null,
+        "label": "A"
+      },
+      {
+        "model": "mistralai/mistral-large-4-1t-a52b",
+        "model_used": "mistralai/mistral-large-4-1t-a52b",
+        "latency_ms": 82013,
+        "chars": 1029,
+        "auto_review": {
+          "verdict": "ok",
+          "findings": []
+        },
+        "text": "Most terminals make you remember the exact syntax. In Cero, you start a line with \">\" and type what you want in plain language. Here is what happens next.\n\nWhen a line starts with \">\", Cero treats it as a plain-language request instead of a shell command.\n\nIt works out the commands needed, then shows any that change things for your approval before running them. Approved commands execute in a real shell — zsh or bash on macOS and Linux, PowerShell on Windows. Cero is a desktop terminal (Tauri v2, Rust, React 19, xterm.js), so those commands run in the same shell environment you already use, not a separate sandbox.\n\nThe answer you get back is built from the real output of those commands, not generated from memory. If a request goes off track, Ctrl+C stops it.\n\nCero v2.2.0 is MIT-licensed and runs on macOS, Linux, and Windows. It also ships with a built-in local model (3B default, runs on your computer), or you can point it at Ollama or an API of your choice.\n\n#Terminal #DeveloperTools #OpenSource #CLI #BuildInPublic",
+        "error": null,
+        "label": "B"
+      },
+      {
+        "model": "minimaxai/minimax-m3.1-flash",
+        "model_used": "minimaxai/minimax-m3.1-flash",
+        "latency_ms": 108696,
+        "chars": 844,
+        "auto_review": {
+          "verdict": "ok",
+          "findings": []
+        },
+        "text": "In Cero, start a line with `>` and you’re writing a plain-language request, not a shell command. Cero works out the commands and shows any that change things for approval before running them in a real shell.\n\nThe flow is:\n\n- `>` begins the request.\n- Cero determines the commands needed.\n- Any command that changes things is shown for approval.\n- Approved commands run in zsh or bash, or PowerShell on Windows.\n- Cero answers using the real output.\n\nFor example: `> create a folder named demo`\n\nThe command that creates the folder is shown for approval before it runs. If a request matches multiple folders or apps, Cero asks which one you mean.\n\nCero is a desktop terminal built with Tauri v2, Rust, React 19, and xterm.js. The `>` syntax is the entry point; the shell remains the execution environment.\n\n#Cero #DeveloperTools #Terminal #Shell",
+        "error": null,
+        "label": "C"
+      }
+    ],
+    "x_post": [
+      {
+        "model": "nvidia/nemotron-3-ultra-550b-a55b",
+        "model_used": "nvidia/nemotron-3-ultra-550b-a55b",
+        "latency_ms": 6758,
+        "chars": 199,
+        "auto_review": {
+          "verdict": "ok",
+          "findings": []
+        },
+        "text": "Cero runs a 3B local model (2.1 GB) on your machine by default. Also works with Ollama or any API — keys stored in your system keychain. No cloud required unless you choose it. #CeroTerminal #LocalAI",
+        "error": null,
+        "label": "A"
+      },
+      {
+        "model": "minimaxai/minimax-m3.1-flash",
+        "model_used": "minimaxai/minimax-m3.1-flash",
+        "latency_ms": 7893,
+        "chars": 164,
+        "auto_review": {
+          "verdict": "ok",
+          "findings": []
+        },
+        "text": "Cero’s built-in local model (3B default, 2.1 GB) runs on your computer. You can also use Ollama or an API of your choice, with API keys kept in the system keychain.",
+        "error": null,
+        "label": "B"
+      },
+      {
+        "model": "mistralai/mistral-large-4-1t-a52b",
+        "model_used": "mistralai/mistral-large-4-1t-a52b",
+        "latency_ms": 21810,
+        "chars": 193,
+        "auto_review": {
+          "verdict": "ok",
+          "findings": []
+        },
+        "text": "Cero runs a built-in local model (3B default, 2.1 GB) on your computer. Prefer something else? Point it at Ollama or an API of your choice — keys stay in your system keychain. #Cero #opensource",
+        "error": null,
+        "label": "C"
+      }
+    ],
+    "instagram_caption": [
+      {
+        "model": "nvidia/nemotron-3-ultra-550b-a55b",
+        "model_used": "nvidia/nemotron-3-ultra-550b-a55b",
+        "latency_ms": 2337,
+        "chars": 225,
+        "auto_review": {
+          "verdict": "warn",
+          "findings": [
+            {
+              "code": "hook_too_long",
+              "severity": "warn",
+              "message": "First line (166 chars) exceeds instagram visible hook (125 chars)."
+            }
+          ]
+        },
+        "text": "One file, double-click, runs on macOS Linux Windows. Nothing executes until you click Run. Cero .flow files pick the right install commands for each OS automatically.\n\n#CeroTerminal #dotflow #crossplatform #terminal #devtools",
+        "error": null,
+        "label": "A"
+      },
+      {
+        "model": "minimaxai/minimax-m3.1-flash",
+        "model_used": "minimaxai/minimax-m3.1-flash",
+        "latency_ms": 71273,
+        "chars": 387,
+        "auto_review": {
+          "verdict": "ok",
+          "findings": []
+        },
+        "text": "One .flow file. Double-click it. Cero works on macOS, Linux, and Windows—and nothing runs until you click Run.\n\nCero picks the right install commands for your OS. The flow is contained in one file, and execution starts only when you click Run.\n\n#CeroTerminal #DeveloperTools #Terminal #OpenSource\n\nAlt text: Cero .flow workflow: one file, double-click to open, then click Run to execute.",
+        "error": null,
+        "label": "B"
+      },
+      {
+        "model": "mistralai/mistral-large-4-1t-a52b",
+        "model_used": "mistralai/mistral-large-4-1t-a52b",
+        "latency_ms": 89719,
+        "chars": 524,
+        "auto_review": {
+          "verdict": "ok",
+          "findings": []
+        },
+        "text": "One .flow file. Double-click it on macOS, Linux, or Windows. Nothing runs until you click Run.\n\nA .flow file is a single file you open with a double-click. Cero reads it and picks the right install commands for your operating system, so the same file runs on macOS, Linux, and Windows.\n\nNothing in the file executes until you click Run. You see what will happen before anything happens.\n\nCero is a desktop terminal (v2.2.0, MIT) that runs commands in a real shell on your machine.\n\n#Cero #OpenSource #DevTools #Terminal #CLI",
+        "error": null,
+        "label": "C"
+      }
+    ]
+  },
+  "key": {
+    "linkedin_post": {
+      "A": "nvidia/nemotron-3-ultra-550b-a55b",
+      "B": "mistralai/mistral-large-4-1t-a52b",
+      "C": "minimaxai/minimax-m3.1-flash"
+    },
+    "x_post": {
+      "A": "nvidia/nemotron-3-ultra-550b-a55b",
+      "B": "minimaxai/minimax-m3.1-flash",
+      "C": "mistralai/mistral-large-4-1t-a52b"
+    },
+    "instagram_caption": {
+      "A": "nvidia/nemotron-3-ultra-550b-a55b",
+      "B": "minimaxai/minimax-m3.1-flash",
+      "C": "mistralai/mistral-large-4-1t-a52b"
+    }
+  },
+  "summary": {
+    "minimaxai/minimax-m3.1-flash": {
+      "model": "minimaxai/minimax-m3.1-flash",
+      "count": 3,
+      "median_latency_ms": 71273,
+      "auto_review_warns": 0,
+      "warn_briefs": 0,
+      "errors": 0
+    },
+    "nvidia/nemotron-3-ultra-550b-a55b": {
+      "model": "nvidia/nemotron-3-ultra-550b-a55b",
+      "count": 3,
+      "median_latency_ms": 6758,
+      "auto_review_warns": 2,
+      "warn_briefs": 2,
+      "errors": 0
+    },
+    "mistralai/mistral-large-4-1t-a52b": {
+      "model": "mistralai/mistral-large-4-1t-a52b",
+      "count": 3,
+      "median_latency_ms": 82013,
+      "auto_review_warns": 0,
+      "warn_briefs": 0,
+      "errors": 0
+    }
+  }
+}

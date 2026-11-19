@@ -1,24 +1,63 @@
 # Runbook
 
-## Run the CMO manually (now)
-Start a Claude chat linked to this computer with the Magnm-Marketing folder and say:
-"Act as the Magnm CMO. Read agents/cmo.md in the Magnm-Marketing folder and run one cycle. Mode: check-in" (or "Mode: plan" for the nightly planning run).
+This workspace runs on Linux with the Python engine in `engine/`.
 
-## Run on a schedule (to set up once posting days are confirmed)
-Create one scheduled task with the same instruction, 4 times a day. The last run of the day uses Mode: plan.
-Requirements: the Mac is awake, the Claude desktop app is open, and the task is set to automatically approve.
+## Configuration and API keys
 
-## Where to look
-- What is happening now: state/board.md
-- Why something was made: briefs/ (the brief says why)
-- What each agent produced: outputs/ and reviews/
-- Full handoff history: state/activity.log
+Copy `.env.example` to `.env` and fill in your API keys (such as `NVIDIA_NIM_API_KEY`).
+Real keys go only in `.env`, which is gitignored and must never be committed.
+
+## Development setup
+
+Create `.venv` and install the Python engine libraries and Playwright Chromium browser:
+
+```bash
+python3 scripts/dev_setup.py
+```
+
+## Starting the dashboard
+
+Run the local dashboard server:
+
+```bash
+.venv/bin/python engine/server.py
+```
+
+The dashboard is served at `http://127.0.0.1:5050`.
+
+## Running a job manually
+
+Run any job from the repository root with:
+
+```bash
+python3 engine/cmo_runtime.py run-job <name>
+```
+
+Available job names in `engine/cmo_runtime.py`:
+- `daily_cycle` — Daily CMO Cycle (Digest, Board & Plan Check)
+- `market_scan` — Live Developer & Market Opportunity Scanner
+- `repo_sync` — Codebase & GitHub Intelligence Sync
+- `generate_blog` — Generate Technical Blog & Repurposed Assets
+- `render_cards` — Render Visual Social Cards
+
+## Installing systemd timers (Linux)
+
+The unit files in `systemd/` are configured for `systemctl --user` (user-session timers):
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp systemd/*.service systemd/*.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now magnm-cmo_daily.timer magnm-market_scan.timer magnm-repo_sync.timer
+```
+
+To regenerate the unit files from `state/schedules.json`, run `python3 engine/scheduler.py --generate-systemd`.
 
 ## Approving and posting
-Final packages appear in outputs/posts/<id>/ marked READY. You publish them. After publishing, tell the CMO (or add a line to plan/published.md) so it can track results.
 
-## v2 (2026-10-18)
-- The CMO runs once a day at 08:46 IST as a scheduled task (agents/cmo.md v2, playbooks/operating-model.md). It never makes videos.
-- It sends one notification a day with numbered posts. Reply `yes`, `yes 1,3` or `no 2 <reason>` in that run's chat.
-- agy tasks pile up in queue/agy/inbox/. When you're at the Mac, run: `zsh ~/Magnm-Marketing/queue/agy/agy-runner.sh` (agy must be installed and signed in once).
-- Post images: `python3 templates/card.py spec.json outputs/posts/<id>/`
+Final packages appear in `outputs/posts/<id>/`: `POSTING-KIT.md` (captions per platform), the card images, and `manifest.json` (status).
+The team approves packages and posts by hand from `outputs/posts/<id>/`, then updates the post status in the dashboard or via `python3 engine/cmo_runtime.py publish <id>`.
+
+## What is coming
+
+See [ROADMAP.md](ROADMAP.md) for the Magnm Studio roadmap across desktop, mobile, and team sync phases.

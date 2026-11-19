@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Magnm Centralized Assets Management Service
+Handles asset storage, metadata indexing, deduplication, and contextual retrieval for agents.
+"""
+
+import hashlib
+import json
+import mimetypes
+import os
+import shutil
+import sys
+from datetime import datetime, timezone
+
+_ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
+if _ENGINE_DIR not in sys.path:
+    sys.path.insert(0, _ENGINE_DIR)
+
+import db
+import paths
+
+ROOT = paths.DATA_ROOT
+ASSETS_DIR = paths.data("assets", "uploads")
+ASSETS_REGISTRY = paths.data("state", "assets.json")
+os.makedirs(ASSETS_DIR, exist_ok=True)
+
+def load_registry():
+    """Load registered assets metadata from SQLite."""
+    return db.load_assets()
+
+def save_registry(assets):
+    """Persist registered assets metadata to SQLite."""
+    db.save_assets(assets)
+
+def register_asset(filename, content_bytes, category="brand", description="", tags=None):
+    """Save asset file to disk and record metadata in registry."""
+    if tags is None:
+        tags = []
+
+    uploads_dir = paths.data("assets", "uploads")
+    os.makedirs(uploads_dir, exist_ok=True)
+
+    # Calculate SHA256 hash for deduplication
+    sha = hashlib.sha256(content_bytes).hexdigest()[:12]
+    ext = os.path.splitext(filename)[1].lower()
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    asset_id = f"asset_{ts}_{sha}"
+    saved_filename = f"{asset_id}{ext}"
+    saved_path = os.path.join(uploads_dir, saved_filename)
+
+    with open(saved_path, "wb") as f:
+        f.write(content_bytes)
+
+    mime, _ = mimetypes.guess_type(filename)
+    mime = mime or "application/octet-stream"
+
+    # Infer file type group
+    file_group = "document"
+    if mime.startswith("image/"):
+        file_group = "image"
+    elif mime.startswith("video/"):
+        file_group = "video"
+    elif mime.startswith("audio/"):
+        file_group = "audio"
+
+    size_kb = round(len(content_bytes) / 1024, 1)
+    size_str = f"{size_kb} KB" if size_kb < 1024 else f"{round(size_kb/1024, 2)} MB"
+
+    asset_entry = {
+        "id": asset_id,
+        "name": filename,
+        "saved_filename": saved_filename,
+        "relative_path": os.path.relpath(saved_path, paths.DATA_ROOT),
+        "mime_type": mime,
+        "file_group": file_group,
+        "size": size_str,
+        "size_bytes": len(content_bytes),
+        "category": category,
+        "description": description or f"Uploaded {filename}",
+        "tags": tags,
+        "uploaded_at": datetime.now(timezone.utc).isoformat()
+    }
+
+    assets = load_registry()
+    assets.insert(0, asset_entry)
+    save_registry(assets)
+    return asset_entry
+
+def get_assets():
+    return load_registry()
+
+def delete_asset(asset_id):
+    assets = load_registry()
+    to_delete = next((a for a in assets if a["id"] == asset_id), None)
+    if not to_delete:
+        return False
+
+    saved_path = paths.data(to_delete["relative_path"])
+    if os.path.exists(saved_path):
+        os.remove(saved_path)
+
+    updated = [a for a in assets if a["id"] != asset_id]
+    save_registry(updated)
+    return True
+
+if __name__ == "__main__":
+    print(f"Registered assets: {len(get_assets())}")
