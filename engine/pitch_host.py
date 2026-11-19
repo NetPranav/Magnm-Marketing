@@ -105,10 +105,15 @@ def build_payload(mode="preview", proposal=None, price_overrides=None):
     custom_items = []
     if isinstance(proposal, dict):
         proposal_id = proposal.get("id") or proposal.get("proposal_id")
-        preset = proposal.get("preset")
+        raw_preset = proposal.get("preset")
+        if isinstance(raw_preset, dict):
+            preset = dict(raw_preset)
+            if proposal.get("slug") and not preset.get("slug"):
+                preset["slug"] = proposal["slug"]
+        else:
+            preset = raw_preset
         custom_items = list(proposal.get("custom_items") or [])
-        if price_overrides is None:
-            _apply_price_overrides(prices, proposal.get("price_overrides"))
+        _apply_price_overrides(prices, proposal.get("price_overrides"))
 
     return {
         "mode": norm_mode,
@@ -245,9 +250,42 @@ def serve(handler, url):
         return False
 
     if rel in ("", "index.html"):
+        import db
+
         qs = urllib.parse.parse_qs(url.query)
         mode = (qs.get("mode", ["preview"])[0] or "preview").strip().lower()
-        payload = build_payload(mode=mode)
+        proposal_id = (qs.get("proposal", [""])[0] or "").strip()
+
+        admin_overrides = {}
+        if os.path.isfile(db.get_db_path()):
+            admin_overrides = {
+                iid: int(entry["price"])
+                for iid, entry in db.list_pitch_base_prices().items()
+            }
+
+        proposal_payload = None
+        if proposal_id:
+            prop = db.get_pitch_proposal(proposal_id)
+            if prop is None:
+                return False
+            preset_copy = dict(prop.get("preset") or {})
+            preset_copy["slug"] = prop["slug"]
+            proposal_payload = {
+                "id": prop["id"],
+                "slug": prop["slug"],
+                "kind": prop["kind"],
+                "preset": preset_copy,
+                "price_overrides": prop.get("price_overrides") or {},
+                "custom_items": prop.get("custom_items") or [],
+            }
+            if prop.get("kind") == "quote_form":
+                mode = "form"
+
+        payload = build_payload(
+            mode=mode,
+            proposal=proposal_payload,
+            price_overrides=admin_overrides,
+        )
         html = compose_index_html(payload).encode("utf-8")
         _send_bytes(handler, html, "text/html; charset=utf-8", "no-store")
         return True

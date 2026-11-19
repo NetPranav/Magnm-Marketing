@@ -18,6 +18,7 @@ import platforms
 import product_rules
 
 _PLATFORM_NORMS_AGENTS = {"writer", "designer", "reviewer", "video-producer"}
+_PROPOSAL_AGENTS = {"cmo", "writer"}
 _IST_ZONE = ZoneInfo("Asia/Kolkata")
 
 _TOOL_RULES_BLOCK = "\n".join([
@@ -196,6 +197,11 @@ def build_system_prompt(agent_id):
 
     if canon_id in _PLATFORM_NORMS_AGENTS:
         blocks.append(platforms.prompt_block())
+
+    if canon_id in _PROPOSAL_AGENTS:
+        blocks.append(
+            "Proposals use Pitch's catalog; agents pick deliverables and write copy, and agents never set or suggest prices."
+        )
 
     today_ist = datetime.now(_IST_ZONE).strftime("%Y-%m-%d")
     blocks.append(f"Today's date (Asia/Kolkata): {today_ist}")
