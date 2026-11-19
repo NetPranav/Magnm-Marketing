@@ -28,11 +28,35 @@
     return value;
   }
 
-  if (data.custom_items !== undefined) {
-    data.custom_items = stripAngleBrackets(data.custom_items);
+  var SANITIZE_KEYS = [
+    "custom_items",
+    "preset",
+    "contact",
+    "payment_plan",
+    "payment_note",
+    "timeline",
+    "service_plans"
+  ];
+  for (var sk = 0; sk < SANITIZE_KEYS.length; sk++) {
+    var sKey = SANITIZE_KEYS[sk];
+    if (data[sKey] !== undefined) {
+      data[sKey] = stripAngleBrackets(data[sKey]);
+    }
   }
-  if (data.preset !== undefined) {
-    data.preset = stripAngleBrackets(data.preset);
+
+  function isLocked() {
+    return data.locked === true;
+  }
+
+  var PERIOD_SUFFIXES = {
+    monthly: " / month",
+    quarterly: " / quarter",
+    yearly: " / year",
+    one_time: ""
+  };
+
+  function periodSuffix(period) {
+    return Object.prototype.hasOwnProperty.call(PERIOD_SUFFIXES, period) ? PERIOD_SUFFIXES[period] : "";
   }
 
   var INITIAL_PRICES = {};
@@ -98,6 +122,50 @@
     }
   }
 
+  var registeredPlanIds = [];
+
+  function applyServicePlans(servicePlans) {
+    if (typeof ITEMS === "undefined") return;
+    for (var i = 0; i < registeredPlanIds.length; i++) {
+      delete ITEMS[registeredPlanIds[i]];
+    }
+    registeredPlanIds = [];
+    if (!isLocked() || !Array.isArray(servicePlans)) return;
+    for (var j = 0; j < servicePlans.length; j++) {
+      var sp = servicePlans[j];
+      if (
+        sp &&
+        typeof sp === "object" &&
+        sp.period === "one_time" &&
+        typeof sp.id === "string" &&
+        sp.id &&
+        typeof sp.name === "string" &&
+        typeof sp.price === "number" &&
+        isFinite(sp.price) &&
+        sp.price >= 0 &&
+        Math.floor(sp.price) === sp.price &&
+        !Object.prototype.hasOwnProperty.call(ITEMS, sp.id)
+      ) {
+        ITEMS[sp.id] = {
+          g: "DevOps & Maintenance",
+          n: sp.name,
+          d: typeof sp.description === "string" ? sp.description : "",
+          p: sp.price,
+          r: []
+        };
+        registeredPlanIds.push(sp.id);
+      }
+    }
+  }
+
+  function selectOneTimePlans() {
+    if (!isLocked() || typeof sel === "undefined" || typeof ITEMS === "undefined") return;
+    for (var i = 0; i < registeredPlanIds.length; i++) {
+      var pid = registeredPlanIds[i];
+      if (ITEMS[pid]) sel[pid] = true;
+    }
+  }
+
   // 1. Override base item prices for existing items only (non-negative integers).
   applyPrices(data.prices);
   if (typeof ITEMS !== "undefined") {
@@ -108,6 +176,7 @@
 
   // 2. Register custom items (ids must start with custom_, group must exist in GROUPS).
   applyCustomItems(data.custom_items);
+  applyServicePlans(data.service_plans);
 
   // 3. Disable Pitch's built-in /admin route inside the Studio host.
   var origParseRoute = typeof window.parseRoute === "function" ? window.parseRoute : null;
@@ -283,8 +352,176 @@
     container.appendChild(block);
   }
 
+  function createServicePlanButton(plan) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "item";
+    b.setAttribute("role", "checkbox");
+    b.setAttribute("data-id", plan.id);
+    b.setAttribute("aria-checked", "true");
+    b.setAttribute("data-locked", "true");
+    b.setAttribute("aria-disabled", "true");
+    b.innerHTML =
+      '<span class="box">' +
+      TICK +
+      '</span><span><span class="name"></span><span class="desc"></span><span class="note"></span></span><span class="price"></span>';
+    b.querySelector(".name").textContent = typeof plan.name === "string" ? plan.name : "";
+    b.querySelector(".desc").textContent = typeof plan.description === "string" ? plan.description : "";
+    var priceVal = typeof plan.price === "number" && isFinite(plan.price) ? plan.price : 0;
+    var priceText = typeof window.money === "function" ? window.money(priceVal) : String(priceVal);
+    b.querySelector(".price").textContent = priceText + periodSuffix(plan.period);
+    b.addEventListener("click", function () {
+      if (typeof window.toggle === "function") window.toggle(plan.id);
+    });
+    return b;
+  }
+
+  function renderServicePlansGroup() {
+    if (!isLocked() || !Array.isArray(data.service_plans) || !data.service_plans.length) return;
+    var container = document.getElementById("p5-groups");
+    if (!container) return;
+
+    var groupEl = document.createElement("div");
+    groupEl.className = "group";
+
+    var labelEl = document.createElement("div");
+    labelEl.className = "label";
+    var labelSpan = document.createElement("span");
+    labelSpan.textContent = "Plans and support";
+    labelEl.appendChild(labelSpan);
+    groupEl.appendChild(labelEl);
+
+    var itemsEl = document.createElement("div");
+    itemsEl.className = "items";
+    for (var i = 0; i < data.service_plans.length; i++) {
+      var sp = data.service_plans[i];
+      if (!sp || typeof sp !== "object" || typeof sp.id !== "string" || !sp.id) continue;
+      itemsEl.appendChild(createServicePlanButton(sp));
+    }
+    if (!itemsEl.childNodes.length) return;
+    groupEl.appendChild(itemsEl);
+    container.appendChild(groupEl);
+  }
+
+  function renderPaymentPlan(paymentPlan, paymentNote) {
+    if (!isLocked()) return;
+    var payEl = document.querySelector("#p1 .pay");
+    if (payEl && Array.isArray(paymentPlan) && paymentPlan.length > 0) {
+      payEl.textContent = "";
+      payEl.style.gridTemplateColumns =
+        paymentPlan.length !== 3 ? "repeat(" + paymentPlan.length + ", 1fr)" : "";
+      var fallbackTotal = typeof window.total === "function" ? window.total() : 0;
+      for (var i = 0; i < paymentPlan.length; i++) {
+        var row = paymentPlan[i];
+        if (!row || typeof row !== "object") continue;
+        var pct = Number(row.percent) || 0;
+        var amt =
+          typeof row.amount === "number" && isFinite(row.amount)
+            ? row.amount
+            : Math.round((fallbackTotal * pct) / 100);
+        var cell = document.createElement("div");
+        var b = document.createElement("b");
+        b.textContent = String(pct) + "%";
+        var labelSpan = document.createElement("span");
+        labelSpan.textContent = typeof row.label === "string" ? row.label : "";
+        var br = document.createElement("br");
+        var amtSpan = document.createElement("span");
+        amtSpan.textContent = typeof window.money === "function" ? window.money(amt) : String(amt);
+        cell.appendChild(b);
+        cell.appendChild(labelSpan);
+        cell.appendChild(br);
+        cell.appendChild(amtSpan);
+        payEl.appendChild(cell);
+      }
+    }
+    var payBlock = payEl ? payEl.parentNode : null;
+    var payHint = payBlock ? payBlock.querySelector("p.hint") : null;
+    if (payHint && typeof paymentNote === "string") {
+      payHint.textContent = paymentNote;
+    }
+  }
+
+  function renderTimeline(timeline) {
+    if (!isLocked()) return;
+    var stepsEl = document.querySelector("#p1 ol.steps");
+    if (!stepsEl || !Array.isArray(timeline) || !timeline.length) return;
+    stepsEl.textContent = "";
+    for (var i = 0; i < timeline.length; i++) {
+      var step = timeline[i];
+      if (!step || typeof step !== "object") continue;
+      var num = (i + 1 < 10 ? "0" : "") + (i + 1);
+      var li = document.createElement("li");
+      var b = document.createElement("b");
+      b.textContent = num;
+      var titleSpan = document.createElement("span");
+      titleSpan.textContent = typeof step.title === "string" ? step.title : "";
+      var whenSpan = document.createElement("span");
+      whenSpan.className = "t";
+      whenSpan.textContent = typeof step.when === "string" ? step.when : "";
+      var detailSmall = document.createElement("small");
+      detailSmall.textContent = typeof step.detail === "string" ? step.detail : "";
+      li.appendChild(b);
+      li.appendChild(titleSpan);
+      li.appendChild(whenSpan);
+      li.appendChild(detailSmall);
+      stepsEl.appendChild(li);
+    }
+  }
+
+  function prefillContact(contact) {
+    if (!contact || typeof contact !== "object") return;
+    var pairs = [
+      ["f-name", contact.name],
+      ["f-biz", contact.business],
+      ["f-phone", contact.phone],
+      ["f-note", contact.notes]
+    ];
+    for (var i = 0; i < pairs.length; i++) {
+      var el = document.getElementById(pairs[i][0]);
+      var val = typeof pairs[i][1] === "string" ? pairs[i][1] : "";
+      if (el && !el.value && val) {
+        el.value = val;
+      }
+    }
+  }
+
+  function applyLockedAttributes() {
+    var buttons = document.querySelectorAll(".item");
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].setAttribute("data-locked", "true");
+      buttons[i].setAttribute("aria-disabled", "true");
+    }
+  }
+
+  var origToggle = typeof window.toggle === "function" ? window.toggle : null;
+  window.toggle = function (id) {
+    if (isLocked()) return;
+    if (origToggle) {
+      return origToggle.apply(this, arguments);
+    }
+  };
+
+  var origUpdate = typeof window.update === "function" ? window.update : null;
+  window.update = function () {
+    if (origUpdate) {
+      origUpdate.apply(this, arguments);
+    }
+    if (isLocked()) {
+      applyLockedAttributes();
+    }
+  };
+
   window.buildPlannerSections = function (preset) {
+    if (data.kind === "default") {
+      if (origBuildPlannerSections) {
+        origBuildPlannerSections(preset);
+      }
+      return;
+    }
     updatePortfolioAndBanner(preset);
+    if (isLocked()) {
+      selectOneTimePlans();
+    }
     if (origBuildPlannerSections) {
       origBuildPlannerSections(preset);
     }
@@ -293,6 +530,11 @@
         var ids = Array.isArray(preset.sections[key]) ? preset.sections[key] : [];
         filterSheetSections(key, ids);
       });
+    }
+    if (isLocked()) {
+      renderServicePlansGroup();
+      renderPaymentPlan(data.payment_plan, data.payment_note);
+      renderTimeline(data.timeline);
     }
   };
 
@@ -322,49 +564,374 @@
     window.history.replaceState(null, "", targetPath + "?" + params.toString());
   }
 
-  // 6. Mirror PDF exports to the engine when a proposal_id is active.
-  if (
-    window.jspdf &&
-    window.jspdf.jsPDF &&
-    window.jspdf.jsPDF.prototype &&
-    typeof window.jspdf.jsPDF.prototype.save === "function"
-  ) {
-    var origSave = window.jspdf.jsPDF.prototype.save;
-    window.jspdf.jsPDF.prototype.save = function () {
-      if (data.proposal_id && typeof fetch === "function") {
-        try {
-          var pdfBlob = this.output("blob");
-          var endpoint = "/api/pitch/proposals/" + encodeURIComponent(String(data.proposal_id)) + "/pdf";
-          fetch(endpoint, {
-            method: "POST",
-            credentials: "same-origin",
-            headers: { "Content-Type": "application/pdf" },
-            body: pdfBlob
-          })
-            .then(function (resp) {
-              return resp && resp.ok && resp.json ? resp.json() : null;
-            })
-            .then(
-              function (res) {
-                if (res && window.parent && window.parent !== window) {
-                  window.parent.postMessage(
-                    {
-                      type: "magnm:pitch-pdf-saved",
-                      proposal_id: data.proposal_id,
-                      result: res
-                    },
-                    window.location.origin
-                  );
-                }
-              },
-              function () {}
-            );
-        } catch (err) {
-          // Ignore upload failures; browser download still executes.
-        }
+  function buildPaymentTermsText(planRows, note, grandTotal) {
+    var parts = [];
+    if (Array.isArray(planRows)) {
+      for (var i = 0; i < planRows.length; i++) {
+        var row = planRows[i];
+        if (!row || typeof row !== "object") continue;
+        var pct = Number(row.percent) || 0;
+        var label = typeof row.label === "string" ? row.label : "";
+        var amt =
+          typeof row.amount === "number" && isFinite(row.amount)
+            ? row.amount
+            : Math.round((grandTotal * pct) / 100);
+        parts.push(pct + "% " + label + " (" + moneyPdf(amt) + ")");
       }
-      return origSave.apply(this, arguments);
+    }
+    var prefix = parts.length ? "Payable as " + parts.join(", ") + "." : "";
+    var cleanNote = typeof note === "string" ? note.trim() : "";
+    if (prefix && cleanNote) return prefix + " " + cleanNote;
+    return prefix || cleanNote;
+  }
+
+  function finalQuotationPdf() {
+    var st = document.getElementById("status");
+    if (!window.jspdf) {
+      if (st) st.textContent = "The PDF tool did not load. Check your internet connection.";
+      return;
+    }
+    var recurringPlans = Array.isArray(data.service_plans)
+      ? data.service_plans.filter(function (sp) {
+          return sp && typeof sp === "object" && sp.period && sp.period !== "one_time";
+        })
+      : [];
+    var grandTotal = typeof window.total === "function" ? window.total() : 0;
+    if (!grandTotal && !recurringPlans.length) {
+      if (st) st.textContent = "Please select at least one component first.";
+      return;
+    }
+
+    var doc = new window.jspdf.jsPDF({ unit: "mm", format: "a4" });
+    var W = 210;
+    var M = 18;
+    var y = 24;
+
+    function need(h) {
+      if (y + h > 280) {
+        doc.addPage();
+        y = 22;
+      }
+    }
+    function rule(c) {
+      doc.setDrawColor(c);
+      doc.setLineWidth(0.2);
+      doc.line(M, y, W - M, y);
+    }
+
+    doc.setTextColor(0);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(26);
+    doc.text("magnm", M, y);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    var presetObj = typeof activePreset !== "undefined" ? activePreset : data.preset;
+    var planLabel =
+      presetObj && presetObj.slug !== "general" && presetObj.name
+        ? "Final quotation - " + presetObj.name
+        : "Final quotation";
+    doc.text(planLabel, W - M, y - 8, { align: "right" });
+    doc.text(
+      new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" }),
+      W - M,
+      y - 2,
+      { align: "right" }
+    );
+    y += 8;
+    rule(0);
+
+    var nm = document.getElementById("f-name") ? document.getElementById("f-name").value.trim() : "";
+    var biz = document.getElementById("f-biz") ? document.getElementById("f-biz").value.trim() : "";
+    var ph = document.getElementById("f-phone") ? document.getElementById("f-phone").value.trim() : "";
+    var nt = document.getElementById("f-note") ? document.getElementById("f-note").value.trim() : "";
+
+    y += 7;
+    var metaRows = [
+      ["Prepared for", nm],
+      ["Business", biz],
+      ["Phone", ph],
+      ["Scope", presetObj && presetObj.thisPlan ? presetObj.thisPlan : ""]
+    ];
+
+    metaRows.forEach(function (r) {
+      if (!r[1]) return;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8.5);
+      doc.setTextColor(90);
+      doc.text(r[0].toUpperCase(), M, y);
+      doc.setFontSize(10);
+      doc.setTextColor(0);
+      doc.text(r[1], M + 34, y);
+      y += 6;
+    });
+    y += 4;
+
+    GROUPS.forEach(function (g) {
+      var ks = chosen(g);
+      if (!ks.length) return;
+      var fee = g === "Mobile app" ? standaloneFee() : 0;
+      var sub =
+        ks.reduce(function (s, k) {
+          return s + ITEMS[k].p;
+        }, 0) + fee;
+
+      need(16);
+      y += 4;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9.5);
+      doc.setTextColor(0);
+      doc.text(g.toUpperCase(), M, y);
+      doc.text(moneyPdf(sub), W - M, y, { align: "right" });
+      y += 2.5;
+      rule(0);
+      y += 5.5;
+
+      ks.forEach(function (k) {
+        need(8);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10);
+        doc.setTextColor(0);
+        doc.text("[x]  " + ITEMS[k].n, M, y);
+        doc.text(moneyPdf(ITEMS[k].p), W - M, y, { align: "right" });
+        y += 3;
+        doc.setDrawColor(225);
+        doc.setLineWidth(0.15);
+        doc.line(M, y, W - M, y);
+        y += 5;
+      });
+
+      if (fee) {
+        need(8);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10);
+        doc.setTextColor(0);
+        doc.text("[x]  " + STANDALONE_LABEL, M, y);
+        doc.text(moneyPdf(fee), W - M, y, { align: "right" });
+        y += 3;
+        doc.setDrawColor(225);
+        doc.setLineWidth(0.15);
+        doc.line(M, y, W - M, y);
+        y += 5;
+      }
+    });
+
+    need(40);
+    y += 6;
+    doc.setDrawColor(0);
+    doc.setLineWidth(0.5);
+    doc.line(M, y, W - M, y);
+    y += 9;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    doc.text("TOTAL", M, y);
+    doc.setFontSize(20);
+    doc.text(moneyPdf(grandTotal), W - M, y + 1, { align: "right" });
+    y += 11;
+
+    if (recurringPlans.length) {
+      need(16);
+      y += 4;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9.5);
+      doc.setTextColor(0);
+      doc.text("RECURRING", M, y);
+      y += 2.5;
+      rule(0);
+      y += 5.5;
+
+      recurringPlans.forEach(function (sp) {
+        need(8);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10);
+        doc.setTextColor(0);
+        doc.text("[x]  " + (sp.name || ""), M, y);
+        doc.text(moneyPdf(sp.price) + periodSuffix(sp.period), W - M, y, { align: "right" });
+        y += 3;
+        doc.setDrawColor(225);
+        doc.setLineWidth(0.15);
+        doc.line(M, y, W - M, y);
+        y += 5;
+      });
+      y += 4;
+    }
+
+    var terms = buildPaymentTermsText(data.payment_plan, data.payment_note, grandTotal);
+    if (terms) {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(60);
+      doc.splitTextToSize(terms, W - 2 * M).forEach(function (ln) {
+        need(5);
+        doc.text(ln, M, y);
+        y += 4.6;
+      });
+    }
+
+    var timelineSteps = Array.isArray(data.timeline) ? data.timeline : [];
+    if (timelineSteps.length) {
+      y += 5;
+      need(14);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8.5);
+      doc.setTextColor(0);
+      doc.text("TIMELINE", M, y);
+      y += 5;
+      timelineSteps.forEach(function (step, idx) {
+        if (!step || typeof step !== "object") return;
+        var num = (idx + 1 < 10 ? "0" : "") + (idx + 1);
+        var titleText = num + "  " + (step.title || "");
+        var whenText = step.when || "";
+        var detailText = step.detail || "";
+        var detailLines = detailText ? doc.splitTextToSize(detailText, W - 2 * M - 8) : [];
+        need(8 + detailLines.length * 4.6);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(9.5);
+        doc.setTextColor(0);
+        doc.text(titleText, M, y);
+        if (whenText) {
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(9);
+          doc.setTextColor(90);
+          doc.text(whenText, W - M, y, { align: "right" });
+        }
+        y += 4.6;
+        if (detailLines.length) {
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(9);
+          doc.setTextColor(40);
+          detailLines.forEach(function (ln) {
+            need(5);
+            doc.text(ln, M + 8, y);
+            y += 4.6;
+          });
+        }
+        y += 1.5;
+      });
+    }
+
+    if (nt) {
+      y += 5;
+      need(14);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8.5);
+      doc.setTextColor(0);
+      doc.text("PROJECT NOTES & DELIVERABLES", M, y);
+      y += 5;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9.5);
+      doc.setTextColor(40);
+      doc.splitTextToSize(nt, W - 2 * M).forEach(function (ln) {
+        need(5.5);
+        doc.text(ln, M, y);
+        y += 5;
+      });
+    }
+
+    var slugPart = presetObj && presetObj.slug && presetObj.slug !== "general" ? presetObj.slug + "-" : "";
+    var bizPart = biz ? biz.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") + "-" : "";
+    var fname = "magnm-" + slugPart + bizPart + "estimate.pdf";
+
+    if (window.AndroidBridge && typeof window.AndroidBridge.saveAndOpenPdf === "function") {
+      try {
+        var dataUri = doc.output("datauristring");
+        window.AndroidBridge.saveAndOpenPdf(dataUri, fname);
+        if (st) st.textContent = "Your proposal PDF has been generated and opened.";
+        return;
+      } catch (e) {
+        console.warn("AndroidBridge save failed, using browser fallback", e);
+      }
+    }
+
+    doc.save(fname);
+    if (st) st.textContent = "Your proposal PDF was downloaded successfully.";
+  }
+
+  var origDownloadPdf = typeof window.downloadPdf === "function" ? window.downloadPdf : null;
+  if (isLocked()) {
+    window.downloadPdf = finalQuotationPdf;
+  }
+
+  if (document.readyState === "loading") {
+    window.addEventListener("DOMContentLoaded", function () {
+      if (isLocked() || data.kind !== "default") {
+        prefillContact(data.contact);
+      }
+    });
+  } else if (isLocked() || data.kind !== "default") {
+    prefillContact(data.contact);
+  }
+
+  // 6. Mirror PDF exports to the engine when a proposal_id is active.
+  function uploadPdfBlob(doc) {
+    if (!data.proposal_id || typeof fetch !== "function" || !doc || typeof doc.output !== "function") {
+      return;
+    }
+    try {
+      var pdfBlob = doc.output("blob");
+      var endpoint = "/api/pitch/proposals/" + encodeURIComponent(String(data.proposal_id)) + "/pdf";
+      fetch(endpoint, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/pdf" },
+        body: pdfBlob
+      })
+        .then(function (resp) {
+          return resp && resp.ok && resp.json ? resp.json() : null;
+        })
+        .then(
+          function (res) {
+            if (res && window.parent && window.parent !== window) {
+              window.parent.postMessage(
+                {
+                  type: "magnm:pitch-pdf-saved",
+                  proposal_id: data.proposal_id,
+                  result: res
+                },
+                window.location.origin
+              );
+            }
+          },
+          function () {}
+        );
+    } catch (err) {
+      // Ignore upload failures; browser download still executes.
+    }
+  }
+
+  if (window.jspdf && typeof window.jspdf.jsPDF === "function") {
+    var OrigJsPdf = window.jspdf.jsPDF;
+    if (OrigJsPdf.prototype && typeof OrigJsPdf.prototype.save === "function") {
+      var origProtoSave = OrigJsPdf.prototype.save;
+      OrigJsPdf.prototype.save = function () {
+        if (!this._magnmSaveWrapped) {
+          uploadPdfBlob(this);
+        }
+        return origProtoSave.apply(this, arguments);
+      };
+    }
+    var WrappedJsPdf = function () {
+      var ctorArgs = [null].concat(Array.prototype.slice.call(arguments));
+      var instance = new (Function.prototype.bind.apply(OrigJsPdf, ctorArgs))();
+      if (
+        instance &&
+        Object.prototype.hasOwnProperty.call(instance, "save") &&
+        typeof instance.save === "function"
+      ) {
+        var origInstanceSave = instance.save;
+        instance._magnmSaveWrapped = true;
+        instance.save = function () {
+          uploadPdfBlob(this);
+          return origInstanceSave.apply(this, arguments);
+        };
+      }
+      return instance;
     };
+    WrappedJsPdf.prototype = OrigJsPdf.prototype;
+    Object.keys(OrigJsPdf).forEach(function (k) {
+      WrappedJsPdf[k] = OrigJsPdf[k];
+    });
+    window.jspdf.jsPDF = WrappedJsPdf;
   }
 
   // 7. Live preview updates from Studio editor + Escape exit forwarding in present mode.
@@ -373,6 +940,20 @@
     var msg = event.data;
     if (!msg || typeof msg !== "object" || msg.type !== "magnm:pitch-preview-update") return;
     var payload = msg.payload || {};
+    if (typeof payload.locked === "boolean") {
+      data.locked = payload.locked;
+      if (isLocked()) {
+        window.downloadPdf = finalQuotationPdf;
+      } else if (origDownloadPdf) {
+        window.downloadPdf = origDownloadPdf;
+      }
+    }
+    for (var pk = 0; pk < SANITIZE_KEYS.length; pk++) {
+      var pKey = SANITIZE_KEYS[pk];
+      if (pKey !== "custom_items" && pKey !== "preset" && payload[pKey] !== undefined) {
+        data[pKey] = stripAngleBrackets(payload[pKey]);
+      }
+    }
     var cleanCustomItems = Array.isArray(payload.custom_items)
       ? stripAngleBrackets(payload.custom_items)
       : null;
@@ -387,6 +968,10 @@
     }
     if (cleanCustomItems) {
       applyCustomItems(cleanCustomItems);
+    }
+    applyServicePlans(data.service_plans);
+    if (payload.contact && typeof payload.contact === "object") {
+      prefillContact(data.contact);
     }
     if (cleanPreset) {
       var nextPreset = cleanPreset;
