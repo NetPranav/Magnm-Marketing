@@ -19,5 +19,10 @@ export function PitchSection({ param, onNavigate }: PitchSectionProps) {
       />
     );
   }
-  return <PitchList onOpenProposal={(id) => onNavigate(id)} />;
+  return (
+    <PitchList
+      onOpenProposal={(id) => onNavigate(id)}
+      onPresentProposal={(id) => onNavigate(`${id}/present`)}
+    />
+  );
 }

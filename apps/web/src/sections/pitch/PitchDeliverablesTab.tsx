@@ -21,6 +21,7 @@ import {
   PITCH_SHEETS,
   buildAllItemsMap,
   createCustomItemId,
+  deriveFinalSections,
   expandSelectionWithDeps,
   sectionForGroup,
   validatePitchText,
@@ -51,6 +52,9 @@ export function PitchDeliverablesTab({
     [draft.preset.initialSelected, allItems],
   );
   const selectedSet = useMemo(() => new Set(selected), [selected]);
+
+  const isFinal = draft.kind === 'final';
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Custom item form state
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -107,6 +111,10 @@ export function PitchDeliverablesTab({
         preset: {
           ...prev.preset,
           initialSelected: expanded,
+          sections:
+            prev.kind === 'final'
+              ? deriveFinalSections(expanded, allItems)
+              : prev.preset.sections,
         },
       };
     });
@@ -239,6 +247,21 @@ export function PitchDeliverablesTab({
       v.field.startsWith('custom_items'),
   );
 
+  const normalizedSearch = isFinal ? searchQuery.trim().toLowerCase() : '';
+  const visibleSheets = PITCH_SHEETS.map((sheet) => {
+    const shownIds = new Set(draft.preset.sections[sheet.key] || []);
+    const allSheetItems = Object.entries(allItems).filter(([, item]) =>
+      sheet.groups.includes(item.g),
+    );
+    const sheetItems = normalizedSearch
+      ? allSheetItems.filter(([itemId, item]) => {
+          const hay = `${itemId} ${item.n} ${item.d} ${item.g}`.toLowerCase();
+          return hay.includes(normalizedSearch);
+        })
+      : allSheetItems;
+    return { sheet, shownIds, allSheetItems, sheetItems };
+  });
+
   return (
     <div className="studio-stack">
       {sectionViolations.length > 0 ? (
@@ -247,22 +270,45 @@ export function PitchDeliverablesTab({
         </div>
       ) : null}
 
-      {PITCH_SHEETS.map((sheet) => {
-        const shownIds = new Set(draft.preset.sections[sheet.key] || []);
-        const sheetItems = Object.entries(allItems).filter(([, item]) =>
-          sheet.groups.includes(item.g),
-        );
+      {isFinal ? (
+        <Card>
+          <Field
+            label="Search services"
+            htmlFor="pitch-services-search"
+            hint="Pick agreed services from the catalog. Required dependencies are added automatically."
+          >
+            <TextInput
+              id="pitch-services-search"
+              placeholder="Filter by service name, description, or group"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </Field>
+        </Card>
+      ) : null}
+
+      {normalizedSearch && visibleSheets.every((s) => s.sheetItems.length === 0) ? (
+        <div className="mg-empty">No services match &ldquo;{searchQuery.trim()}&rdquo;.</div>
+      ) : null}
+
+      {visibleSheets.map(({ sheet, shownIds, allSheetItems, sheetItems }) => {
+        if (normalizedSearch && sheetItems.length === 0) {
+          return null;
+        }
+        const agreedCount = allSheetItems.filter(([id]) => selectedSet.has(id)).length;
 
         return (
           <section
             key={sheet.key}
             className="studio-section"
-            aria-label={`${sheet.label} deliverables`}
+            aria-label={`${sheet.label} ${isFinal ? 'services' : 'deliverables'}`}
           >
             <div className="studio-section-bar">
               <h3 className="studio-section-title">{sheet.label}</h3>
               <span className="studio-mono">
-                {shownIds.size} shown · {sheetItems.filter(([id]) => selectedSet.has(id)).length} pre-selected
+                {isFinal
+                  ? `${agreedCount} agreed`
+                  : `${shownIds.size} shown · ${agreedCount} pre-selected`}
               </span>
             </div>
 
@@ -308,15 +354,17 @@ export function PitchDeliverablesTab({
                       }
                       meta={
                         <div className="studio-pitch-deliverable-toggles">
+                          {!isFinal ? (
+                            <Checkbox
+                              label="Show on this sheet"
+                              checked={isShown}
+                              onChange={(e) =>
+                                toggleShownOnSheet(sheet.key, itemId, e.target.checked)
+                              }
+                            />
+                          ) : null}
                           <Checkbox
-                            label="Show on this sheet"
-                            checked={isShown}
-                            onChange={(e) =>
-                              toggleShownOnSheet(sheet.key, itemId, e.target.checked)
-                            }
-                          />
-                          <Checkbox
-                            label="Pre-selected"
+                            label={isFinal ? 'Agreed' : 'Pre-selected'}
                             checked={isSelected}
                             disabled={locked}
                             onChange={(e) => togglePreSelected(itemId, e.target.checked)}

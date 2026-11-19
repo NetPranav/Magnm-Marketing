@@ -892,6 +892,7 @@ class PitchTests(unittest.TestCase):
         self.assertEqual(defaults["timeline"][0]["title"], "Scope & Cost Estimation")
         self.assertEqual(defaults["timeline"][0]["when"], "Day 1")
         self.assertEqual(defaults["timeline"][3]["when"], "Final Week")
+        self.assertEqual(pitch.catalog()["default_plans"], defaults)
 
         for broken_html in (
             "",

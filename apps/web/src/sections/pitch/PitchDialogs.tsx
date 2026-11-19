@@ -1,7 +1,16 @@
 import { useEffect, useState } from 'react';
-import { Dialog, Field, PillButton, Select, TextArea, TextInput } from '@magnm/design/react';
+import {
+  Checkbox,
+  Dialog,
+  Field,
+  PillButton,
+  Select,
+  TextArea,
+  TextInput,
+} from '@magnm/design/react';
 import type {
   CreateProposalInput,
+  FinalizeProposalInput,
   PitchCatalog,
   PitchProposal,
   PitchProposalKind,
@@ -9,7 +18,7 @@ import type {
 } from '../../api/pitch';
 import { extractRuleViolations, validatePitchText, validateSlug } from './pitchUtils';
 
-export type NewProposalSource = 'blank' | 'preset' | 'duplicate';
+export type NewProposalSource = 'blank' | 'preset' | 'duplicate' | 'finalize';
 
 export interface NewProposalDialogProps {
   open: boolean;
@@ -19,9 +28,10 @@ export interface NewProposalDialogProps {
   submitting: boolean;
   onClose: () => void;
   onCreate: (payload: CreateProposalInput) => Promise<void>;
+  onFinalize?: (sourceId: string, overrides: FinalizeProposalInput) => Promise<void>;
 }
 
-/** Modal dialog for creating a blank proposal, quote form, preset-based proposal, or duplicate. */
+/** Modal dialog for creating a blank proposal, quote form, final quotation, preset-based, or duplicate/finalize. */
 export function NewProposalDialog({
   open,
   defaultKind,
@@ -30,11 +40,17 @@ export function NewProposalDialog({
   submitting,
   onClose,
   onCreate,
+  onFinalize,
 }: NewProposalDialogProps) {
   const presetEntries = Object.entries(catalog?.presets || {});
+  const catalogEntries = Object.entries(catalog?.items || {});
+  const finalizableProposals = proposals.filter(
+    (p) => p.kind === 'proposal' || p.kind === 'quote_form',
+  );
   const [source, setSource] = useState<NewProposalSource>('blank');
   const [presetSlug, setPresetSlug] = useState<string>('urban-company');
   const [duplicateId, setDuplicateId] = useState<string>('');
+  const [initialServices, setInitialServices] = useState<string[]>([]);
   const [slug, setSlug] = useState('');
   const [clientName, setClientName] = useState('');
   const [businessName, setBusinessName] = useState('');
@@ -46,7 +62,12 @@ export function NewProposalDialog({
     setSource('blank');
     const nonGeneral = presetEntries.find(([k]) => k !== 'general')?.[0] || presetEntries[0]?.[0] || 'general';
     setPresetSlug(nonGeneral);
-    setDuplicateId(proposals[0]?.id || '');
+    setDuplicateId(
+      defaultKind === 'final'
+        ? finalizableProposals[0]?.id || ''
+        : proposals[0]?.id || '',
+    );
+    setInitialServices([]);
     setSlug('');
     setClientName('');
     setBusinessName('');
@@ -62,6 +83,12 @@ export function NewProposalDialog({
   const businessNameError =
     violations.find((v) => v.field === 'business_name')?.message || validatePitchText(businessName);
 
+  const toggleInitialService = (itemId: string, checked: boolean) => {
+    setInitialServices((prev) =>
+      checked ? (prev.includes(itemId) ? prev : [...prev, itemId]) : prev.filter((id) => id !== itemId),
+    );
+  };
+
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     const slugCheck = validateSlug(slug, reservedPresets);
@@ -70,22 +97,43 @@ export function NewProposalDialog({
       return;
     }
 
-    const payload: CreateProposalInput = {
-      slug: slug.trim(),
-      kind: defaultKind,
-      client_name: clientName.trim() || undefined,
-      business_name: businessName.trim() || undefined,
-    };
-
-    if (defaultKind === 'proposal' && source === 'preset' && presetSlug) {
-      payload.from_preset = presetSlug;
-    } else if (defaultKind === 'proposal' && source === 'duplicate' && duplicateId) {
-      payload.duplicate_of = duplicateId;
+    if (
+      defaultKind === 'final' &&
+      source === 'blank' &&
+      catalogEntries.length > 0 &&
+      initialServices.length === 0
+    ) {
+      setError('Select at least one agreed service for a final quotation.');
+      return;
     }
 
     setError(null);
     setViolations([]);
     try {
+      if (defaultKind === 'final' && source === 'finalize' && duplicateId && onFinalize) {
+        await onFinalize(duplicateId, {
+          slug: slug.trim(),
+          client_name: clientName.trim() || undefined,
+          business_name: businessName.trim() || undefined,
+        });
+        return;
+      }
+
+      const payload: CreateProposalInput = {
+        slug: slug.trim(),
+        kind: defaultKind,
+        client_name: clientName.trim() || undefined,
+        business_name: businessName.trim() || undefined,
+      };
+
+      if (defaultKind === 'final' && source === 'blank') {
+        payload.preset = { initialSelected: initialServices };
+      } else if ((defaultKind === 'proposal' || defaultKind === 'final') && source === 'preset' && presetSlug) {
+        payload.from_preset = presetSlug;
+      } else if (defaultKind === 'proposal' && source === 'duplicate' && duplicateId) {
+        payload.duplicate_of = duplicateId;
+      }
+
       await onCreate(payload);
     } catch (err) {
       const list = extractRuleViolations(err);
@@ -94,11 +142,24 @@ export function NewProposalDialog({
     }
   };
 
-  const title = defaultKind === 'quote_form' ? 'New quote form' : 'New proposal';
+  const title =
+    defaultKind === 'quote_form'
+      ? 'New quote form'
+      : defaultKind === 'final'
+        ? 'New final quotation'
+        : 'New proposal';
   const subtitle =
     defaultKind === 'quote_form'
-      ? 'Blank planner the client fills in'
-      : 'Start blank, from a Pitch preset, or duplicate an existing proposal';
+      ? "Starts with Pitch's default selection and layout"
+      : defaultKind === 'final'
+        ? 'Start blank, from a Pitch preset, or finalize an existing proposal or quote form'
+        : 'Start blank, from a Pitch preset, or duplicate an existing proposal';
+  const submitLabel =
+    defaultKind === 'quote_form'
+      ? 'Create quote form'
+      : defaultKind === 'final'
+        ? 'Create final quotation'
+        : 'Create proposal';
 
   return (
     <Dialog
@@ -117,7 +178,7 @@ export function NewProposalDialog({
             form="new-pitch-proposal-form"
             disabled={submitting || !slug.trim()}
           >
-            {submitting ? 'Creating...' : defaultKind === 'quote_form' ? 'Create quote form' : 'Create proposal'}
+            {submitting ? 'Creating...' : submitLabel}
           </PillButton>
         </>
       }
@@ -129,25 +190,33 @@ export function NewProposalDialog({
           </div>
         ) : null}
 
-        {defaultKind === 'proposal' ? (
+        {defaultKind === 'proposal' || defaultKind === 'final' ? (
           <Field label="Start from" htmlFor="new-pitch-source">
             <Select
               id="new-pitch-source"
               value={source}
               onChange={(e) => setSource(e.target.value as NewProposalSource)}
             >
-              <option value="blank">Blank proposal</option>
+              <option value="blank">
+                {defaultKind === 'final' ? 'Blank final quotation' : 'Blank proposal'}
+              </option>
               <option value="preset" disabled={presetEntries.length === 0}>
                 From a Pitch preset
               </option>
-              <option value="duplicate" disabled={proposals.length === 0}>
-                Duplicate existing proposal
-              </option>
+              {defaultKind === 'proposal' ? (
+                <option value="duplicate" disabled={proposals.length === 0}>
+                  Duplicate existing proposal
+                </option>
+              ) : (
+                <option value="finalize" disabled={finalizableProposals.length === 0}>
+                  From an existing proposal or quote form
+                </option>
+              )}
             </Select>
           </Field>
         ) : null}
 
-        {defaultKind === 'proposal' && source === 'preset' ? (
+        {(defaultKind === 'proposal' || defaultKind === 'final') && source === 'preset' ? (
           <Field label="Pitch preset" htmlFor="new-pitch-preset">
             <Select
               id="new-pitch-preset"
@@ -176,6 +245,40 @@ export function NewProposalDialog({
                 </option>
               ))}
             </Select>
+          </Field>
+        ) : null}
+
+        {defaultKind === 'final' && source === 'finalize' ? (
+          <Field label="Source proposal or quote form" htmlFor="new-pitch-finalize-src">
+            <Select
+              id="new-pitch-finalize-src"
+              value={duplicateId}
+              onChange={(e) => setDuplicateId(e.target.value)}
+            >
+              {finalizableProposals.map((prop) => (
+                <option key={prop.id} value={prop.id}>
+                  {prop.business_name || prop.client_name || prop.slug} ({prop.slug})
+                </option>
+              ))}
+            </Select>
+          </Field>
+        ) : null}
+
+        {defaultKind === 'final' && source === 'blank' && catalogEntries.length > 0 ? (
+          <Field
+            label="Initial agreed services"
+            hint="Select at least one service to start. You can refine services in the editor."
+          >
+            <div className="studio-pitch-dialog-checklist" role="group" aria-label="Initial agreed services">
+              {catalogEntries.map(([itemId, item]) => (
+                <Checkbox
+                  key={itemId}
+                  label={item.n}
+                  checked={initialServices.includes(itemId)}
+                  onChange={(e) => toggleInitialService(itemId, e.target.checked)}
+                />
+              ))}
+            </div>
           </Field>
         ) : null}
 
@@ -246,7 +349,7 @@ export interface DuplicateProposalDialogProps {
   reservedPresets: string[];
   submitting: boolean;
   onClose: () => void;
-  onDuplicate: (proposalId: string, slug: string) => Promise<void>;
+  onDuplicate: (proposalId: string, slug: string, kind?: PitchProposalKind) => Promise<void>;
 }
 
 /** Modal dialog to duplicate a proposal onto a new slug. */
@@ -258,15 +361,18 @@ export function DuplicateProposalDialog({
   onDuplicate,
 }: DuplicateProposalDialogProps) {
   const [slug, setSlug] = useState('');
+  const [targetKind, setTargetKind] = useState<'proposal' | 'quote_form'>('proposal');
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!proposal) return;
     setSlug(`${proposal.slug}-copy`.slice(0, 62));
+    setTargetKind('proposal');
     setError(null);
   }, [proposal]);
 
   const liveError = slug ? validateSlug(slug, reservedPresets) : null;
+  const isDefault = proposal?.kind === 'default';
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -278,7 +384,7 @@ export function DuplicateProposalDialog({
     }
     setError(null);
     try {
-      await onDuplicate(proposal.id, slug.trim());
+      await onDuplicate(proposal.id, slug.trim(), isDefault ? targetKind : undefined);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not duplicate proposal.');
     }
@@ -288,7 +394,7 @@ export function DuplicateProposalDialog({
     <Dialog
       open={Boolean(proposal)}
       onClose={onClose}
-      title="Duplicate proposal"
+      title={isDefault ? 'Duplicate default quotation' : 'Duplicate proposal'}
       subtitle={proposal ? `Copy ${proposal.slug}` : undefined}
       actions={
         <>
@@ -311,6 +417,18 @@ export function DuplicateProposalDialog({
           <div className="mg-notice" role="alert">
             {error}
           </div>
+        ) : null}
+        {isDefault ? (
+          <Field label="Duplicate as" htmlFor="dup-pitch-kind">
+            <Select
+              id="dup-pitch-kind"
+              value={targetKind}
+              onChange={(e) => setTargetKind(e.target.value as 'proposal' | 'quote_form')}
+            >
+              <option value="proposal">Proposal</option>
+              <option value="quote_form">Quote form</option>
+            </Select>
+          </Field>
         ) : null}
         <Field label="New slug" htmlFor="dup-pitch-slug" hint={liveError || undefined}>
           <TextInput

@@ -159,6 +159,7 @@ def catalog():
         "standalone_fee": int(raw.get("standalone_fee", 4000)),
         "standalone_label": str(raw.get("standalone_label") or ""),
         "presets": deepcopy(raw.get("presets") or {}),
+        "default_plans": default_final_plans(),
     }
 
 

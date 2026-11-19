@@ -8,6 +8,7 @@ import {
 } from '../../api/pitch';
 import {
   PITCH_SHEETS,
+  formatServicePlanPeriodSuffix,
   resolveCatalogItemPricing,
   type PitchDraftState,
 } from './pitchUtils';
@@ -69,8 +70,12 @@ export function PitchPricesTab({
     [draft.custom_items],
   );
 
+  const isFinal = draft.kind === 'final';
   const overrideCount = Object.keys(draft.price_overrides).length;
   const priceViolations = violations.filter((v) => v.field.startsWith('price_overrides'));
+  const oneTimePlans = pricingSummary.one_time_plans || [];
+  const recurringPlans = pricingSummary.recurring || [];
+  const recurringTotals = pricingSummary.recurring_totals;
 
   const handleOverrideChange = (itemId: string, rawVal: string) => {
     const trimmed = rawVal.trim();
@@ -167,7 +172,7 @@ export function PitchPricesTab({
                         <div className="studio-stack-xs">
                           <span>{catItem.n}</span>
                           <span className="studio-mono">
-                            {catItem.g} · {isSelected ? 'pre-selected' : 'shown'}
+                            {catItem.g} · {isSelected ? (isFinal ? 'agreed' : 'pre-selected') : 'shown'}
                           </span>
                           {rowViolation ? (
                             <span className="studio-field-error" role="alert">
@@ -230,7 +235,7 @@ export function PitchPricesTab({
                         <div className="studio-stack-xs">
                           <span>{customItem.n}</span>
                           <span className="studio-mono">
-                            {customItem.g} · {isSelected ? 'pre-selected' : 'shown'}
+                            {customItem.g} · {isSelected ? (isFinal ? 'agreed' : 'pre-selected') : 'shown'}
                           </span>
                         </div>
                       </td>
@@ -273,6 +278,14 @@ export function PitchPricesTab({
           </div>
 
           <div className="studio-pitch-totals">
+            {oneTimePlans.map((plan) => (
+              <div key={plan.id} className="studio-pitch-total-line">
+                <span>
+                  {plan.name} <span className="mg-chip">One-time plan</span>
+                </span>
+                <span className="mg-num">{formatRupees(plan.price)}</span>
+              </div>
+            ))}
             <div className="studio-pitch-total-line">
               <span>Subtotal</span>
               <span className="mg-num">{formatRupees(pricingSummary.subtotal)}</span>
@@ -287,9 +300,48 @@ export function PitchPricesTab({
               </div>
             ) : null}
             <div className="studio-pitch-total-line studio-pitch-total-grand">
-              <span>Total</span>
+              <span>{isFinal ? 'Total (one-time)' : 'Total'}</span>
               <strong className="mg-num">{formatRupees(pricingSummary.total)}</strong>
             </div>
+
+            {recurringPlans.length > 0 ? (
+              <div className="studio-pitch-recurring-summary" aria-label="Recurring service plans">
+                <div className="mg-label">Recurring service plans</div>
+                {recurringPlans.map((plan) => (
+                  <div key={plan.id} className="studio-pitch-total-line">
+                    <span>{plan.name}</span>
+                    <span className="mg-num">
+                      {formatRupees(plan.price)}
+                      {formatServicePlanPeriodSuffix(plan.period)}
+                    </span>
+                  </div>
+                ))}
+                {recurringTotals && recurringTotals.monthly > 0 ? (
+                  <div className="studio-pitch-total-line">
+                    <span>Recurring total (monthly)</span>
+                    <strong className="mg-num">
+                      {formatRupees(recurringTotals.monthly)} / month
+                    </strong>
+                  </div>
+                ) : null}
+                {recurringTotals && recurringTotals.quarterly > 0 ? (
+                  <div className="studio-pitch-total-line">
+                    <span>Recurring total (quarterly)</span>
+                    <strong className="mg-num">
+                      {formatRupees(recurringTotals.quarterly)} / quarter
+                    </strong>
+                  </div>
+                ) : null}
+                {recurringTotals && recurringTotals.yearly > 0 ? (
+                  <div className="studio-pitch-total-line">
+                    <span>Recurring total (yearly)</span>
+                    <strong className="mg-num">
+                      {formatRupees(recurringTotals.yearly)} / year
+                    </strong>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
       </Card>
