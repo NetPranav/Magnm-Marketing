@@ -171,8 +171,8 @@ export function LibrarySection() {
   return (
     <div className="studio-stack">
       <SheetHeader
-        page={7}
-        total={9}
+        page={8}
+        total={10}
         subtitle="Media & Drafts"
         title="Library"
         lead="Uploaded screenshots, video recordings, brand assets, and generated content ready for Review."

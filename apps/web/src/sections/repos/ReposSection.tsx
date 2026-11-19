@@ -360,8 +360,8 @@ export function ReposSection() {
   return (
     <div className="studio-stack">
       <SheetHeader
-        page={8}
-        total={9}
+        page={9}
+        total={10}
         subtitle="Code & Ground Truth"
         title="Repos"
         lead="Connected repositories, what shipped this week, product facts waiting for sign-off, and per-product rules."

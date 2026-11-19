@@ -40,6 +40,8 @@ import events
 import jobs
 import key_pool
 import paths
+import pitch
+import pitch_host
 import platforms
 import product_rules
 import repo_sync
@@ -302,6 +304,108 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         status = 404 if isinstance(exc, review_studio.NotFoundError) else 400
         self.send_json({"error": str(exc)}, status=status)
 
+    def _send_pitch_error(self, exc):
+        if isinstance(exc, pitch.NotFoundError):
+            self.send_json({"error": str(exc)}, status=404)
+        elif isinstance(exc, pitch.ValidationError):
+            self.send_json({"error": str(exc), "errors": exc.errors}, status=400)
+        else:
+            self.send_json({"error": str(exc)}, status=400)
+
+    def _handle_pitch_get(self, url):
+        raw_rest = url.path[len("/api/pitch/"):].strip("/")
+        parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
+        qs = urllib.parse.parse_qs(url.query)
+        try:
+            if parts == ["catalog"]:
+                self.send_json(pitch.catalog())
+            elif parts == ["version"]:
+                self.send_json(pitch.pitch_version())
+            elif parts == ["outbox"]:
+                pending_raw = (qs.get("pending", ["0"])[0] or "").strip().lower()
+                pending_only = pending_raw in ("1", "true", "yes")
+                self.send_json(pitch.list_outbox(pending_only=pending_only))
+            elif parts == ["proposals"]:
+                status_filter = qs.get("status", [None])[0] or None
+                kind_filter = qs.get("kind", [None])[0] or None
+                self.send_json({"proposals": pitch.list_proposals(status=status_filter, kind=kind_filter)})
+            elif len(parts) == 2 and parts[0] == "proposals":
+                self.send_json(pitch.get_proposal(parts[1]))
+            elif len(parts) == 3 and parts[0] == "proposals" and parts[2] == "pdfs":
+                self.send_json(pitch.list_proposal_pdfs(parts[1]))
+            elif len(parts) == 4 and parts[0] == "proposals" and parts[2] == "pdf":
+                pdf_path = pitch.resolve_proposal_pdf(parts[1], parts[3])
+                self._serve_file_with_range(pdf_path, "application/pdf")
+            else:
+                self.send_json({"error": "Not found"}, status=404)
+        except ValueError as exc:
+            self._send_pitch_error(exc)
+
+    def _handle_pitch_post_pdf(self, proposal_id, content_len):
+        if content_len > pitch.MAX_PDF_BYTES:
+            self.send_json({"error": "PDF exceeds maximum allowed size of 10 MB"}, status=413)
+            return
+        raw_bytes = self.rfile.read(content_len) if content_len > 0 else b""
+        content_type = self.headers.get("Content-Type") or self.headers.get("content-type") or ""
+        try:
+            self.send_json(pitch.save_proposal_pdf(proposal_id, raw_bytes, content_type=content_type))
+        except ValueError as exc:
+            self._send_pitch_error(exc)
+
+    def _handle_pitch_post(self, url, params):
+        raw_rest = url.path[len("/api/pitch/"):].strip("/")
+        parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
+        try:
+            if parts == ["base_prices"]:
+                if "item_id" not in params or "price" not in params:
+                    self.send_json({"error": "item_id and price are required"}, status=400)
+                    return
+                self.send_json(
+                    pitch.set_base_price(
+                        params.get("item_id"),
+                        params.get("price"),
+                        actor=params.get("actor") or "admin",
+                    )
+                )
+            elif parts == ["base_prices", "reset"]:
+                if "item_id" not in params:
+                    self.send_json({"error": "item_id is required"}, status=400)
+                    return
+                self.send_json(
+                    pitch.reset_base_price(
+                        params.get("item_id"),
+                        actor=params.get("actor") or "admin",
+                    )
+                )
+            elif parts == ["proposals"]:
+                self.send_json(
+                    pitch.create_proposal(
+                        params,
+                        created_by=params.get("created_by") or "user",
+                    )
+                )
+            elif len(parts) == 2 and parts[0] == "proposals":
+                self.send_json(pitch.update_proposal(parts[1], params))
+            elif len(parts) == 3 and parts[0] == "proposals" and parts[2] == "delete":
+                self.send_json(
+                    pitch.delete_proposal(
+                        parts[1],
+                        hard=bool(params.get("hard", False)),
+                    )
+                )
+            elif len(parts) == 3 and parts[0] == "proposals" and parts[2] == "duplicate":
+                self.send_json(
+                    pitch.duplicate_proposal(
+                        parts[1],
+                        params.get("slug"),
+                        created_by=params.get("created_by") or "user",
+                    )
+                )
+            else:
+                self.send_json({"error": "Not found"}, status=404)
+        except ValueError as exc:
+            self._send_pitch_error(exc)
+
     def _handle_review_get(self, url):
         raw_rest = url.path[len("/api/review/"):].strip("/")
         parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
@@ -471,6 +575,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.serve_ui()
         elif url.path == "/legacy":
             self.serve_ui()
+        elif url.path == "/pitch" or url.path.startswith("/pitch/"):
+            if not pitch_host.serve(self, url):
+                self.send_error(404, "Not Found")
         elif url.path == "/api/events":
             self._serve_sse()
         elif url.path == "/api/status":
@@ -766,6 +873,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         elif url.path.startswith("/api/review/"):
             self._handle_review_get(url)
 
+        elif url.path.startswith("/api/pitch/"):
+            self._handle_pitch_get(url)
+
         elif url.path.startswith("/api/asset/"):
             parts = url.path.split("/")[3:]
             if len(parts) >= 2:
@@ -825,6 +935,12 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         if content_len < 0:
             self.send_json({"error": "Invalid Content-Length"}, status=400)
             return
+        if re.match(r"^/api/pitch/proposals/[^/]+/pdf$", url.path):
+            proposal_id = urllib.parse.unquote(url.path.split("/")[4])
+            self._handle_pitch_post_pdf(proposal_id, content_len)
+            return
+
+        is_strict_json = url.path.startswith("/api/review/") or url.path.startswith("/api/pitch/")
         max_len = MAX_REVIEW_BODY_BYTES if url.path.startswith("/api/review/") else MAX_POST_BYTES
         if content_len > max_len:
             self.send_json({"error": "Request body too large"}, status=413)
@@ -834,16 +950,20 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         try:
             params = json.loads(body)
         except Exception:
-            if url.path.startswith("/api/review/"):
+            if is_strict_json:
                 self.send_json({"error": "Invalid JSON body"}, status=400)
                 return
             params = {}
-        if url.path.startswith("/api/review/") and not isinstance(params, dict):
+        if is_strict_json and not isinstance(params, dict):
             self.send_json({"error": "JSON body must be an object"}, status=400)
             return
 
         if url.path.startswith("/api/review/"):
             self._handle_review_post(url, params)
+            return
+
+        if url.path.startswith("/api/pitch/"):
+            self._handle_pitch_post(url, params)
             return
 
         if url.path == "/api/shutdown":

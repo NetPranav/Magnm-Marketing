@@ -26,7 +26,9 @@
         "ask_user",
         "check_text",
         "remember",
-        "recall_memory"
+        "recall_memory",
+        "list_pitch_catalog",
+        "draft_proposal"
       ],
       "legacy_ids": [
         "strategist",
@@ -87,7 +89,9 @@
         "check_text",
         "ask_user",
         "remember",
-        "recall_memory"
+        "recall_memory",
+        "list_pitch_catalog",
+        "draft_proposal"
       ],
       "legacy_ids": [
         "blog-writer",

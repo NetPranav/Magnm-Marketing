@@ -47,6 +47,21 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
     - Running agent sessions can be cancelled but not paused (no engine support).
     - "Send to my phone" is shown but disabled until Phase 4 pairing.
     - Image editing and video rendering in Review Studio wait for Phase 7.
+- **Phase 3b done (2026-11-19):** built by agy (Gemini 4 Hydrogen High), reviewed and tested by Claude.
+  - Magnm-Pitch pinned at `c44b7e2` in `vendor/magnm-pitch/` (unmodified, hash-checked, Pitch's rules check in CI),
+    served at `/pitch/` with bundled fonts (offline) and a small adapter (`vendor-host/magnm-host.js`) that feeds it
+    prices, proposals and custom items. Side by side with the real Pitch page it is visually identical.
+  - Section 7 Pitch: proposals and quote forms (client details, every Pitch text field, which services each sheet
+    shows, pre-selected choices, custom line items), live Pitch preview, per-proposal prices with the source of every
+    price, full-screen present mode, PDF export (also saved by the engine), Draft with Writer.
+  - Admin base prices in Settings (editable by anyone until roles arrive in Phase 4).
+  - Pitch's rules checked before every save; agents (CMO, Writer) can draft proposals but never set prices.
+  - Every proposal create/update/delete is queued in `sync_outbox` with who made it and its pricing, for the admin.
+  - Security: Pitch inserts some text as HTML, so `<` and `>` are rejected in proposal text and stripped by the
+    adapter (tested in a browser with an injection payload).
+  - 177 engine tests, 41 web tests, 7 adapter tests, 9 design-kit checks.
+  - **Waiting for Phase 4:** proposal links, quote-form links with submissions back to the sender, admin
+    notifications, admin-only base prices, Send to my phone. Present mode on Android comes with Phase 6.
 
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.
@@ -519,6 +534,18 @@ Effort estimates assume one developer working part-time.
 - Pitch's rules checked before saving.
 - PDF export, client link, Send to my phone.
 - "Draft a proposal" for the CMO and Writer (agents never change prices).
+- **Decided 2026-11-19 (user):**
+  - Pin Magnm-Pitch at `c44b7e2` (branch `feat/general-cost-planner`; Pitch's `main` does not have client routes or
+    `/admin` yet). Re-pin with `scripts/sync_pitch.py` when Pitch changes.
+  - The client-facing pitch keeps Pitch's exact look; only the information and the form contents change. The Studio
+    shows the real Pitch page (vendored, unmodified) and feeds it data through a small adapter.
+  - Members make their own proposals, as personalised as they like (client details, all of Pitch's text fields,
+    which services each sheet shows, pre-selected choices, custom line items).
+  - Base prices come from Pitch; the admin can edit base prices; members can tweak prices per proposal.
+  - The admin is told who created each proposal and what pricing it has (queued locally until Phase 4).
+  - Two kinds of links for clients: a **proposal link** (opens that proposal) and a **quote form link** (a blank
+    planner the client fills in and submits; the submission arrives in the sender's app). Both need the hosted part
+    in Phase 4.
 
 **Milestone:** one person is fully productive.
 
@@ -534,7 +561,15 @@ Effort estimates assume one developer working part-time.
 - Phase 4 grows to about **2 weeks** because of the mirror.
 - Shared-key function (streaming, length caps, daily limits).
 - Notifications via FCM.
-- Shared knowledge sync (brand kit, team product rules).
+- Shared knowledge sync (brand kit, team product rules, **Pitch base prices**: admin only).
+- **Pitch links and quote forms** (from Phase 3b):
+  - Supabase tables for published proposals (by a random `share_id`) and quote-form submissions; privacy rules so a
+    client can read only the proposal behind its link and can only insert a submission.
+  - A small change in Magnm-Pitch (its own repo and Vercel site): `/p/<share_id>` loads the published proposal and
+    `/q/<share_id>` opens the quote form whose Submit sends the client's choices and contact details. Same look.
+  - The Studio publishes a proposal on "Copy link", and pulls submissions into the sender's Pitch section
+    (with a notification).
+  - Send the local `sync_outbox` (proposal created/updated with pricing) to the admin, with a notification.
 
 **Milestone:** the whole team is on it.
 

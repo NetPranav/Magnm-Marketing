@@ -1,11 +1,13 @@
 /** Typed HTTP error returned by the local Magnm engine API. */
 export class ApiError extends Error {
   readonly status: number;
+  readonly data?: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, data?: unknown) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.data = data;
   }
 }
 
@@ -21,16 +23,17 @@ export function onUnauthorized(listener: UnauthorizedListener): () => void {
   };
 }
 
-async function parseErrorMessage(response: Response): Promise<string> {
+async function parseErrorBody(response: Response): Promise<{ message: string; data?: unknown }> {
   try {
     const data = (await response.json()) as { error?: unknown };
     if (typeof data?.error === 'string' && data.error.trim()) {
-      return data.error;
+      return { message: data.error, data };
     }
+    return { message: response.statusText || `Request failed (${response.status})`, data };
   } catch {
     // Ignore non-JSON error bodies and fall back to status text.
   }
-  return response.statusText || `Request failed (${response.status})`;
+  return { message: response.statusText || `Request failed (${response.status})` };
 }
 
 async function request<T>(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<T> {
@@ -51,16 +54,16 @@ async function request<T>(method: 'GET' | 'POST' | 'DELETE', path: string, body?
   });
 
   if (response.status === 401) {
-    const message = await parseErrorMessage(response);
+    const { message, data } = await parseErrorBody(response);
     for (const listener of unauthorizedListeners) {
       listener();
     }
-    throw new ApiError(401, message);
+    throw new ApiError(401, message, data);
   }
 
   if (!response.ok) {
-    const message = await parseErrorMessage(response);
-    throw new ApiError(response.status, message);
+    const { message, data } = await parseErrorBody(response);
+    throw new ApiError(response.status, message, data);
   }
 
   return (await response.json()) as T;

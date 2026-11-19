@@ -448,7 +448,7 @@ export function ResearchSection() {
     <div className="studio-stack">
       <SheetHeader
         page={3}
-        total={9}
+        total={10}
         subtitle="Intelligence"
         title="Research"
         lead="Ask the Researcher, watch live browser captures, filter radar findings, and manage watch topics."

@@ -268,7 +268,7 @@ export function PlanSection() {
     <div className="studio-stack">
       <SheetHeader
         page={4}
-        total={9}
+        total={10}
         subtitle="Editorial & Automation"
         title="Plan"
         lead="Weekly editorial planning, active briefs, month publishing calendar, and automated schedules."

@@ -331,7 +331,7 @@ export function TodaySection({
     <div className="studio-stack">
       <SheetHeader
         page={1}
-        total={9}
+        total={10}
         subtitle="Magnm Studio"
         title="Today"
         lead="What is happening now, items waiting for your sign-off, and recent activity."

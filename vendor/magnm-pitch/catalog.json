@@ -1,0 +1,746 @@
+{
+  "items": {
+    "w_front": {
+      "g": "Web & SaaS",
+      "n": "Responsive Web Application / Frontend",
+      "d": "Mobile-first, modern responsive web application. UI components, landing, dashboard or product pages.",
+      "p": 6000,
+      "r": []
+    },
+    "w_anim": {
+      "g": "Web & SaaS",
+      "n": "Advanced UI & Micro-interactions",
+      "d": "Smooth transitions, interactive hover effects, and modern motion polish.",
+      "p": 1800,
+      "r": [
+        "w_front"
+      ]
+    },
+    "w_lang": {
+      "g": "Web & SaaS",
+      "n": "Multi-Language Support (i18n)",
+      "d": "Instant language switcher with complete interface localization.",
+      "p": 800,
+      "r": [
+        "w_front"
+      ]
+    },
+    "w_portal": {
+      "g": "Web & SaaS",
+      "n": "Client Portal & User Dashboard",
+      "d": "Personal user accounts, order history, profile settings, and data dashboard.",
+      "p": 1500,
+      "r": [
+        "w_front",
+        "b_db"
+      ]
+    },
+    "w_shop": {
+      "g": "Web & SaaS",
+      "n": "E-Commerce & Digital Checkout",
+      "d": "Catalog, shopping cart, coupon codes, and online checkout flow.",
+      "p": 2500,
+      "r": [
+        "w_front",
+        "b_db",
+        "b_pay",
+        "b_admin"
+      ]
+    },
+    "w_search": {
+      "g": "Web & SaaS",
+      "n": "Faceted Search & Data Filters",
+      "d": "Instant multi-attribute search, filters, category sorting, and tabular data view.",
+      "p": 600,
+      "r": [
+        "w_front"
+      ]
+    },
+    "w_coupon": {
+      "g": "Web & SaaS",
+      "n": "Promo Codes & Discount Rules",
+      "d": "Apply coupon codes, festival discounts, and special pricing at checkout.",
+      "p": 400,
+      "r": [
+        "w_front",
+        "b_coupon"
+      ]
+    },
+    "w_seo": {
+      "g": "Web & SaaS",
+      "n": "Google Search (SEO) & Social Sharing",
+      "d": "Metadata tags, OpenGraph previews, sitemaps, and search engine indexing.",
+      "p": 700,
+      "r": [
+        "w_front"
+      ]
+    },
+    "w_blog": {
+      "g": "Web & SaaS",
+      "n": "Blog & Content Management",
+      "d": "Dynamic articles, company announcements, guides, and updates.",
+      "p": 600,
+      "r": [
+        "w_front"
+      ]
+    },
+    "w_forms": {
+      "g": "Web & SaaS",
+      "n": "Custom Forms & Lead Capture",
+      "d": "Interactive enquiry and onboarding forms with validation and alerts.",
+      "p": 400,
+      "r": [
+        "w_front"
+      ]
+    },
+    "w_chat": {
+      "g": "Web & SaaS",
+      "n": "Live Chat & WhatsApp Widget",
+      "d": "Direct messaging widget and WhatsApp click-to-chat on every page.",
+      "p": 200,
+      "r": [
+        "w_front"
+      ]
+    },
+    "w_book": {
+      "g": "Web & SaaS",
+      "n": "Service Booking & Slot Picker",
+      "d": "Customers select a service, date and time slot, and booking is confirmed.",
+      "p": 1200,
+      "r": [
+        "w_front",
+        "b_db",
+        "b_admin"
+      ]
+    },
+    "w_gallery": {
+      "g": "Web & SaaS",
+      "n": "Service Showcase & Photo Gallery",
+      "d": "A page for each service with high-res photos, details and inclusions.",
+      "p": 400,
+      "r": [
+        "w_front"
+      ]
+    },
+    "w_account": {
+      "g": "Web & SaaS",
+      "n": "Customer Account & Booking History",
+      "d": "Customers see past and upcoming bookings and rebook in one tap.",
+      "p": 700,
+      "r": [
+        "w_front",
+        "b_db"
+      ]
+    },
+    "w_reviews": {
+      "g": "Web & SaaS",
+      "n": "Ratings & Reviews on Site",
+      "d": "Star ratings and verified testimonials displayed for each service.",
+      "p": 550,
+      "r": [
+        "w_front",
+        "b_reviews"
+      ]
+    },
+    "w_faq": {
+      "g": "Web & SaaS",
+      "n": "FAQ & Quick Enquiry Form",
+      "d": "Frequently asked questions plus a contact form that routes to you.",
+      "p": 300,
+      "r": [
+        "w_front"
+      ]
+    },
+    "w_map": {
+      "g": "Web & SaaS",
+      "n": "Service-Area & Geofencing Map",
+      "d": "Interactive map showing covered delivery zones and operational areas.",
+      "p": 350,
+      "r": [
+        "w_front"
+      ]
+    },
+    "w_wa": {
+      "g": "Web & SaaS",
+      "n": "WhatsApp Chat Floating Button",
+      "d": "Floating button on every page that opens an instant WhatsApp chat.",
+      "p": 150,
+      "r": [
+        "w_front"
+      ]
+    },
+    "a_base": {
+      "g": "Mobile app",
+      "n": "Cross-Platform Mobile App (Android)",
+      "d": "Mobile app built for Android with smooth UI, navigation, and offline cache.",
+      "p": 6500,
+      "r": [
+        "b_db"
+      ]
+    },
+    "a_ios": {
+      "g": "Mobile app",
+      "n": "iOS Version (iPhone & iPad)",
+      "d": "Configured and tested for Apple devices, Retina displays, and iOS design guidelines.",
+      "p": 2200,
+      "r": [
+        "a_base"
+      ]
+    },
+    "a_store": {
+      "g": "Mobile app",
+      "n": "Store Publishing & Submission",
+      "d": "App signing, screenshots, store listings, and Play Store / App Store submissions.",
+      "p": 1200,
+      "r": [
+        "a_base"
+      ]
+    },
+    "a_push": {
+      "g": "Mobile app",
+      "n": "Push Notifications (FCM / APNs)",
+      "d": "Targeted push notifications, lock-screen updates, and scheduled reminders.",
+      "p": 700,
+      "r": [
+        "a_base",
+        "b_notif"
+      ]
+    },
+    "a_pay": {
+      "g": "Mobile app",
+      "n": "In-App Payments & Mobile Checkout",
+      "d": "Seamless mobile checkout supporting UPI, cards, and digital wallets.",
+      "p": 1200,
+      "r": [
+        "a_base",
+        "b_pay"
+      ]
+    },
+    "a_bio": {
+      "g": "Mobile app",
+      "n": "Biometric Authentication",
+      "d": "Fast, secure FaceID and Fingerprint authentication.",
+      "p": 500,
+      "r": [
+        "a_base",
+        "b_db"
+      ]
+    },
+    "a_offline": {
+      "g": "Mobile app",
+      "n": "Offline Mode & Local Storage",
+      "d": "Local database caching with automatic cloud sync when network reconnects.",
+      "p": 1100,
+      "r": [
+        "a_base",
+        "b_db"
+      ]
+    },
+    "a_share": {
+      "g": "Mobile app",
+      "n": "Deep Linking & Referral Share",
+      "d": "Universal links, invite codes, and direct app share button.",
+      "p": 350,
+      "r": [
+        "a_base"
+      ]
+    },
+    "a_support": {
+      "g": "Mobile app",
+      "n": "Help Center & Support Dialer",
+      "d": "In-app FAQ, support ticket form, and one-tap emergency call button.",
+      "p": 300,
+      "r": [
+        "a_base"
+      ]
+    },
+    "a_splash": {
+      "g": "Mobile app",
+      "n": "Branded Splash & Welcome Slides",
+      "d": "Custom app launcher icon, animated splash screen, and onboard walkthrough.",
+      "p": 400,
+      "r": [
+        "a_base"
+      ]
+    },
+    "a_prov": {
+      "g": "Mobile app",
+      "n": "Service Provider / Partner App",
+      "d": "Dedicated app for field providers to view new requests, accept jobs, and update status.",
+      "p": 2500,
+      "r": [
+        "a_base",
+        "b_db",
+        "b_admin"
+      ]
+    },
+    "a_book": {
+      "g": "Mobile app",
+      "n": "In-App Booking Calendar",
+      "d": "Pick a service, date and time slot inside the mobile app.",
+      "p": 1300,
+      "r": [
+        "a_base",
+        "b_db"
+      ]
+    },
+    "a_live": {
+      "g": "Mobile app",
+      "n": "Live Job Status Screen",
+      "d": "Customers track service assignment, arrival, and completion in real time.",
+      "p": 1300,
+      "r": [
+        "a_base",
+        "b_db"
+      ]
+    },
+    "a_addr": {
+      "g": "Mobile app",
+      "n": "Saved Addresses & Geolocation",
+      "d": "Save home, work and custom addresses with GPS pin detection.",
+      "p": 350,
+      "r": [
+        "a_base",
+        "b_db"
+      ]
+    },
+    "a_rate": {
+      "g": "Mobile app",
+      "n": "In-App Ratings & Review Flow",
+      "d": "Post-job rating prompt with star score and written feedback.",
+      "p": 450,
+      "r": [
+        "a_base",
+        "b_reviews"
+      ]
+    },
+    "a_login": {
+      "g": "Mobile app",
+      "n": "Google Sign-In in App",
+      "d": "One-tap login with Google account inside mobile app.",
+      "p": 350,
+      "r": [
+        "a_base",
+        "b_google"
+      ]
+    },
+    "a_hi": {
+      "g": "Mobile app",
+      "n": "Hindi & English in App",
+      "d": "The entire mobile app in two languages.",
+      "p": 200,
+      "r": [
+        "a_base"
+      ]
+    },
+    "b_db": {
+      "g": "Backend",
+      "n": "Core Database & API Server",
+      "d": "Production-grade relational database and secure REST/GraphQL API server.",
+      "p": 2000,
+      "r": []
+    },
+    "b_google": {
+      "g": "Backend",
+      "n": "Google & OAuth Sign-In",
+      "d": "One-click OAuth authentication for rapid and secure user onboarding.",
+      "p": 600,
+      "r": [
+        "b_db"
+      ]
+    },
+    "b_email": {
+      "g": "Backend",
+      "n": "Email Auth & Password Reset",
+      "d": "Hashed passwords, email verification tokens, and self-service password recovery.",
+      "p": 500,
+      "r": [
+        "b_db"
+      ]
+    },
+    "b_otp": {
+      "g": "Backend",
+      "n": "Mobile OTP Authentication",
+      "d": "Phone number verification with one-time SMS passwords (SMS gateway fees at actuals).",
+      "p": 900,
+      "r": [
+        "b_db"
+      ]
+    },
+    "b_roles": {
+      "g": "Backend",
+      "n": "Role-Based Access Control (RBAC)",
+      "d": "Granular access permissions for Admins, Staff, Managers, and End Users.",
+      "p": 750,
+      "r": [
+        "b_db"
+      ]
+    },
+    "b_admin": {
+      "g": "Backend",
+      "n": "Administrative Dashboard",
+      "d": "Comprehensive web portal to manage records, users, transactions, and system settings.",
+      "p": 3000,
+      "r": [
+        "b_db"
+      ]
+    },
+    "b_pay": {
+      "g": "Backend",
+      "n": "Payment Gateway Integration",
+      "d": "Razorpay / Stripe integration with webhooks, refunds, and payment audit logs.",
+      "p": 1800,
+      "r": [
+        "b_db"
+      ]
+    },
+    "b_files": {
+      "g": "Backend",
+      "n": "Cloud Media & File Storage (S3 / R2)",
+      "d": "Secure file uploads, media optimization, and signed private download links.",
+      "p": 400,
+      "r": [
+        "b_db"
+      ]
+    },
+    "b_analytics": {
+      "g": "Backend",
+      "n": "Analytics & Business Reporting",
+      "d": "Aggregated KPIs, user growth graphs, activity tracking, and CSV reports.",
+      "p": 700,
+      "r": [
+        "b_admin"
+      ]
+    },
+    "b_backup": {
+      "g": "Backend",
+      "n": "Automated Daily Backups",
+      "d": "Off-site encrypted database snapshots and disaster recovery safeguards.",
+      "p": 300,
+      "r": [
+        "b_db"
+      ]
+    },
+    "b_notif": {
+      "g": "Backend",
+      "n": "Transactional Email & SMS Engine",
+      "d": "Automated system notifications, receipts, and order updates via email/SMS.",
+      "p": 500,
+      "r": [
+        "b_db"
+      ]
+    },
+    "b_commission": {
+      "g": "Backend",
+      "n": "Commission & Payout Management",
+      "d": "Platform fee calculation, service provider payouts, and monthly earnings breakdown.",
+      "p": 650,
+      "r": [
+        "b_admin"
+      ]
+    },
+    "b_coupon": {
+      "g": "Backend",
+      "n": "Coupons & Promotional Rules",
+      "d": "Discount codes, usage limits, minimum order values, and validity schedules.",
+      "p": 400,
+      "r": [
+        "b_db"
+      ]
+    },
+    "b_reviews": {
+      "g": "Backend",
+      "n": "Ratings & Moderation Engine",
+      "d": "Collects, aggregates, and moderates customer reviews and ratings.",
+      "p": 450,
+      "r": [
+        "b_db"
+      ]
+    },
+    "ai_bot": {
+      "g": "AI & Automation",
+      "n": "Custom AI Assistant / Support Bot",
+      "d": "Trained on company docs & FAQs using OpenAI / Claude / Gemini APIs.",
+      "p": 2500,
+      "r": [
+        "b_db"
+      ]
+    },
+    "ai_doc": {
+      "g": "AI & Automation",
+      "n": "Document Parsing & AI OCR",
+      "d": "Automated extraction and classification of PDFs, invoices, forms, and images.",
+      "p": 2200,
+      "r": [
+        "b_db"
+      ]
+    },
+    "ai_search": {
+      "g": "AI & Automation",
+      "n": "Semantic Vector Search",
+      "d": "Vector embeddings for natural language queries and smart recommendation matching.",
+      "p": 1800,
+      "r": [
+        "b_db"
+      ]
+    },
+    "ai_workflow": {
+      "g": "AI & Automation",
+      "n": "Automated Workflow & Webhook Pipelines",
+      "d": "Multi-step automated workflows connecting CRM, Slack, WhatsApp, and internal APIs.",
+      "p": 1400,
+      "r": [
+        "b_db"
+      ]
+    },
+    "ops_cicd": {
+      "g": "DevOps & Maintenance",
+      "n": "CI/CD Automated Deployment Pipelines",
+      "d": "GitHub Actions automated testing, preview staging environments, and production rollouts.",
+      "p": 1200,
+      "r": []
+    },
+    "ops_cloud": {
+      "g": "DevOps & Maintenance",
+      "n": "Production Cloud Infrastructure & CDN",
+      "d": "Cloud hosting setup, custom domain routing, SSL certificates, CDN caching, and DDoS defense.",
+      "p": 1500,
+      "r": []
+    },
+    "ops_monitor": {
+      "g": "DevOps & Maintenance",
+      "n": "Real-Time Monitoring & Error Alerts",
+      "d": "Sentry error tracking, server health monitoring, and instant notification alerts.",
+      "p": 800,
+      "r": []
+    },
+    "ops_maint": {
+      "g": "DevOps & Maintenance",
+      "n": "Monthly Maintenance & Priority Support",
+      "d": "Security patches, dependency updates, performance tuning, and guaranteed SLA response.",
+      "p": 2000,
+      "r": []
+    }
+  },
+  "groups": [
+    "Web & SaaS",
+    "Mobile app",
+    "Backend",
+    "AI & Automation",
+    "DevOps & Maintenance"
+  ],
+  "standalone_fee": 4000,
+  "standalone_label": "App-only setup (no web application to share foundation)",
+  "presets": {
+    "general": {
+      "slug": "general",
+      "name": "General Software Cost Planner",
+      "badge": "",
+      "clientName": "",
+      "businessName": "",
+      "title": "magnm Software Cost Planner",
+      "lead": "A student-led development team from India. We build modern web platforms, mobile apps, SaaS, AI integrations, and cloud backend systems. Configure your software stack and get an instant quotation.",
+      "whatWeDo": "Full-Stack Web & SaaS, Mobile Apps (iOS/Android), Cloud Backend & APIs, AI & Automation",
+      "portfolio": "magnm-org.vercel.app",
+      "thisPlan": "Custom software & product development tailored to your requirements",
+      "architectureBlock": {
+        "heading": "Software Architecture & Capabilities",
+        "sub": "Engineered for performance, scale, and seamless user experiences across every device.",
+        "roles": [
+          {
+            "label": "User Experience",
+            "points": [
+              "Modern responsive web and mobile applications",
+              "Intuitive workflows, accessible UI, and sub-second load times",
+              "Cross-device synchronization and local caching",
+              "Tailored design system matching your brand identity"
+            ]
+          },
+          {
+            "label": "Backend & Cloud",
+            "points": [
+              "Production REST / GraphQL API server architecture",
+              "Scalable databases with automatic off-site backups",
+              "Enterprise authentication and role-based permissions (RBAC)",
+              "Secure payment gateways, webhooks, and transactional emails"
+            ]
+          },
+          {
+            "label": "AI & DevOps",
+            "points": [
+              "Automated CI/CD build pipelines and cloud deployments",
+              "Real-time monitoring, uptime health checks, and error tracking",
+              "Custom AI assistants, vector search, and workflow automations",
+              "Monthly maintenance SLA and proactive security updates"
+            ]
+          }
+        ]
+      },
+      "initialSelected": [
+        "w_front",
+        "b_db",
+        "b_admin",
+        "ops_cloud"
+      ],
+      "sections": {
+        "p2": [
+          "w_front",
+          "w_anim",
+          "w_portal",
+          "w_shop",
+          "w_search",
+          "w_coupon",
+          "w_seo",
+          "w_blog",
+          "w_forms",
+          "w_chat",
+          "w_lang"
+        ],
+        "p3": [
+          "a_base",
+          "a_ios",
+          "a_store",
+          "a_push",
+          "a_pay",
+          "a_bio",
+          "a_offline",
+          "a_share",
+          "a_support",
+          "a_splash"
+        ],
+        "p4": [
+          "b_db",
+          "b_google",
+          "b_email",
+          "b_otp",
+          "b_roles",
+          "b_admin",
+          "b_pay",
+          "b_files",
+          "b_analytics",
+          "b_backup",
+          "b_notif"
+        ],
+        "p5": [
+          "ai_bot",
+          "ai_doc",
+          "ai_search",
+          "ai_workflow",
+          "ops_cicd",
+          "ops_cloud",
+          "ops_monitor",
+          "ops_maint"
+        ]
+      }
+    },
+    "urban-company": {
+      "slug": "urban-company",
+      "name": "Urban Company-style Booking Platform",
+      "badge": "Tailored Proposal for Urban-style Platform",
+      "clientName": "Local Service Platform Client",
+      "businessName": "Urban Style Services",
+      "title": "magnm Build Planner",
+      "lead": "A student-led development team from India. We build websites, mobile apps, drone and AI software. Design your own service platform here and watch the price as you tick.",
+      "whatWeDo": "Websites, Android and iPhone apps, backend systems",
+      "portfolio": "magnm-org.vercel.app",
+      "thisPlan": "An Urban Company-style booking platform for your local business",
+      "architectureBlock": {
+        "heading": "What an Urban-style platform does",
+        "sub": "Three kinds of people use it. Each gets their own screens.",
+        "roles": [
+          {
+            "label": "Customer",
+            "points": [
+              "Browse services and prices",
+              "Pick a date and a time slot",
+              "Pay online or in cash",
+              "Track the job, then rate it"
+            ]
+          },
+          {
+            "label": "Service provider",
+            "points": [
+              "Get a job request",
+              "Accept or reject it",
+              "Mark the job done",
+              "Get paid after your commission"
+            ]
+          },
+          {
+            "label": "You, the owner",
+            "points": [
+              "Add services and set prices",
+              "See every booking",
+              "Manage your providers",
+              "Track earnings and fees"
+            ]
+          }
+        ]
+      },
+      "initialSelected": [
+        "w_front",
+        "w_book",
+        "b_google",
+        "b_db",
+        "a_base",
+        "a_prov"
+      ],
+      "sections": {
+        "p2": [
+          "w_front",
+          "w_anim",
+          "w_lang",
+          "w_gallery",
+          "w_book",
+          "w_shop",
+          "w_account",
+          "w_search",
+          "w_coupon",
+          "w_reviews",
+          "w_seo",
+          "w_blog",
+          "w_faq",
+          "w_map",
+          "w_wa"
+        ],
+        "p3": [
+          "a_base",
+          "a_prov",
+          "a_ios",
+          "a_store",
+          "a_book",
+          "a_pay",
+          "a_live",
+          "a_addr",
+          "a_rate",
+          "a_login",
+          "a_push",
+          "a_hi",
+          "a_share",
+          "a_support",
+          "a_splash"
+        ],
+        "p4": [
+          "b_db",
+          "b_google",
+          "b_email",
+          "b_otp",
+          "b_files",
+          "b_backup",
+          "b_pay",
+          "b_admin",
+          "b_commission",
+          "b_coupon",
+          "b_reviews",
+          "b_notif"
+        ],
+        "p5": [
+          "ai_bot",
+          "ai_workflow",
+          "ops_cloud",
+          "ops_maint"
+        ]
+      }
+    }
+  }
+}

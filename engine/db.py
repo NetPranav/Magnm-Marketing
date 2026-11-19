@@ -21,7 +21,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -544,6 +544,55 @@ def _apply_migration_v9(conn):
     )
 
 
+def _apply_migration_v10(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS pitch_proposals (
+            id TEXT PRIMARY KEY,
+            slug TEXT NOT NULL UNIQUE,
+            kind TEXT NOT NULL DEFAULT 'proposal',
+            status TEXT NOT NULL DEFAULT 'draft',
+            client_name TEXT,
+            business_name TEXT,
+            contact_json TEXT,
+            preset_json TEXT NOT NULL,
+            price_overrides_json TEXT NOT NULL DEFAULT '{}',
+            custom_items_json TEXT NOT NULL DEFAULT '[]',
+            notes TEXT,
+            created_by TEXT,
+            share_id TEXT NOT NULL UNIQUE,
+            pitch_commit TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pitch_proposals_status_updated
+            ON pitch_proposals(status, updated_at);
+
+        CREATE INDEX IF NOT EXISTS idx_pitch_proposals_kind_updated
+            ON pitch_proposals(kind, updated_at);
+
+        CREATE TABLE IF NOT EXISTS pitch_base_prices (
+            item_id TEXT PRIMARY KEY,
+            price INTEGER NOT NULL,
+            updated_by TEXT,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS sync_outbox (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            sent_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sync_outbox_sent_created
+            ON sync_outbox(sent_at, created_at);
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -554,6 +603,7 @@ _MIGRATIONS = (
     (7, _apply_migration_v7),
     (8, _apply_migration_v8),
     (9, _apply_migration_v9),
+    (10, _apply_migration_v10),
 )
 
 
@@ -3528,3 +3578,316 @@ def delete_review_checklist_by_sources(content_id, sources):
             f"DELETE FROM review_checklist WHERE content_id = ? AND source IN ({placeholders})",
             [str(content_id), *src_list],
         )
+
+
+def _deserialize_pitch_proposal(row):
+    if row is None:
+        return None
+    contact = json.loads(row["contact_json"]) if row["contact_json"] else {}
+    preset = json.loads(row["preset_json"]) if row["preset_json"] else {}
+    price_overrides = json.loads(row["price_overrides_json"]) if row["price_overrides_json"] else {}
+    custom_items = json.loads(row["custom_items_json"]) if row["custom_items_json"] else []
+    return {
+        "id": row["id"],
+        "slug": row["slug"],
+        "kind": row["kind"],
+        "status": row["status"],
+        "client_name": row["client_name"] or "",
+        "business_name": row["business_name"] or "",
+        "contact": contact,
+        "preset": preset,
+        "price_overrides": price_overrides,
+        "custom_items": custom_items,
+        "notes": row["notes"] or "",
+        "created_by": row["created_by"] or "user",
+        "share_id": row["share_id"],
+        "pitch_commit": row["pitch_commit"] or "",
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def create_pitch_proposal(
+    *,
+    proposal_id,
+    slug,
+    kind,
+    status,
+    client_name,
+    business_name,
+    contact,
+    preset,
+    price_overrides,
+    custom_items,
+    notes,
+    created_by,
+    share_id,
+    pitch_commit,
+    created_at=None,
+):
+    """Insert a pitch_proposals row and return the deserialized dict."""
+    ensure_init()
+    now = str(created_at or datetime.now(timezone.utc).isoformat())
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO pitch_proposals (
+                id, slug, kind, status, client_name, business_name,
+                contact_json, preset_json, price_overrides_json, custom_items_json,
+                notes, created_by, share_id, pitch_commit, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(proposal_id),
+                str(slug),
+                str(kind),
+                str(status),
+                str(client_name or ""),
+                str(business_name or ""),
+                json.dumps(contact or {}, ensure_ascii=False),
+                json.dumps(preset or {}, ensure_ascii=False),
+                json.dumps(price_overrides or {}, ensure_ascii=False),
+                json.dumps(custom_items or [], ensure_ascii=False),
+                str(notes or ""),
+                str(created_by or "user"),
+                str(share_id),
+                str(pitch_commit or ""),
+                now,
+                now,
+            ),
+        )
+    return get_pitch_proposal(proposal_id)
+
+
+def get_pitch_proposal(proposal_id):
+    """Fetch a pitch proposal by ID, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM pitch_proposals WHERE id = ?",
+        (str(proposal_id),),
+    ).fetchone()
+    return _deserialize_pitch_proposal(row)
+
+
+def get_pitch_proposal_by_slug(slug):
+    """Fetch a pitch proposal by slug, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM pitch_proposals WHERE slug = ?",
+        (str(slug),),
+    ).fetchone()
+    return _deserialize_pitch_proposal(row)
+
+
+def pitch_share_id_exists(share_id):
+    """Return True if share_id is already present in pitch_proposals."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT 1 FROM pitch_proposals WHERE share_id = ?",
+        (str(share_id),),
+    ).fetchone()
+    return row is not None
+
+
+def list_pitch_proposals(status=None, kind=None, limit=100):
+    """List pitch proposals ordered by updated_at descending."""
+    ensure_init()
+    conn = connect()
+    clauses = []
+    params = []
+    if status is not None:
+        clauses.append("status = ?")
+        params.append(str(status))
+    if kind is not None:
+        clauses.append("kind = ?")
+        params.append(str(kind))
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    max_rows = max(1, min(int(limit or 100), 500))
+    params.append(max_rows)
+    rows = conn.execute(
+        f"""
+        SELECT * FROM pitch_proposals
+        {where}
+        ORDER BY updated_at DESC, rowid DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    return [_deserialize_pitch_proposal(r) for r in rows]
+
+
+def update_pitch_proposal(proposal_id, updates, updated_at=None):
+    """Update columns on a pitch_proposals row and return the updated dict."""
+    ensure_init()
+    existing = get_pitch_proposal(proposal_id)
+    if existing is None:
+        return None
+    col_map = {
+        "slug": lambda v: str(v),
+        "kind": lambda v: str(v),
+        "status": lambda v: str(v),
+        "client_name": lambda v: str(v or ""),
+        "business_name": lambda v: str(v or ""),
+        "notes": lambda v: str(v or ""),
+    }
+    json_map = {
+        "contact": "contact_json",
+        "preset": "preset_json",
+        "price_overrides": "price_overrides_json",
+        "custom_items": "custom_items_json",
+    }
+    sets = []
+    params = []
+    for k, conv in col_map.items():
+        if k in updates:
+            sets.append(f"{k} = ?")
+            params.append(conv(updates[k]))
+    for k, col in json_map.items():
+        if k in updates:
+            sets.append(f"{col} = ?")
+            params.append(json.dumps(updates[k], ensure_ascii=False))
+    if not sets:
+        return existing
+    ts = str(updated_at or datetime.now(timezone.utc).isoformat())
+    sets.append("updated_at = ?")
+    params.append(ts)
+    params.append(str(proposal_id))
+    conn = connect()
+    with conn:
+        conn.execute(
+            f"UPDATE pitch_proposals SET {', '.join(sets)} WHERE id = ?",
+            params,
+        )
+    return get_pitch_proposal(proposal_id)
+
+
+def delete_pitch_proposal(proposal_id):
+    """Hard-delete a pitch proposal row. Returns True if deleted."""
+    ensure_init()
+    conn = connect()
+    with conn:
+        cur = conn.execute(
+            "DELETE FROM pitch_proposals WHERE id = ?",
+            (str(proposal_id),),
+        )
+        return cur.rowcount > 0
+
+
+def list_pitch_base_prices():
+    """Return {item_id: {item_id, price, updated_by, updated_at}} for admin overrides."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT item_id, price, updated_by, updated_at FROM pitch_base_prices ORDER BY item_id ASC"
+    ).fetchall()
+    return {
+        r["item_id"]: {
+            "item_id": r["item_id"],
+            "price": int(r["price"]),
+            "updated_by": r["updated_by"],
+            "updated_at": r["updated_at"],
+        }
+        for r in rows
+    }
+
+
+def get_pitch_base_price(item_id):
+    """Return a single admin base price override dict or None."""
+    ensure_init()
+    conn = connect()
+    r = conn.execute(
+        "SELECT item_id, price, updated_by, updated_at FROM pitch_base_prices WHERE item_id = ?",
+        (str(item_id),),
+    ).fetchone()
+    if r is None:
+        return None
+    return {
+        "item_id": r["item_id"],
+        "price": int(r["price"]),
+        "updated_by": r["updated_by"],
+        "updated_at": r["updated_at"],
+    }
+
+
+def set_pitch_base_price(item_id, price, updated_by="admin", updated_at=None):
+    """Upsert an admin base price override for item_id."""
+    ensure_init()
+    now = str(updated_at or datetime.now(timezone.utc).isoformat())
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO pitch_base_prices (item_id, price, updated_by, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(item_id) DO UPDATE SET
+                price = excluded.price,
+                updated_by = excluded.updated_by,
+                updated_at = excluded.updated_at
+            """,
+            (str(item_id), int(price), str(updated_by or "admin"), now),
+        )
+    return get_pitch_base_price(item_id)
+
+
+def delete_pitch_base_price(item_id):
+    """Remove an admin base price override. Returns True if a row was deleted."""
+    ensure_init()
+    conn = connect()
+    with conn:
+        cur = conn.execute(
+            "DELETE FROM pitch_base_prices WHERE item_id = ?",
+            (str(item_id),),
+        )
+        return cur.rowcount > 0
+
+
+def _deserialize_sync_outbox(row):
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "kind": row["kind"],
+        "payload": json.loads(row["payload_json"]) if row["payload_json"] else {},
+        "created_at": row["created_at"],
+        "sent_at": row["sent_at"],
+    }
+
+
+def append_sync_outbox(kind, payload, event_id=None, created_at=None):
+    """Insert an event into sync_outbox for Phase 4 cloud sync."""
+    ensure_init()
+    eid = str(event_id or f"evt_{uuid.uuid4().hex[:16]}")
+    now = str(created_at or datetime.now(timezone.utc).isoformat())
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO sync_outbox (id, kind, payload_json, created_at, sent_at)
+            VALUES (?, ?, ?, ?, NULL)
+            """,
+            (eid, str(kind), json.dumps(payload or {}, ensure_ascii=False), now),
+        )
+    row = conn.execute("SELECT * FROM sync_outbox WHERE id = ?", (eid,)).fetchone()
+    return _deserialize_sync_outbox(row)
+
+
+def list_sync_outbox(pending_only=False, limit=100):
+    """List sync_outbox rows, optionally filtering to unsent rows (sent_at IS NULL)."""
+    ensure_init()
+    conn = connect()
+    max_rows = max(1, min(int(limit or 100), 500))
+    where = "WHERE sent_at IS NULL" if pending_only else ""
+    rows = conn.execute(
+        f"""
+        SELECT * FROM sync_outbox
+        {where}
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT ?
+        """,
+        (max_rows,),
+    ).fetchall()
+    return [_deserialize_sync_outbox(r) for r in rows]

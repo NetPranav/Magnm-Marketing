@@ -85,7 +85,7 @@ export function ReviewList({ onOpenItem }: ReviewListProps) {
     <div className="studio-stack">
       <SheetHeader
         page={6}
-        total={9}
+        total={10}
         subtitle="Editorial"
         title="Review"
         lead="Inspect drafts and ready items, resolve comments and suggestions, check platform previews, and build posting kits."

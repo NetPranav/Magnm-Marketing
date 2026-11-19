@@ -464,7 +464,7 @@ export function CreateSection() {
     <div className="studio-stack">
       <SheetHeader
         page={5}
-        total={9}
+        total={10}
         subtitle="Production"
         title="Create"
         lead="Pick what to make, start workflows with inline approval gates, render cards, draft PR replies, or run quick rule checks."

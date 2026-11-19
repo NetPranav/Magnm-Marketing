@@ -85,6 +85,55 @@ function mockEngineFetch() {
         },
       ]);
     }
+    if (url.startsWith('/api/pitch/')) {
+      if (url === '/api/pitch/proposals') return jsonResponse({ proposals: [] });
+      if (url === '/api/pitch/version') return jsonResponse({ ref: 'c44b7e2' });
+      if (url === '/api/pitch/catalog') {
+        return jsonResponse({ items: {}, groups: [], standalone_fee: 4000, standalone_label: '', presets: {} });
+      }
+      if (url.startsWith('/api/pitch/proposals/prop_present')) {
+        return jsonResponse({
+          id: 'prop_present',
+          slug: 'present-co',
+          kind: 'proposal',
+          status: 'ready',
+          client_name: 'Present Client',
+          business_name: 'Present Co',
+          contact: {},
+          preset: {
+            slug: 'present-co',
+            name: 'Present Co',
+            badge: '',
+            clientName: 'Present Client',
+            businessName: 'Present Co',
+            title: 'Present Plan',
+            lead: '',
+            whatWeDo: '',
+            portfolio: '',
+            thisPlan: '',
+            architectureBlock: { heading: '', sub: '', roles: [] },
+            initialSelected: ['w_front'],
+            sections: { p2: ['w_front'], p3: [], p4: [], p5: [] },
+          },
+          price_overrides: {},
+          custom_items: [],
+          notes: '',
+          created_by: 'user',
+          created_at: '2026-11-19T00:00:00Z',
+          updated_at: '2026-11-19T00:00:00Z',
+          pricing_summary: {
+            lines: [],
+            custom_items: [],
+            subtotal: 6000,
+            standalone_fee: 0,
+            standalone_label: '',
+            total: 6000,
+            differs_from_base: [],
+          },
+        });
+      }
+      if (url.endsWith('/pdfs')) return jsonResponse({ proposal_id: 'prop_present', slug: 'present-co', pdfs: [] });
+    }
     return jsonResponse({ error: 'Not found' }, 404);
   });
 }
@@ -103,7 +152,7 @@ describe('Studio shell and Today screen', () => {
     window.location.hash = '';
   });
 
-  it('renders all 9 numbered sections and switches on click and arrow keys', async () => {
+  it('renders all 10 numbered sections and switches on click and arrow keys', async () => {
     mockEngineFetch();
     render(<App />);
 
@@ -114,13 +163,14 @@ describe('Studio shell and Today screen', () => {
       'Plan',
       'Create',
       'Review',
+      'Pitch',
       'Library',
       'Repos',
       'Settings',
     ];
 
     const tabs = screen.getAllByRole('tab');
-    expect(tabs).toHaveLength(9);
+    expect(tabs).toHaveLength(10);
     expectedLabels.forEach((label, idx) => {
       expect(tabs[idx].textContent).toContain(`${idx + 1}`);
       expect(tabs[idx].textContent).toContain(label);
@@ -130,19 +180,42 @@ describe('Studio shell and Today screen', () => {
     const main = screen.getByRole('main');
     expect(main.firstElementChild?.className).toBe('mg-wrap');
 
-    // Click Review -> wide layout + placeholder header
+    // Click Review -> wide layout
     fireEvent.click(tabs[5]);
     expect(screen.getByRole('heading', { name: 'Review' })).toBeTruthy();
     expect(main.firstElementChild?.className).toBe('mg-wide');
 
-    // ArrowDown from Review (index 5) moves to Library (index 6)
+    // ArrowDown from Review (index 5) moves to Pitch (index 6, wide layout)
     fireEvent.keyDown(tabs[5], { key: 'ArrowDown' });
+    expect(screen.getByRole('heading', { name: 'Pitch' })).toBeTruthy();
+    expect(main.firstElementChild?.className).toBe('mg-wide');
+
+    // ArrowDown from Pitch (index 6) moves to Library (index 7, reading layout)
+    fireEvent.keyDown(tabs[6], { key: 'ArrowDown' });
     expect(screen.getByRole('heading', { name: 'Library' })).toBeTruthy();
     expect(main.firstElementChild?.className).toBe('mg-wrap');
 
-    // ArrowUp from Library returns to Review
-    fireEvent.keyDown(tabs[6], { key: 'ArrowUp' });
-    expect(screen.getByRole('heading', { name: 'Review' })).toBeTruthy();
+    // ArrowUp from Library returns to Pitch
+    fireEvent.keyDown(tabs[7], { key: 'ArrowUp' });
+    expect(screen.getByRole('heading', { name: 'Pitch' })).toBeTruthy();
+  });
+
+  it('hides the Studio shell in present mode and returns to editor on Escape', async () => {
+    mockEngineFetch();
+    window.location.hash = '#/pitch/prop_present/present';
+    render(<App />);
+
+    expect(screen.getByTestId('pitch-present-screen')).toBeTruthy();
+    expect(screen.queryByRole('navigation', { name: 'Studio sections' })).toBeNull();
+    const iframe = screen.getByTitle('Present proposal prop_present') as HTMLIFrameElement;
+    expect(iframe.getAttribute('src')).toBe('/pitch/?proposal=prop_present&mode=present');
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(window.location.hash).toBe('#/pitch/prop_present');
+    });
+    expect(screen.getByRole('navigation', { name: 'Studio sections' })).toBeTruthy();
   });
 
   it('renders safe engine status and live jobs on Today without exposing keys', async () => {

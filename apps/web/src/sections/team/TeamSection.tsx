@@ -293,7 +293,7 @@ export function TeamSection() {
     <div className="studio-stack">
       <SheetHeader
         page={2}
-        total={9}
+        total={10}
         subtitle="AI Team"
         title="Team"
         lead="Shared team room with @mentions, direct specialist chats, and editable agent memory."

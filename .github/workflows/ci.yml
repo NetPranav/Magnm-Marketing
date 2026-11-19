@@ -78,6 +78,8 @@ jobs:
           node-version: "22"
       - name: Design kit tests
         run: node --test "packages/magnm-design/scripts/*.test.mjs"
+      - name: Vendored Pitch rules check
+        run: node scripts/check_pitch_rules.mjs
 
   web:
     name: Web app (Node 22, pnpm)
@@ -102,5 +104,8 @@ jobs:
         run: pnpm typecheck
       - name: Unit tests
         run: pnpm test
+      - name: Pitch host adapter tests
+        working-directory: .
+        run: node --test scripts/pitch_host.test.mjs
       - name: Build
         run: pnpm build

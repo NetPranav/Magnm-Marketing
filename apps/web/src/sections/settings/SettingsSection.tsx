@@ -35,6 +35,7 @@ import {
   type SecretStatus,
 } from '../../desktop';
 import { useFallbackPoll, useStudioEvents } from '../../events';
+import { PitchBasePricesPanel } from './PitchBasePricesPanel';
 import type {
   BakeoffModelStat,
   BakeoffResult,
@@ -556,8 +557,8 @@ export function SettingsSection() {
   return (
     <div className="studio-stack">
       <SheetHeader
-        page={9}
-        total={9}
+        page={10}
+        total={10}
         subtitle="Configuration"
         title="Settings"
         lead="AI engines and models per role, key status and entry, setup diagnostics, legacy import, bake-off results, and appearance."
@@ -1095,6 +1096,9 @@ export function SettingsSection() {
           </div>
         </Card>
       </section>
+
+      <PitchBasePricesPanel />
+
       <Dialog
         open={Boolean(confirmRemoveKey)}
         onClose={() => setConfirmRemoveKey(null)}
