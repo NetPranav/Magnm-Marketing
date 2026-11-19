@@ -450,10 +450,28 @@ describe('PitchSection', () => {
       expect(screen.getAllByText('ABHA Health ID Sync').length).toBeGreaterThanOrEqual(1);
     });
 
-    // Prices tab: shows Pitch, Admin, This proposal sources; sends only proposal override; reset to base
+    // Prices tab: hides side preview, shows toggle (remembered in component state), compact Base column, Reset button text
+    expect(screen.getByTestId('pitch-side-preview').hidden).toBe(false);
+    expect(screen.queryByRole('button', { name: 'Show preview' })).toBeNull();
+
     fireEvent.click(screen.getByRole('tab', { name: /Prices/i }));
+    expect(screen.getByTestId('pitch-side-preview').hidden).toBe(true);
+    const previewToggle = screen.getByRole('button', { name: 'Show preview' });
+    fireEvent.click(previewToggle);
+    expect(screen.getByTestId('pitch-side-preview').hidden).toBe(false);
+    expect(screen.getByRole('button', { name: 'Hide preview' })).toBeTruthy();
+
+    // Switching tabs remembers preview toggle choice for the session
+    fireEvent.click(screen.getByRole('tab', { name: /Details/i }));
+    expect(screen.getByTestId('pitch-side-preview').hidden).toBe(false);
+    fireEvent.click(screen.getByRole('tab', { name: /Prices/i }));
+    expect(screen.getByTestId('pitch-side-preview').hidden).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Hide preview' }));
+    expect(screen.getByTestId('pitch-side-preview').hidden).toBe(true);
+
     const priceTable = screen.getByRole('table');
     expect(within(priceTable).getByText('Admin')).toBeTruthy();
+    expect(within(priceTable).getByText('Admin ₹2,800')).toBeTruthy();
     expect(within(priceTable).getAllByText('This proposal').length).toBeGreaterThanOrEqual(1);
 
     const wFrontInput = screen.getByLabelText(
@@ -461,10 +479,12 @@ describe('PitchSection', () => {
     ) as HTMLInputElement;
     expect(wFrontInput.value).toBe('7200');
 
-    // Reset w_front to base -> clears override, source becomes Pitch
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Reset to base for Responsive Web Application / Frontend' }),
-    );
+    // Reset w_front to base -> button text is "Reset", clears override, source becomes Pitch
+    const wFrontResetBtn = screen.getByRole('button', {
+      name: 'Reset to base for Responsive Web Application / Frontend',
+    });
+    expect(wFrontResetBtn.textContent).toBe('Reset');
+    fireEvent.click(wFrontResetBtn);
     expect(wFrontInput.value).toBe('');
     const wFrontRow = wFrontInput.closest('tr') as HTMLElement;
     expect(within(wFrontRow).getByText('Pitch')).toBeTruthy();

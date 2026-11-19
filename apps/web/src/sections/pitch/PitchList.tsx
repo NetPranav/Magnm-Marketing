@@ -191,7 +191,7 @@ export function PitchList({ onOpenProposal }: PitchListProps) {
       ) : null}
 
       <div className="studio-section-bar">
-        <div className="studio-btn-group">
+        <div className="studio-filter-row">
           <Select
             aria-label="Filter by status"
             value={statusFilter}

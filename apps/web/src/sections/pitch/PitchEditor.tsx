@@ -101,6 +101,7 @@ export interface PitchEditorProps {
 export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditorProps) {
   const layoutMode = useEditorLayoutMode();
   const [activeTab, setActiveTab] = useState<EditorTabId>('details');
+  const [showPricesPreview, setShowPricesPreview] = useState(false);
 
   const [proposal, setProposal] = useState<PitchProposal | null>(null);
   const [draft, setDraft] = useState<PitchDraftState | null>(null);
@@ -370,15 +371,28 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
     draft.slug;
 
   const tabs = layoutMode === 'wide' ? FORM_TABS : ALL_TABS;
+  const isPricesFullWidth = layoutMode === 'wide' && activeTab === 'prices';
 
   const formContent = (
     <div className="studio-stack-sm">
-      <NumberedTabs
-        items={tabs}
-        current={activeTab}
-        onSelect={(id) => setActiveTab(id as EditorTabId)}
-        ariaLabel="Proposal editor tabs"
-      />
+      <div className="studio-pitch-tabs-bar">
+        <NumberedTabs
+          items={tabs}
+          current={activeTab}
+          onSelect={(id) => setActiveTab(id as EditorTabId)}
+          ariaLabel="Proposal editor tabs"
+        />
+        {isPricesFullWidth ? (
+          <PillButton
+            variant="outline"
+            size="sm"
+            aria-pressed={showPricesPreview}
+            onClick={() => setShowPricesPreview((prev) => !prev)}
+          >
+            {showPricesPreview ? 'Hide preview' : 'Show preview'}
+          </PillButton>
+        ) : null}
+      </div>
 
       {activeTab === 'details' ? (
         <PitchDetailsTab
@@ -411,7 +425,10 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
     </div>
   );
 
-  const previewVisible = layoutMode === 'wide' || activeTab === 'preview';
+  const previewVisible =
+    layoutMode === 'wide'
+      ? activeTab !== 'prices' || showPricesPreview
+      : activeTab === 'preview';
   const previewPane = (
     <div
       className="studio-pitch-preview-pane"
@@ -511,9 +528,19 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
       ) : null}
 
       {layoutMode === 'wide' ? (
-        <div className="studio-pitch-split" data-testid="pitch-wide-layout">
+        <div
+          className={isPricesFullWidth ? 'studio-pitch-full' : 'studio-pitch-split'}
+          data-testid="pitch-wide-layout"
+        >
           <div className="studio-pitch-form-col">{formContent}</div>
-          <div className="studio-pitch-preview-col">{previewPane}</div>
+          <div
+            className="studio-pitch-preview-col"
+            hidden={!previewVisible}
+            aria-hidden={!previewVisible}
+            data-testid="pitch-side-preview"
+          >
+            {previewPane}
+          </div>
         </div>
       ) : (
         <div className="studio-stack-sm" data-testid="pitch-tabbed-layout">

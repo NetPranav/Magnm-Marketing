@@ -1381,6 +1381,23 @@
   padding-bottom: 96px;
 }
 
+.studio-pitch-tabs-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+
+.studio-pitch-tabs-bar .mg-tabs {
+  position: static;
+  border-bottom: 0;
+  padding-inline: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .studio-pitch-split {
   display: grid;
   grid-template-columns: minmax(0, 1.22fr) minmax(0, 0.78fr);
@@ -1388,10 +1405,11 @@
   align-items: start;
 }
 
-.studio-pitch-split .studio-table th,
-.studio-pitch-split .studio-table td {
-  padding: 8px 6px;
-  font-size: 13px;
+.studio-pitch-full {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s-5);
+  align-items: start;
 }
 
 .studio-pitch-form-col {
@@ -1402,6 +1420,15 @@
   min-width: 0;
   position: sticky;
   top: var(--s-4);
+}
+
+.studio-pitch-full .studio-pitch-preview-col {
+  position: static;
+}
+
+.studio-pitch-preview-col[hidden],
+.studio-pitch-preview-pane[hidden] {
+  display: none;
 }
 
 .studio-pitch-preview-pane {
@@ -1442,9 +1469,110 @@
   flex-wrap: wrap;
 }
 
+.studio-pitch-price-table th,
+.studio-pitch-price-table td {
+  padding: 10px 8px;
+  font-size: 13.5px;
+  vertical-align: middle;
+}
+
+.studio-pitch-price-table td.studio-pitch-price-item {
+  vertical-align: top;
+}
+
+.studio-pitch-base-cell {
+  gap: 2px;
+  white-space: nowrap;
+}
+
 .studio-pitch-price-input {
-  max-width: 92px;
+  width: 96px;
+  max-width: 100%;
   padding: 7px 8px;
+}
+
+.studio-pitch-reset-btn {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+@media (max-width: 899px) {
+  .studio-pitch-price-table-wrap {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    overflow: visible;
+  }
+
+  .studio-pitch-price-table {
+    display: block;
+    width: 100%;
+  }
+
+  .studio-pitch-price-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+
+  .studio-pitch-price-table tbody {
+    display: grid;
+    gap: var(--s-3);
+  }
+
+  .studio-pitch-price-table tr {
+    display: grid;
+    gap: var(--s-2);
+    padding: var(--s-3);
+    border: 1px solid var(--line-2);
+    border-radius: var(--radius-card);
+    background: var(--bg);
+  }
+
+  .studio-pitch-price-table td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s-3);
+    padding: 0;
+    border-bottom: 0;
+    text-align: right;
+  }
+
+  .studio-pitch-price-table td::before {
+    content: attr(data-label) ":";
+    font-family: var(--f-mono);
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    text-align: left;
+    flex-shrink: 0;
+  }
+
+  .studio-pitch-price-table td.studio-pitch-price-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    padding-bottom: var(--s-2);
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+  }
+
+  .studio-pitch-price-table td.studio-pitch-price-item::before {
+    content: attr(data-label);
+  }
+
+  .studio-pitch-price-table td.studio-pitch-price-base {
+    align-items: flex-start;
+  }
+
+  .studio-pitch-base-cell {
+    text-align: right;
+  }
 }
 
 .studio-pitch-totals {

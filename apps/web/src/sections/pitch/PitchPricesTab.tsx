@@ -140,13 +140,12 @@ export function PitchPricesTab({
           No deliverables are selected or shown yet. Enable items on the Deliverables tab first.
         </div>
       ) : (
-        <div className="studio-table-wrap">
-          <table className="studio-table">
+        <div className="studio-table-wrap studio-pitch-price-table-wrap">
+          <table className="studio-table studio-pitch-price-table">
             <thead>
               <tr>
                 <th>Item</th>
-                <th>Pitch base</th>
-                <th>Admin base</th>
+                <th>Base</th>
                 <th>This proposal</th>
                 <th>Effective</th>
                 <th>Source</th>
@@ -164,11 +163,11 @@ export function PitchPricesTab({
                   const p = resolveCatalogItemPricing(itemId, catItem, draft.price_overrides);
                   return (
                     <tr key={itemId}>
-                      <td>
+                      <td data-label="Item" className="studio-pitch-price-item">
                         <div className="studio-stack-xs">
                           <span>{catItem.n}</span>
                           <span className="studio-mono">
-                            {catItem.g} · {isSelected ? 'Pre-selected' : 'Shown'}
+                            {catItem.g} · {isSelected ? 'pre-selected' : 'shown'}
                           </span>
                           {rowViolation ? (
                             <span className="studio-field-error" role="alert">
@@ -177,11 +176,17 @@ export function PitchPricesTab({
                           ) : null}
                         </div>
                       </td>
-                      <td className="mg-num">{formatRupees(p.pitchBase)}</td>
-                      <td className="mg-num">
-                        {p.adminOverridden ? formatRupees(p.adminBase) : '—'}
+                      <td data-label="Base" className="mg-num studio-pitch-price-base">
+                        <div className="studio-stack-xs studio-pitch-base-cell">
+                          <span>{formatRupees(p.pitchBase)}</span>
+                          {p.adminOverridden ? (
+                            <span className="studio-mono">
+                              Admin {formatRupees(p.adminBase)}
+                            </span>
+                          ) : null}
+                        </div>
                       </td>
-                      <td>
+                      <td data-label="This proposal">
                         <TextInput
                           type="number"
                           min={0}
@@ -196,19 +201,22 @@ export function PitchPricesTab({
                           onChange={(e) => handleOverrideChange(itemId, e.target.value)}
                         />
                       </td>
-                      <td className="mg-num">{formatRupees(p.effective)}</td>
-                      <td>
+                      <td data-label="Effective" className="mg-num">
+                        {formatRupees(p.effective)}
+                      </td>
+                      <td data-label="Source">
                         <span className="mg-chip">{p.sourceLabel}</span>
                       </td>
-                      <td>
+                      <td data-label="Action" className="studio-pitch-price-action">
                         <PillButton
                           variant="quiet"
                           size="sm"
+                          className="studio-pitch-reset-btn"
                           disabled={p.proposalOverride === undefined}
                           aria-label={`Reset to base for ${catItem.n}`}
                           onClick={() => handleResetRow(itemId)}
                         >
-                          Reset to base
+                          Reset
                         </PillButton>
                       </td>
                     </tr>
@@ -218,22 +226,32 @@ export function PitchPricesTab({
                 if (customItem) {
                   return (
                     <tr key={itemId}>
-                      <td>
+                      <td data-label="Item" className="studio-pitch-price-item">
                         <div className="studio-stack-xs">
                           <span>{customItem.n}</span>
                           <span className="studio-mono">
-                            {customItem.g} · {isSelected ? 'Pre-selected' : 'Shown'}
+                            {customItem.g} · {isSelected ? 'pre-selected' : 'shown'}
                           </span>
                         </div>
                       </td>
-                      <td className="mg-num">—</td>
-                      <td className="mg-num">—</td>
-                      <td className="studio-mono">Custom item</td>
-                      <td className="mg-num">{formatRupees(customItem.p)}</td>
-                      <td>
+                      <td data-label="Base" className="mg-num studio-pitch-price-base">
+                        —
+                      </td>
+                      <td data-label="This proposal" className="studio-mono">
+                        Custom item
+                      </td>
+                      <td data-label="Effective" className="mg-num">
+                        {formatRupees(customItem.p)}
+                      </td>
+                      <td data-label="Source">
                         <span className="mg-chip">This proposal</span>
                       </td>
-                      <td className="studio-mono">—</td>
+                      <td
+                        data-label="Action"
+                        className="studio-mono studio-pitch-price-action"
+                      >
+                        —
+                      </td>
                     </tr>
                   );
                 }
