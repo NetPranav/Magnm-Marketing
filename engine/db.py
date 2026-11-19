@@ -21,7 +21,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -482,6 +482,68 @@ def _apply_migration_v8(conn):
     )
 
 
+def _apply_migration_v9(conn):
+    job_cols = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    if "result_json" not in job_cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN result_json TEXT")
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS review_comments (
+            id TEXT PRIMARY KEY,
+            content_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            anchor_json TEXT NOT NULL,
+            body TEXT NOT NULL,
+            author TEXT NOT NULL,
+            parent_id TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            mentions_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (content_id) REFERENCES content_items(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_review_comments_content_created
+            ON review_comments(content_id, created_at);
+
+        CREATE INDEX IF NOT EXISTS idx_review_comments_parent
+            ON review_comments(parent_id);
+
+        CREATE TABLE IF NOT EXISTS review_suggestions (
+            id TEXT PRIMARY KEY,
+            content_id TEXT NOT NULL,
+            base_version INTEGER NOT NULL,
+            start INTEGER NOT NULL,
+            end INTEGER NOT NULL,
+            original TEXT NOT NULL,
+            replacement TEXT NOT NULL,
+            author TEXT NOT NULL,
+            reason TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            decided_at TEXT,
+            FOREIGN KEY (content_id) REFERENCES content_items(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_review_suggestions_content_status
+            ON review_suggestions(content_id, status, created_at);
+
+        CREATE TABLE IF NOT EXISTS review_checklist (
+            content_id TEXT NOT NULL,
+            item_key TEXT NOT NULL,
+            label TEXT NOT NULL,
+            source TEXT NOT NULL,
+            checked INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (content_id, item_key),
+            FOREIGN KEY (content_id) REFERENCES content_items(id) ON DELETE CASCADE
+        );
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -491,6 +553,7 @@ _MIGRATIONS = (
     (6, _apply_migration_v6),
     (7, _apply_migration_v7),
     (8, _apply_migration_v8),
+    (9, _apply_migration_v9),
 )
 
 
@@ -1160,15 +1223,18 @@ def get_recent_runs(limit=50):
 
 _JOB_SELECT_COLS = (
     "id, name, status, progress, message, attempts, max_attempts, "
-    "created_at, started_at, finished_at, output_path, error, actor, cancel_requested, params_json"
+    "created_at, started_at, finished_at, output_path, error, actor, cancel_requested, params_json, result_json"
 )
 
 
 def _deserialize_job(row):
     if row is None:
         return None
-    raw_params = row["params_json"] if "params_json" in row.keys() else None
+    keys = row.keys()
+    raw_params = row["params_json"] if "params_json" in keys else None
     params = json.loads(raw_params) if raw_params else {}
+    raw_result = row["result_json"] if "result_json" in keys else None
+    result = json.loads(raw_result) if raw_result else None
     return {
         "id": row["id"],
         "name": row["name"],
@@ -1186,6 +1252,7 @@ def _deserialize_job(row):
         "cancel_requested": bool(row["cancel_requested"]),
         "params": params,
         "params_json": raw_params,
+        "result": result,
     }
 
 
@@ -1290,6 +1357,8 @@ _UPDATABLE_JOB_FIELDS = {
     "output_path",
     "error",
     "cancel_requested",
+    "result",
+    "result_json",
 }
 
 
@@ -1301,13 +1370,17 @@ def update_job(job_id, **fields):
     for k, v in fields.items():
         if k not in _UPDATABLE_JOB_FIELDS:
             raise ValueError(f"Unsupported job field: {k}")
-        updates.append(f"{k} = ?")
-        if k == "cancel_requested":
-            params.append(1 if v else 0)
-        elif k in ("progress", "attempts", "max_attempts") and v is not None:
-            params.append(int(v))
+        if k == "result":
+            updates.append("result_json = ?")
+            params.append(json.dumps(v, ensure_ascii=False, default=str) if v is not None else None)
         else:
-            params.append(v)
+            updates.append(f"{k} = ?")
+            if k == "cancel_requested":
+                params.append(1 if v else 0)
+            elif k in ("progress", "attempts", "max_attempts") and v is not None:
+                params.append(int(v))
+            else:
+                params.append(v)
 
     if not updates:
         return get_job(job_id)
@@ -2747,6 +2820,15 @@ def toggle_watch_topic(topic_id):
     return get_watch_topic(topic_id)
 
 
+def delete_watch_topic(topic_id):
+    """Delete a watch_topic row by ID; return True if deleted, False if missing."""
+    ensure_init()
+    conn = connect()
+    with conn:
+        cur = conn.execute("DELETE FROM watch_topics WHERE id = ?", (str(topic_id),))
+    return cur.rowcount > 0
+
+
 def update_watch_topic_last_run(topic_id, last_run=None):
     """Update last_run timestamp on a watch_topic and return the updated dict."""
     ensure_init()
@@ -3073,4 +3155,376 @@ def touch_agent_memory_used(memory_ids, used_at=None):
         conn.execute(
             f"UPDATE agent_memory SET last_used_at = ? WHERE id IN ({placeholders})",
             [ts, *ids],
+        )
+
+
+def _deserialize_review_comment(row):
+    if row is None:
+        return None
+    anchor = json.loads(row["anchor_json"]) if row["anchor_json"] else {}
+    mentions = json.loads(row["mentions_json"]) if row["mentions_json"] else []
+    return {
+        "id": row["id"],
+        "content_id": row["content_id"],
+        "version": int(row["version"]),
+        "kind": row["kind"],
+        "anchor": anchor,
+        "anchor_json": anchor,
+        "body": row["body"],
+        "author": row["author"],
+        "parent_id": row["parent_id"],
+        "status": row["status"],
+        "mentions": mentions,
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def create_review_comment(
+    content_id,
+    version,
+    kind,
+    anchor,
+    body,
+    author="user",
+    parent_id=None,
+    status="open",
+    mentions=None,
+    comment_id=None,
+    created_at=None,
+):
+    """Insert a review_comments row and return the deserialized dict."""
+    ensure_init()
+    cid = str(comment_id or f"cmt_{uuid.uuid4().hex[:12]}")
+    now = str(created_at or datetime.now(timezone.utc).isoformat())
+    anchor_str = json.dumps(anchor or {}, ensure_ascii=False)
+    mentions_str = json.dumps(list(mentions or []), ensure_ascii=False)
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO review_comments (
+                id, content_id, version, kind, anchor_json, body, author,
+                parent_id, status, mentions_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                cid,
+                str(content_id),
+                int(version),
+                str(kind),
+                anchor_str,
+                str(body),
+                str(author),
+                str(parent_id) if parent_id else None,
+                str(status or "open"),
+                mentions_str,
+                now,
+                now,
+            ),
+        )
+    return get_review_comment(cid)
+
+
+def get_review_comment(comment_id):
+    """Fetch a single review comment by ID, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM review_comments WHERE id = ?",
+        (str(comment_id),),
+    ).fetchone()
+    return _deserialize_review_comment(row)
+
+
+def list_review_comments(content_id, version=None, status=None):
+    """List review comments for content_id ordered chronologically."""
+    ensure_init()
+    conn = connect()
+    clauses = ["content_id = ?"]
+    params = [str(content_id)]
+    if version is not None:
+        clauses.append("version = ?")
+        params.append(int(version))
+    if status is not None:
+        clauses.append("status = ?")
+        params.append(str(status))
+    rows = conn.execute(
+        f"""
+        SELECT * FROM review_comments
+        WHERE {' AND '.join(clauses)}
+        ORDER BY created_at ASC, rowid ASC
+        """,
+        params,
+    ).fetchall()
+    return [_deserialize_review_comment(r) for r in rows]
+
+
+def update_review_comment(
+    comment_id,
+    *,
+    body=None,
+    status=None,
+    anchor=None,
+    version=None,
+    mentions=None,
+    updated_at=None,
+):
+    """Update fields on a review_comments row and return the updated dict."""
+    ensure_init()
+    existing = get_review_comment(comment_id)
+    if existing is None:
+        return None
+    updates = []
+    params = []
+    if body is not None:
+        updates.append("body = ?")
+        params.append(str(body))
+    if status is not None:
+        updates.append("status = ?")
+        params.append(str(status))
+    if anchor is not None:
+        updates.append("anchor_json = ?")
+        params.append(json.dumps(anchor, ensure_ascii=False))
+    if version is not None:
+        updates.append("version = ?")
+        params.append(int(version))
+    if mentions is not None:
+        updates.append("mentions_json = ?")
+        params.append(json.dumps(list(mentions), ensure_ascii=False))
+    if not updates:
+        return existing
+    ts = str(updated_at or datetime.now(timezone.utc).isoformat())
+    updates.append("updated_at = ?")
+    params.append(ts)
+    params.append(str(comment_id))
+    conn = connect()
+    with conn:
+        conn.execute(
+            f"UPDATE review_comments SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+    return get_review_comment(comment_id)
+
+
+def delete_review_comment(comment_id):
+    """Delete a review comment and its direct/descendant replies. Returns True if deleted."""
+    ensure_init()
+    conn = connect()
+    to_delete = [str(comment_id)]
+    idx = 0
+    while idx < len(to_delete):
+        pid = to_delete[idx]
+        idx += 1
+        children = conn.execute(
+            "SELECT id FROM review_comments WHERE parent_id = ?",
+            (pid,),
+        ).fetchall()
+        for ch in children:
+            if ch["id"] not in to_delete:
+                to_delete.append(ch["id"])
+    placeholders = ", ".join("?" for _ in to_delete)
+    with conn:
+        cur = conn.execute(
+            f"DELETE FROM review_comments WHERE id IN ({placeholders})",
+            to_delete,
+        )
+        return cur.rowcount > 0
+
+
+def _deserialize_review_suggestion(row):
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "content_id": row["content_id"],
+        "base_version": int(row["base_version"]),
+        "start": int(row["start"]),
+        "end": int(row["end"]),
+        "original": row["original"],
+        "replacement": row["replacement"],
+        "author": row["author"],
+        "reason": row["reason"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "decided_at": row["decided_at"],
+    }
+
+
+def create_review_suggestion(
+    content_id,
+    base_version,
+    start,
+    end,
+    original,
+    replacement,
+    author="user",
+    reason=None,
+    status="pending",
+    suggestion_id=None,
+    created_at=None,
+):
+    """Insert a review_suggestions row and return the deserialized dict."""
+    ensure_init()
+    sid = str(suggestion_id or f"sug_{uuid.uuid4().hex[:12]}")
+    now = str(created_at or datetime.now(timezone.utc).isoformat())
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO review_suggestions (
+                id, content_id, base_version, start, end, original, replacement,
+                author, reason, status, created_at, decided_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sid,
+                str(content_id),
+                int(base_version),
+                int(start),
+                int(end),
+                str(original),
+                str(replacement),
+                str(author),
+                str(reason) if reason is not None else None,
+                str(status or "pending"),
+                now,
+                None,
+            ),
+        )
+    return get_review_suggestion(sid)
+
+
+def get_review_suggestion(suggestion_id):
+    """Fetch a single review suggestion by ID, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM review_suggestions WHERE id = ?",
+        (str(suggestion_id),),
+    ).fetchone()
+    return _deserialize_review_suggestion(row)
+
+
+def list_review_suggestions(content_id, status=None):
+    """List review suggestions for content_id ordered by start offset then creation time."""
+    ensure_init()
+    conn = connect()
+    clauses = ["content_id = ?"]
+    params = [str(content_id)]
+    if status is not None:
+        clauses.append("status = ?")
+        params.append(str(status))
+    rows = conn.execute(
+        f"""
+        SELECT * FROM review_suggestions
+        WHERE {' AND '.join(clauses)}
+        ORDER BY start ASC, created_at ASC, rowid ASC
+        """,
+        params,
+    ).fetchall()
+    return [_deserialize_review_suggestion(r) for r in rows]
+
+
+def update_review_suggestion(suggestion_id, *, status=None, reason=None, decided_at=None):
+    """Update status/reason/decided_at on a review_suggestions row."""
+    ensure_init()
+    existing = get_review_suggestion(suggestion_id)
+    if existing is None:
+        return None
+    updates = []
+    params = []
+    if status is not None:
+        updates.append("status = ?")
+        params.append(str(status))
+    if reason is not None:
+        updates.append("reason = ?")
+        params.append(str(reason))
+    if decided_at is not None:
+        updates.append("decided_at = ?")
+        params.append(str(decided_at))
+    if not updates:
+        return existing
+    params.append(str(suggestion_id))
+    conn = connect()
+    with conn:
+        conn.execute(
+            f"UPDATE review_suggestions SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+    return get_review_suggestion(suggestion_id)
+
+
+def _deserialize_checklist_item(row):
+    if row is None:
+        return None
+    return {
+        "content_id": row["content_id"],
+        "item_key": row["item_key"],
+        "label": row["label"],
+        "source": row["source"],
+        "checked": bool(row["checked"]),
+        "updated_at": row["updated_at"],
+    }
+
+
+def upsert_review_checklist_item(content_id, item_key, label, source, checked, updated_at=None):
+    """Insert or update a review_checklist row and return the deserialized dict."""
+    ensure_init()
+    now = str(updated_at or datetime.now(timezone.utc).isoformat())
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO review_checklist (content_id, item_key, label, source, checked, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(content_id, item_key) DO UPDATE SET
+                label = excluded.label,
+                source = excluded.source,
+                checked = excluded.checked,
+                updated_at = excluded.updated_at
+            """,
+            (
+                str(content_id),
+                str(item_key),
+                str(label),
+                str(source),
+                1 if checked else 0,
+                now,
+            ),
+        )
+    row = conn.execute(
+        "SELECT * FROM review_checklist WHERE content_id = ? AND item_key = ?",
+        (str(content_id), str(item_key)),
+    ).fetchone()
+    return _deserialize_checklist_item(row)
+
+
+def list_review_checklist(content_id):
+    """List review checklist items for content_id."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT * FROM review_checklist
+        WHERE content_id = ?
+        ORDER BY CASE source WHEN 'auto' THEN 0 WHEN 'platform' THEN 1 ELSE 2 END, rowid ASC
+        """,
+        (str(content_id),),
+    ).fetchall()
+    return [_deserialize_checklist_item(r) for r in rows]
+
+
+def delete_review_checklist_by_sources(content_id, sources):
+    """Delete checklist items for content_id matching any of sources."""
+    src_list = [str(s) for s in (sources or []) if s]
+    if not src_list:
+        return
+    ensure_init()
+    placeholders = ", ".join("?" for _ in src_list)
+    conn = connect()
+    with conn:
+        conn.execute(
+            f"DELETE FROM review_checklist WHERE content_id = ? AND source IN ({placeholders})",
+            [str(content_id), *src_list],
         )

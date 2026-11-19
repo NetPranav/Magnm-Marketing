@@ -32,12 +32,8 @@ def _word_pattern(term):
     return re.compile(r"\b" + body + r"\b", re.IGNORECASE)
 
 
-def load_rules(path=None):
-    """Load and validate product rules from JSON, raising ValueError on invalid config."""
-    rules_path = path or DEFAULT_RULES_PATH
-    with open(rules_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
+def validate_rules(data):
+    """Validate a product_rules dict, raising ValueError on invalid fields."""
     if not isinstance(data, dict):
         raise ValueError("product_rules config must be a JSON object")
 
@@ -64,6 +60,82 @@ def load_rules(path=None):
             raise ValueError(f"Invalid show level {show!r} for product {pid!r}")
 
     return data
+
+
+def load_rules(path=None):
+    """Load and validate product rules from JSON, raising ValueError on invalid config."""
+    rules_path = path or DEFAULT_RULES_PATH
+    with open(rules_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return validate_rules(data)
+
+
+def _normalize_blocked_terms(raw_terms):
+    if raw_terms is None:
+        return []
+    if isinstance(raw_terms, str):
+        parts = re.split(r"[,;\n]+", raw_terms)
+    elif isinstance(raw_terms, list):
+        parts = raw_terms
+    else:
+        raise ValueError("blocked_terms must be a list or comma-separated string")
+    cleaned = []
+    seen = set()
+    for term in parts:
+        val = str(term or "").strip()
+        if val and val.lower() not in seen:
+            seen.add(val.lower())
+            cleaned.append(val)
+    return cleaned
+
+
+def save_product_rule(product_id, updates, path=None):
+    """Update a single product rule entry and persist product_rules.json atomically."""
+    pid = str(product_id or "").strip()
+    if not pid:
+        raise ValueError("product_id is required")
+    if not isinstance(updates, dict):
+        raise ValueError("updates must be a JSON object")
+
+    rules_path = path or DEFAULT_RULES_PATH
+    if not os.path.exists(rules_path):
+        fallback = paths.resource("config", "product_rules.json")
+        if os.path.exists(fallback):
+            data = load_rules(fallback)
+        else:
+            raise FileNotFoundError(f"Product rules file not found: {rules_path}")
+    else:
+        data = load_rules(rules_path)
+
+    target = None
+    for prod in data.get("products", []):
+        if prod.get("id") == pid:
+            target = prod
+            break
+    if target is None:
+        raise ValueError(f"Product '{pid}' not found")
+
+    if "status" in updates and updates["status"] is not None:
+        target["status"] = str(updates["status"]).strip()
+    if "show" in updates and updates["show"] is not None:
+        target["show"] = str(updates["show"]).strip()
+    if "blocked_terms" in updates:
+        target["blocked_terms"] = _normalize_blocked_terms(updates["blocked_terms"])
+    if "confidential" in updates and updates["confidential"] is not None:
+        target["confidential"] = bool(updates["confidential"])
+    if "notes" in updates and updates["notes"] is not None:
+        target["notes"] = str(updates["notes"]).strip()
+
+    validate_rules(data)
+    parent = os.path.dirname(rules_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp_path = rules_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    os.replace(tmp_path, rules_path)
+    return dict(target), data
 
 
 def get_product(product_id, path=None):

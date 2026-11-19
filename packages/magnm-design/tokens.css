@@ -1,0 +1,61 @@
+/* Magnm design tokens. Light is default; dark is flipped warm monochrome on [data-theme="dark"]. */
+
+:root,
+[data-theme="light"] {
+  /* Colour tokens */
+  --bg: #ffffff;
+  --fg: #0a0a0a;
+  --body: #3b3b3b;
+  --muted: #61615d;
+  --tint: #f5f5f3;
+  --tint-2: #ebebe8;
+  --line: #e3e3df;
+  --line-2: #cfcfca;
+  --bar-bg: rgba(255, 255, 255, .92);
+  --shadow-pop: 0 4px 18px rgba(0, 0, 0, .18);
+  color-scheme: light;
+
+  /* Typography */
+  --f-display: 'Instrument Serif', 'Times New Roman', serif;
+  --f-body: 'Hanken Grotesk', system-ui, Arial, sans-serif;
+  --f-mono: 'DM Mono', ui-monospace, Menlo, Consolas, monospace;
+
+  /* Layout & radii */
+  --gutter: 20px;
+  --col-read: 780px;
+  --col-wide: 1200px;
+  --radius-card: 14px;
+  --radius-sm: 6px;
+  --radius-pill: 99px;
+
+  /* Spacing scale */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+}
+
+[data-theme="dark"] {
+  /* Colour tokens (exact same set as light) */
+  --bg: #0a0a0a;
+  --fg: #f5f5f3;
+  --body: #c4c4bf;
+  --muted: #969690;
+  --tint: #161615;
+  --tint-2: #222220;
+  --line: #272724;
+  --line-2: #3a3a36;
+  --bar-bg: rgba(10, 10, 10, .92);
+  --shadow-pop: 0 4px 18px rgba(0, 0, 0, .55);
+  color-scheme: dark;
+}
+
+@media (min-width: 680px) {
+  :root {
+    --gutter: 32px;
+  }
+}

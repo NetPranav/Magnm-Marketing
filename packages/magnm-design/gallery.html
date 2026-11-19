@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>magnm-design gallery</title>
+  <link rel="stylesheet" href="./magnm.css">
+  <style>
+    .gallery-shell {
+      min-height: 100vh;
+    }
+    .gallery-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--s-4);
+      padding: var(--s-4) var(--gutter);
+      border-bottom: 1px solid var(--line);
+      background: var(--bg);
+      flex-wrap: wrap;
+    }
+    .gallery-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      gap: 0;
+    }
+    .gallery-pane {
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .gallery-pane:last-child {
+      border-right: 0;
+    }
+    .gallery-pane-head {
+      padding: var(--s-3) var(--gutter);
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--tint);
+    }
+    .gallery-body {
+      padding: var(--s-6) var(--gutter);
+      display: grid;
+      gap: var(--s-6);
+      flex: 1;
+    }
+    .gallery-stack {
+      display: grid;
+      gap: var(--s-3);
+    }
+    .gallery-cluster {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--s-2);
+    }
+    .gallery-sidebar-demo {
+      display: grid;
+      grid-template-columns: 180px 1fr;
+      gap: var(--s-4);
+      align-items: start;
+    }
+    .gallery-pane .mg-bar {
+      position: static;
+    }
+    @media (max-width: 520px) {
+      .gallery-sidebar-demo {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body class="mg-root gallery-shell">
+
+  <header class="gallery-toolbar">
+    <div>
+      <span class="mg-label">Design kit gallery</span>
+      <p class="mg-sub">Light and dark themes side by side. Monochrome tokens, offline fonts.</p>
+    </div>
+    <div class="gallery-cluster">
+      <div class="mg-theme-toggle" role="group" aria-label="Page theme">
+        <button type="button" data-set-theme="light" aria-pressed="true">Light</button>
+        <button type="button" data-set-theme="dark" aria-pressed="false">Dark</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="gallery-grid" id="gallery-panes">
+    <section class="mg-root gallery-pane" data-theme="light" aria-label="Light theme preview">
+      <div class="gallery-pane-head">
+        <span class="mg-label">Light theme</span>
+        <span class="mg-chip">data-theme="light"</span>
+      </div>
+
+      <nav class="mg-tabs" aria-label="Light preview tabs">
+        <button type="button" class="mg-tab" aria-selected="true"><i>1</i> Overview</button>
+        <button type="button" class="mg-tab" aria-selected="false"><i>2</i> Briefs</button>
+        <button type="button" class="mg-tab" aria-selected="false"><i>3</i> Review</button>
+        <button type="button" class="mg-tab" aria-selected="false"><i>4</i> Pitch</button>
+      </nav>
+
+      <div class="gallery-body">
+        <div class="mg-wrap" style="padding-inline: 0;">
+          <div class="mg-wordmark" style="font-size: 96px; margin-bottom: 16px;">magnm</div>
+          <div class="mg-sheet-header">
+            <div class="mg-sheet-pageno">
+              <span>Page 1 of 5</span>
+              <span>Software Studio</span>
+            </div>
+            <h2 class="mg-display mg-display--big">Quiet craft for <em>focused</em> work</h2>
+            <p class="mg-lead">Paper and ink hierarchy. Instrument Serif headings, Hanken Grotesk UI copy, and DM Mono labels.</p>
+          </div>
+        </div>
+
+        <div class="gallery-stack">
+          <span class="mg-label">Typography &amp; numerals</span>
+          <h3 class="mg-display">Section display heading</h3>
+          <p class="mg-sub">Supporting secondary line with muted rhythm and <span class="mg-num">14:32:08 UTC</span> mono timestamp.</p>
+          <div class="mg-bignum">42,500</div>
+        </div>
+
+        <hr class="mg-divider">
+
+        <div class="gallery-stack">
+          <span class="mg-label">Vertical sidebar tabs</span>
+          <div class="gallery-sidebar-demo">
+            <div class="mg-tabs mg-tabs--vertical" role="tablist" aria-label="Sidebar tabs">
+              <button type="button" class="mg-tab" role="tab" aria-selected="true"><i>1</i> Drafts</button>
+              <button type="button" class="mg-tab" role="tab" aria-selected="false"><i>2</i> Assets</button>
+              <button type="button" class="mg-tab" role="tab" aria-selected="false"><i>3</i> History</button>
+            </div>
+            <div class="mg-card">
+              <span class="mg-label">Desktop sidebar</span>
+              <p class="mg-sub">Vertical tabs use a 2px left indicator and subtle tint fill.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="gallery-stack">
+          <span class="mg-label">Cards</span>
+          <div class="mg-card">
+            <strong>Default tinted card</strong>
+            <p class="mg-sub">Uses --tint background with 14px corners.</p>
+          </div>
+          <div class="mg-card mg-card--selected">
+            <strong>Selected card</strong>
+            <p class="mg-sub">Uses --tint-2 and hairline --line-2 border.</p>
+          </div>
+          <div class="mg-card mg-card--outline">
+            <strong>Outline card</strong>
+            <p class="mg-sub">Uses --bg surface with --line-2 border.</p>
+          </div>
+        </div>
+
+        <div class="gallery-stack">
+          <span class="mg-label">Row list</span>
+          <div class="mg-rows">
+            <button type="button" class="mg-row" aria-current="false">
+              <div class="mg-row-main">
+                <span class="mg-row-title">Web &amp; SaaS platform</span>
+                <span class="mg-row-desc">Next.js or Vite frontend with auth and billing</span>
+              </div>
+              <span class="mg-row-meta">Included</span>
+            </button>
+            <button type="button" class="mg-row" aria-current="true">
+              <div class="mg-row-main">
+                <span class="mg-row-title">Review Studio workflow</span>
+                <span class="mg-row-desc">Comments, suggestion mode, and posting kit</span>
+              </div>
+              <span class="mg-row-meta">02 drafts</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="gallery-stack">
+          <span class="mg-label">Buttons</span>
+          <div class="gallery-cluster">
+            <button type="button" class="mg-btn">Primary action</button>
+            <button type="button" class="mg-btn mg-btn--outline">Outline</button>
+            <button type="button" class="mg-btn mg-btn--quiet">Quiet</button>
+            <button type="button" class="mg-btn mg-btn--danger mg-btn--sm">Delete route</button>
+            <button type="button" class="mg-btn mg-btn--sm" disabled>Disabled</button>
+          </div>
+        </div>
+
+        <div class="gallery-stack">
+          <span class="mg-label">Agent status</span>
+          <div class="gallery-cluster" style="gap: 16px;">
+            <span class="mg-status" data-state="online">Online</span>
+            <span class="mg-status" data-state="working">Working</span>
+            <span class="mg-status" data-state="idle">Idle</span>
+            <span class="mg-status" data-state="off">Offline</span>
+            <span class="mg-status" data-state="error">Error</span>
+          </div>
+        </div>
+
+        <div class="gallery-stack">
+          <span class="mg-label">Forms</span>
+          <label class="mg-field">
+            <span class="mg-label">Route slug</span>
+            <input class="mg-input" type="text" placeholder="acme-logistics">
+            <span class="mg-field-hint">Lowercase letters, numbers, and hyphens only.</span>
+          </label>
+          <label class="mg-field">
+            <span class="mg-label">Product</span>
+            <select class="mg-select">
+              <option>Cero (released)</option>
+              <option>LazyLayout (teaser only)</option>
+            </select>
+          </label>
+          <label class="mg-field">
+            <span class="mg-label">Scope notes</span>
+            <textarea class="mg-textarea" rows="2" placeholder="Key deliverables and milestones"></textarea>
+          </label>
+          <label class="mg-check">
+            <input type="checkbox" checked>
+            <span>Include offline PDF export</span>
+          </label>
+        </div>
+
+        <div class="gallery-stack">
+          <span class="mg-label">Chips, notices, toast &amp; empty state</span>
+          <div class="gallery-cluster">
+            <span class="mg-chip">v0.1.0</span>
+            <span class="mg-chip">clients/acme</span>
+            <span class="mg-toast">Proposal saved</span>
+          </div>
+          <div class="mg-notice">No web frontend selected, so standalone API setup is included.</div>
+          <div class="mg-empty">No matching proposals yet.</div>
+        </div>
+
+        <div class="mg-wide" style="padding-inline: 0;">
+          <span class="mg-label">Workspace container (.mg-wide)</span>
+        </div>
+      </div>
+
+      <div class="mg-bar">
+        <div class="mg-bar-inner">
+          <div>
+            <small class="mg-bar-caption">Your total</small>
+            <strong class="mg-bar-value">12,500</strong>
+          </div>
+          <div class="mg-bar-actions">
+            <button type="button" class="mg-btn mg-btn--sm">See my plan</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Dark pane cloned from light pane via small script or explicit markup -->
+    <section class="mg-root gallery-pane" data-theme="dark" id="dark-pane" aria-label="Dark theme preview"></section>
+  </main>
+
+  <script>
+    (function () {
+      var lightPane = document.querySelector('[data-theme="light"].gallery-pane');
+      var darkPane = document.getElementById('dark-pane');
+      darkPane.innerHTML = lightPane.innerHTML
+        .replace('Light theme preview', 'Dark theme preview')
+        .replace('>Light theme<', '>Dark theme<')
+        .replace('data-theme="light"', 'data-theme="dark"');
+
+      document.querySelectorAll('.mg-tabs').forEach(function (tablist) {
+        tablist.addEventListener('click', function (e) {
+          var btn = e.target.closest('button');
+          if (!btn) return;
+          tablist.querySelectorAll('button').forEach(function (b) {
+            b.setAttribute('aria-selected', b === btn ? 'true' : 'false');
+          });
+        });
+      });
+
+      document.querySelectorAll('.mg-rows .mg-row').forEach(function (row) {
+        row.addEventListener('click', function () {
+          var current = row.getAttribute('aria-current') === 'true';
+          row.setAttribute('aria-current', current ? 'false' : 'true');
+        });
+      });
+
+      var toggleButtons = document.querySelectorAll('[data-set-theme]');
+      toggleButtons.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var next = btn.getAttribute('data-set-theme');
+          document.documentElement.dataset.theme = next;
+          toggleButtons.forEach(function (b) {
+            b.setAttribute('aria-pressed', b.getAttribute('data-set-theme') === next ? 'true' : 'false');
+          });
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

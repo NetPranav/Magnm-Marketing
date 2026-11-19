@@ -43,6 +43,7 @@ ALLOWED_JOBS = {
     "generate_blog": "Generate Technical Blog & Repurposed Assets",
     "render_cards": "Render Visual Social Cards",
     "workflow_step": "Execute Workflow Step",
+    "review_action": "Execute Review Studio Background Action",
     "install_browser": "Install Playwright Chromium Browser",
 }
 
@@ -137,6 +138,12 @@ def run_job_body(job_name, job_id=None, actor="UI", log_file=None, params=None):
     elif job_name == "workflow_step":
         import workflows
         res = workflows.execute_workflow_job(params or {}, job_id=job_id, log_file=log_file)
+        output += json.dumps(res, indent=2, default=str) + "\n"
+    elif job_name == "review_action":
+        import review_studio
+        res = review_studio.execute_review_job(params or {}, job_id=job_id, log_file=log_file)
+        if isinstance(res, dict) and job_id:
+            db.update_job(job_id, result=res)
         output += json.dumps(res, indent=2, default=str) + "\n"
 
     with open(log_file, "w", encoding="utf-8") as f:

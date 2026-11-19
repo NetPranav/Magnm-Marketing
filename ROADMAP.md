@@ -31,6 +31,22 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
     - Our own Playwright tools instead of browser-use.
     - GitHub via local folder, public repo or token (the GitHub App sign-in comes later).
     - Video voice-over and render moved to Phase 7.
+- **Phase 3 done (2026-11-19):** built by agy (Gemini 4 Hydrogen High), reviewed and tested by Claude.
+  - `packages/magnm-design`: Pitch's colours, bundled fonts (works offline), optional dark theme, CSS components
+    and React components, with checks for exact Pitch values, contrast and offline use.
+  - `apps/web` (Vite + React + TypeScript) served by the engine at `/`. The old dashboard stays at `/legacy`
+    for now.
+  - All 9 sections: Today, Team, Research, Plan, Create, Review, Library, Repos, Settings.
+  - Review Studio: comments anchored to text, image pins and video timestamps; `@agent`; Apply all; suggestion
+    mode (tracked changes); AI actions; versions with word diff and restore; checklist; platform previews;
+    posting kit bar. AI never overwrites a draft silently, and confidential items stay on local AI.
+  - Keys are saved through the desktop keychain inside the app, and are never shown, not even masked.
+  - 153 engine tests, 34 web tests, 9 design-kit checks; CI runs all of them.
+  - **Not done / changes from the plan:**
+    - No task board yet (the engine has no task store); Plan shows the weekly plan, briefs, calendar and schedules.
+    - Running agent sessions can be cancelled but not paused (no engine support).
+    - "Send to my phone" is shown but disabled until Phase 4 pairing.
+    - Image editing and video rendering in Review Studio wait for Phase 7.
 
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.
