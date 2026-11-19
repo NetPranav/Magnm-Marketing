@@ -179,6 +179,61 @@ class ProductRulesTests(unittest.TestCase):
         self.assertEqual(len(check_payload["warnings"]), 1)
         self.assertEqual(check_payload["warnings"][0]["product"], "cero")
 
+        plat_body = json.dumps({"text": "x" * 290, "platform": "x", "type": "post"}).encode("utf-8")
+        plat_handler = _StubHandler("/api/check_text", body_bytes=plat_body)
+        plat_handler.do_POST()
+        self.assertEqual(plat_handler.status_code, 200)
+        plat_payload = plat_handler.response_json()
+        self.assertTrue(any("280" in w["message"] for w in plat_payload["warnings"]))
+
+    def test_save_product_rule_and_post_endpoint(self):
+        base = product_rules.load_rules()
+        temp_path = self._write_temp_rules(base)
+
+        orig_default = product_rules.DEFAULT_RULES_PATH
+        product_rules.DEFAULT_RULES_PATH = temp_path
+        try:
+            updated, full = product_rules.save_product_rule(
+                "cero",
+                {
+                    "status": "released",
+                    "show": "text_only",
+                    "blocked_terms": ["ROS", "beta"],
+                    "confidential": False,
+                    "notes": "Updated note",
+                },
+                path=temp_path,
+            )
+            self.assertEqual(updated["show"], "text_only")
+            self.assertEqual(updated["blocked_terms"], ["ROS", "beta"])
+            self.assertEqual(full["products"][0]["notes"], "Updated note")
+
+            post_body = json.dumps({
+                "product_id": "cero",
+                "status": "released",
+                "show": "everything",
+                "blocked_terms": ["ROS", "robotics"],
+                "confidential": False,
+            }).encode("utf-8")
+            post_handler = _StubHandler("/api/product_rules", body_bytes=post_body)
+            post_handler.do_POST()
+            self.assertEqual(post_handler.status_code, 200)
+            payload = post_handler.response_json()
+            self.assertTrue(payload["success"])
+            self.assertEqual(payload["product"]["show"], "everything")
+
+            bad_body = json.dumps({"product_id": "cero", "status": "archived"}).encode("utf-8")
+            bad_handler = _StubHandler("/api/product_rules", body_bytes=bad_body)
+            bad_handler.do_POST()
+            self.assertEqual(bad_handler.status_code, 400)
+
+            missing_body = json.dumps({"product_id": "unknown-prod", "status": "released"}).encode("utf-8")
+            missing_handler = _StubHandler("/api/product_rules", body_bytes=missing_body)
+            missing_handler.do_POST()
+            self.assertEqual(missing_handler.status_code, 404)
+        finally:
+            product_rules.DEFAULT_RULES_PATH = orig_default
+
 
 if __name__ == "__main__":
     unittest.main()

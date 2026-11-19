@@ -1,0 +1,410 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { KEYCHAIN_EXTERNAL_NOTE, saveEnvConfig } from '../../api/settings';
+import { isDesktop, isSecretEnvName } from '../../desktop';
+import { SettingsSection } from './SettingsSection';
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+describe('SettingsSection', () => {
+  beforeEach(() => {
+    vi.stubGlobal('EventSource', undefined);
+  });
+
+  afterEach(() => {
+    cleanup();
+    delete window.__TAURI__;
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('renders models, key pool status without masked keys, setup check, bakeoff, and clears key after save', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/health') {
+        return jsonResponse({ ok: true, service: 'magnm-engine', version: '0.1.0', data_root: '/tmp/magnm-data' });
+      }
+      if (url === '/api/status') {
+        return jsonResponse({
+          env_status: {
+            default_provider: 'nvidia_nim',
+            nvidia_nim_base_url: 'https://integrate.api.nvidia.com/v1',
+            nvidia_nim_global: true,
+            nvidia_nim_global_masked: 'nvapi-****9999',
+            nvidia_nim_fallback_model: 'meta/llama-3.3-70b-instruct',
+            openai: false,
+            anthropic: false,
+            gemini: false,
+            groq: false,
+          },
+          nim_catalog_suggestions: ['minimaxai/minimax-m3.1-flash', 'nvidia/nemotron-3-ultra-550b-a55b'],
+          models_matrix: [
+            {
+              role_id: 'writer',
+              name: 'Social Copywriter',
+              code: 'WRT',
+              model_env: 'NIM_MODEL_WRITER',
+              key_env: 'NVIDIA_NIM_API_KEY_WRITER',
+              model: 'minimaxai/minimax-m3.1-flash',
+              primary: 'minimaxai/minimax-m3.1-flash',
+              backup: 'nvidia/nemotron-3-ultra-550b-a55b',
+              tier: 'writing',
+              has_key: true,
+              key_source: 'pool (1 key)',
+              masked_key: 'nvapi-****8888',
+            },
+          ],
+        });
+      }
+      if (url === '/api/key_pool') {
+        return jsonResponse([
+          {
+            label: 'NVIDIA_NIM_API_KEY',
+            masked: 'nvapi-****7777',
+            healthy: true,
+            cooling_down_s: 0,
+            requests_last_min: 2,
+            ok: 5,
+            errors: 0,
+          },
+        ]);
+      }
+      if (url === '/api/setup_check') {
+        return jsonResponse({
+          ok: true,
+          checks: [{ id: 'python', label: 'Python Runtime', status: 'ok', detail: 'Python 3.12' }],
+        });
+      }
+      if (url.startsWith('/api/bakeoff/latest')) {
+        return jsonResponse({
+          timestamp: '20261119_120000',
+          role: 'writer',
+          summary: {
+            'minimaxai/minimax-m3.1-flash': {
+              model: 'minimaxai/minimax-m3.1-flash',
+              count: 5,
+              median_latency_ms: 1200,
+              auto_review_warns: 0,
+              errors: 0,
+            },
+          },
+        });
+      }
+      if (url.startsWith('/api/jobs?')) {
+        return jsonResponse([]);
+      }
+      if (url === '/api/save_env_config' && init?.method === 'POST') {
+        return jsonResponse({ success: true, saved_keys: ['NVIDIA_NIM_API_KEY'] });
+      }
+      if (url === '/api/test_ai' && init?.method === 'POST') {
+        return jsonResponse({
+          success: true,
+          role_id: 'writer',
+          latency_ms: 310,
+          model_used: 'minimaxai/minimax-m3.1-flash',
+        });
+      }
+      return jsonResponse({});
+    });
+
+    render(<SettingsSection />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Social Copywriter')).toBeTruthy();
+    });
+
+    // Masked keys from API must NEVER appear anywhere
+    expect(document.body.textContent).not.toContain('nvapi-****9999');
+    expect(document.body.textContent).not.toContain('nvapi-****8888');
+    expect(document.body.textContent).not.toContain('nvapi-****7777');
+
+    // About section data folder and /legacy link
+    expect(screen.getByText('/tmp/magnm-data')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Old dashboard' }).getAttribute('href')).toBe('/legacy');
+
+    // Bake-off table
+    expect(screen.getByText('1200 ms')).toBeTruthy();
+
+    // Test AI button
+    fireEvent.click(screen.getByRole('button', { name: 'Test' }));
+    await waitFor(() => {
+      expect(screen.getByText(/310ms/)).toBeTruthy();
+    });
+
+    // Save key: password field, autocomplete off, cleared after save, key never rendered anywhere
+    const keyInput = screen.getByLabelText('Key value') as HTMLInputElement;
+    expect(keyInput.type).toBe('password');
+    expect(keyInput.getAttribute('autocomplete')).toBe('off');
+
+    const secretKey = 'nvapi-secret-test-key-12345';
+    fireEvent.change(keyInput, { target: { value: secretKey } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save key' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/save_env_config',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ updates: { NVIDIA_NIM_API_KEY: secretKey } }),
+        }),
+      );
+    });
+
+    await waitFor(() => {
+      expect(keyInput.value).toBe('');
+    });
+    expect(document.body.textContent).not.toContain(secretKey);
+    expect(document.body.innerHTML).not.toContain(secretKey);
+  });
+
+  it('renders empty and error states including 404 bakeoff', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/health') {
+        return jsonResponse({ ok: true, version: '0.1.0', data_root: '/tmp/empty' });
+      }
+      if (url === '/api/status') {
+        return jsonResponse({ error: 'Engine config error' }, 500);
+      }
+      if (url.startsWith('/api/bakeoff/latest')) {
+        return jsonResponse({ error: 'No bakeoff results found' }, 404);
+      }
+      if (url === '/api/setup_check') {
+        return jsonResponse({ ok: true, checks: [] });
+      }
+      return jsonResponse([]);
+    });
+
+    render(<SettingsSection />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toContain('Engine config error');
+    });
+    expect(screen.getByText('No NVIDIA NIM keys in pool yet.')).toBeTruthy();
+    expect(screen.getByText('No bake-off results yet.')).toBeTruthy();
+  });
+
+  it('matches engine _is_secret_env_name rules', () => {
+    expect(isSecretEnvName('NVIDIA_NIM_API_KEY')).toBe(true);
+    expect(isSecretEnvName('NVIDIA_NIM_API_KEY3')).toBe(true);
+    expect(isSecretEnvName('NVIDIA_NIM_API_KEY_CMO')).toBe(true);
+    expect(isSecretEnvName('OPENAI_API_KEY')).toBe(true);
+    expect(isSecretEnvName('GITHUB_TOKEN')).toBe(true);
+    expect(isSecretEnvName('DEFAULT_PROVIDER')).toBe(false);
+  });
+
+  it('uses desktop keychain for secrets, keeps non-secrets on /api/save_env_config, and confirms before delete_secret', async () => {
+    let secretsState = [
+      { name: 'NVIDIA_NIM_API_KEY', is_set: true },
+      { name: 'OPENAI_API_KEY', is_set: false },
+    ];
+    const setSecretGate: { resolve: (() => void) | null } = { resolve: null };
+
+    const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === 'list_secrets') {
+        return secretsState;
+      }
+      if (cmd === 'set_secret') {
+        await new Promise<void>((resolve) => {
+          setSecretGate.resolve = () => {
+            secretsState = secretsState.map((item) =>
+              item.name === args?.name ? { ...item, is_set: true } : item,
+            );
+            resolve();
+          };
+        });
+        return null;
+      }
+      if (cmd === 'delete_secret') {
+        secretsState = secretsState.map((item) =>
+          item.name === args?.name ? { ...item, is_set: false } : item,
+        );
+        return null;
+      }
+      return null;
+    });
+
+    window.__TAURI__ = { core: { invoke: invokeMock } };
+    expect(isDesktop()).toBe(true);
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/health') {
+        return jsonResponse({ ok: true, version: '0.1.0', data_root: '/tmp/magnm-desktop' });
+      }
+      if (url === '/api/status') {
+        // Deliberately opposite of list_secrets to verify status comes from list_secrets, not engine
+        return jsonResponse({
+          env_status: {
+            default_provider: 'nvidia_nim',
+            nvidia_nim_base_url: 'https://integrate.api.nvidia.com/v1',
+            nvidia_nim_global: false,
+            openai: true,
+            anthropic: false,
+            gemini: false,
+            groq: false,
+          },
+          nim_catalog_suggestions: [],
+          models_matrix: [],
+        });
+      }
+      if (url === '/api/key_pool') {
+        return jsonResponse([]);
+      }
+      if (url === '/api/setup_check') {
+        return jsonResponse({ ok: true, checks: [] });
+      }
+      if (url.startsWith('/api/bakeoff/latest')) {
+        return jsonResponse({ error: 'Not found' }, 404);
+      }
+      if (url.startsWith('/api/jobs?')) {
+        return jsonResponse([]);
+      }
+      if (url === '/api/save_env_config' && init?.method === 'POST') {
+        const parsed = JSON.parse(String(init.body || '{}')) as {
+          updates?: Record<string, string>;
+        };
+        return jsonResponse({
+          success: true,
+          saved_keys: Object.keys(parsed.updates || {}),
+        });
+      }
+      return jsonResponse({});
+    });
+
+    render(<SettingsSection />);
+
+    const keychainList = await screen.findByLabelText('Desktop keychain keys');
+    const nimRow = within(keychainList).getByText('NVIDIA_NIM_API_KEY').closest('.mg-row') as HTMLElement;
+    const openaiRow = within(keychainList).getByText('OPENAI_API_KEY').closest('.mg-row') as HTMLElement;
+
+    expect(within(nimRow).getByText('Configured')).toBeTruthy();
+    expect(within(openaiRow).getByText('Not configured')).toBeTruthy();
+    expect(screen.getByText('NVIDIA NIM: Configured')).toBeTruthy();
+    expect(screen.getByText('OpenAI: Not configured')).toBeTruthy();
+
+    // Save non-secret gateway setting via /api/save_env_config
+    fireEvent.click(screen.getByRole('button', { name: 'Save gateway' }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/save_env_config',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            updates: {
+              AI_DEFAULT_PROVIDER: 'nvidia_nim',
+              NVIDIA_NIM_BASE_URL: 'https://integrate.api.nvidia.com/v1',
+            },
+          }),
+        }),
+      );
+    });
+    expect(invokeMock).not.toHaveBeenCalledWith('set_secret', expect.anything());
+
+    // Saving a secret clears input immediately, shows "Saved. Restarting engine..." before resolving,
+    // invokes set_secret, and never sends secret to /api/save_env*
+    const openaiInput = within(openaiRow).getByLabelText('Key value for OPENAI_API_KEY') as HTMLInputElement;
+    expect(openaiInput.type).toBe('password');
+    expect(openaiInput.getAttribute('autocomplete')).toBe('off');
+
+    const secretVal = 'sk-desktop-secret-value-999';
+    fireEvent.change(openaiInput, { target: { value: secretVal } });
+    fireEvent.click(within(openaiRow).getByRole('button', { name: 'Save' }));
+
+    expect(openaiInput.value).toBe('');
+    expect(screen.getByText('Saved. Restarting engine...')).toBeTruthy();
+    expect(invokeMock).toHaveBeenCalledWith('set_secret', {
+      name: 'OPENAI_API_KEY',
+      value: secretVal,
+    });
+    expect(document.body.textContent).not.toContain(secretVal);
+    expect(document.body.innerHTML).not.toContain(secretVal);
+
+    setSecretGate.resolve?.();
+    await waitFor(() => {
+      expect(within(openaiRow).getByText('Configured')).toBeTruthy();
+    });
+
+    const saveEnvCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).startsWith('/api/save_env'),
+    );
+    for (const [, init] of saveEnvCalls) {
+      expect(String(init?.body || '')).not.toContain('OPENAI_API_KEY');
+      expect(String(init?.body || '')).not.toContain(secretVal);
+    }
+
+    // Splitting mixed updates sends non-secrets first, then secrets through set_secret
+    const mixedOrder: string[] = [];
+    fetchMock.mockImplementationOnce(async (input, init) => {
+      mixedOrder.push(`fetch:${String(input)}`);
+      const parsed = JSON.parse(String(init?.body || '{}')) as {
+        updates?: Record<string, string>;
+      };
+      expect(parsed.updates).toEqual({ DEFAULT_PROVIDER: 'openai' });
+      return jsonResponse({ success: true, saved_keys: ['DEFAULT_PROVIDER'] });
+    });
+    invokeMock.mockImplementationOnce(async (cmd: string, args?: Record<string, unknown>) => {
+      mixedOrder.push(`invoke:${cmd}:${String(args?.name)}`);
+      return null;
+    });
+    await saveEnvConfig({ DEFAULT_PROVIDER: 'openai', GITHUB_TOKEN: 'ghp-mixed-secret' });
+    expect(mixedOrder).toEqual(['fetch:/api/save_env_config', 'invoke:set_secret:GITHUB_TOKEN']);
+
+    // Remove calls delete_secret only after confirming in dialog
+    fireEvent.click(within(nimRow).getByRole('button', { name: 'Remove' }));
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(invokeMock).not.toHaveBeenCalledWith('delete_secret', expect.anything());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove key' }));
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('delete_secret', { name: 'NVIDIA_NIM_API_KEY' });
+    });
+    await waitFor(() => {
+      expect(within(nimRow).getByText('Not configured')).toBeTruthy();
+    });
+  });
+
+  it('shows desktop keychain note when engine returns use_desktop_keychain outside desktop', async () => {
+    expect(isDesktop()).toBe(false);
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/health') {
+        return jsonResponse({ ok: true, version: '0.1.0', data_root: '/tmp/magnm-data' });
+      }
+      if (url === '/api/status') {
+        return jsonResponse({ env_status: {}, models_matrix: [] });
+      }
+      if (url === '/api/setup_check') {
+        return jsonResponse({ ok: true, checks: [] });
+      }
+      if (url.startsWith('/api/bakeoff/latest')) {
+        return jsonResponse({ error: 'Not found' }, 404);
+      }
+      if (url === '/api/save_env_config' && init?.method === 'POST') {
+        return jsonResponse({
+          success: false,
+          error_code: 'use_desktop_keychain',
+          error: "Keys are stored in the desktop app's secure keychain. Use Settings > Keys.",
+        });
+      }
+      return jsonResponse([]);
+    });
+
+    render(<SettingsSection />);
+
+    const keyInput = await screen.findByLabelText('Key value') as HTMLInputElement;
+    fireEvent.change(keyInput, { target: { value: 'nvapi-external-attempt' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save key' }));
+
+    await waitFor(() => {
+      expect(screen.getByText(KEYCHAIN_EXTERNAL_NOTE)).toBeTruthy();
+    });
+    expect(keyInput.value).toBe('');
+  });
+});

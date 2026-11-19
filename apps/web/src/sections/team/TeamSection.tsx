@@ -295,7 +295,7 @@ export function TeamSection() {
         page={2}
         total={9}
         subtitle="AI Team"
-        title="team"
+        title="Team"
         lead="Shared team room with @mentions, direct specialist chats, and editable agent memory."
       />
 

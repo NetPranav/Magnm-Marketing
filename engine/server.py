@@ -40,6 +40,7 @@ import events
 import jobs
 import key_pool
 import paths
+import platforms
 import product_rules
 import repo_sync
 import repos
@@ -1054,8 +1055,34 @@ Hard Rules:
                 self.send_json({"error": "text must be a string"}, status=400)
                 return
             try:
-                warnings = product_rules.check_text(text)
+                warnings = list(product_rules.check_text(text))
+                platform = (params.get("platform") or "").strip()
+                if platform:
+                    warnings.extend(
+                        platforms.check_limits(
+                            platform,
+                            text,
+                            title=params.get("title"),
+                            content_type=params.get("type"),
+                        )
+                    )
                 self.send_json({"warnings": warnings})
+            except Exception as e:
+                self.send_json({"error": str(e)}, status=500)
+
+        elif url.path == "/api/product_rules":
+            product_id = params.get("product_id") or params.get("id")
+            try:
+                updated_prod, rules_data = product_rules.save_product_rule(product_id, params)
+                self.send_json({
+                    "success": True,
+                    "product": updated_prod,
+                    "rules": rules_data,
+                })
+            except ValueError as exc:
+                msg = str(exc)
+                status = 404 if "not found" in msg.lower() else 400
+                self.send_json({"error": msg}, status=status)
             except Exception as e:
                 self.send_json({"error": str(e)}, status=500)
 

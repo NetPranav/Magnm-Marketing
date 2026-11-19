@@ -270,7 +270,7 @@ export function PlanSection() {
         page={4}
         total={9}
         subtitle="Editorial & Automation"
-        title="plan"
+        title="Plan"
         lead="Weekly editorial planning, active briefs, month publishing calendar, and automated schedules."
       />
 

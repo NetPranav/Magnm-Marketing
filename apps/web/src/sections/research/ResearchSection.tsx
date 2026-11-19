@@ -450,7 +450,7 @@ export function ResearchSection() {
         page={3}
         total={9}
         subtitle="Intelligence"
-        title="research"
+        title="Research"
         lead="Ask the Researcher, watch live browser captures, filter radar findings, and manage watch topics."
       />
 

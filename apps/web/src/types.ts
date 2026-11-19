@@ -2,16 +2,41 @@ export interface HealthInfo {
   ok: boolean;
   service?: string;
   version?: string;
+  data_root?: string;
 }
 
 export interface SafeEnvStatus {
+  has_env_file?: boolean;
   default_provider?: string;
+  nvidia_nim_base_url?: string;
   nvidia_nim_global?: boolean;
+  nvidia_nim_fallback_model?: string;
   nvidia_nim_roles_configured?: number;
   openai?: boolean;
   anthropic?: boolean;
   gemini?: boolean;
   groq?: boolean;
+  ollama_url?: string;
+  chatgpt_cli?: boolean;
+}
+
+export interface RoleModelEntry {
+  role_id: string;
+  name?: string;
+  code?: string;
+  model_env?: string;
+  key_env?: string;
+  model?: string;
+  default_model?: string;
+  primary?: string;
+  backup?: string | null;
+  warnings?: string[];
+  tier?: string;
+  timeout_s?: number;
+  max_tokens?: number;
+  specialization?: string;
+  has_key?: boolean;
+  key_source?: string;
 }
 
 export interface ScheduleRecord {
@@ -50,7 +75,10 @@ export interface ResearchFindingItem {
 export interface EngineStatusInfo {
   status?: string;
   env_status?: SafeEnvStatus;
-  models_matrix?: Array<{ role?: string; has_key?: boolean }>;
+  models_matrix?: RoleModelEntry[];
+  nim_catalog_suggestions?: string[];
+  crisis_playbook?: string;
+  product_facts?: string;
   current_job?: {
     running?: boolean;
     job_id?: string | null;
@@ -158,4 +186,128 @@ export interface ProductFact {
   status: string;
   created_by?: string | null;
   created_at?: string;
+}
+
+export interface AssetRecord {
+  id: string;
+  name: string;
+  saved_filename?: string;
+  relative_path?: string;
+  mime_type?: string;
+  file_group?: string;
+  size?: string;
+  size_bytes?: number;
+  category?: string;
+  description?: string;
+  tags?: string[];
+  uploaded_at?: string;
+}
+
+export interface ProductRule {
+  id: string;
+  name: string;
+  status: string;
+  show: string;
+  facts_file?: string | null;
+  blocked_terms?: string[];
+  confidential?: boolean;
+  notes?: string;
+}
+
+export interface ProductRulesConfig {
+  version: number;
+  show_levels: Record<string, string>;
+  products: ProductRule[];
+}
+
+export interface RepoCommit {
+  sha?: string;
+  hash?: string;
+  date?: string;
+  author?: string;
+  message: string;
+  is_merge?: boolean;
+}
+
+export interface RepoRecord {
+  id: string;
+  name: string;
+  product_id?: string;
+  kind: string;
+  confidential?: boolean;
+  status?: string;
+  local_path?: string;
+  github?: string;
+  branch?: string;
+  version?: string;
+  stars?: number | null;
+  marketing_angle?: string;
+  last_sync?: string | null;
+  recent_commits?: RepoCommit[];
+  rate_limited?: boolean;
+  rate_limit_message?: string | null;
+}
+
+export interface ShippedItem {
+  repo_id: string;
+  kind: string;
+  title: string;
+  url?: string | null;
+  date: string;
+}
+
+export interface KeyPoolEntry {
+  label: string;
+  healthy: boolean;
+  cooling_down_s: number;
+  disabled_reason?: string | null;
+  requests_last_min: number;
+  ok: number;
+  errors: number;
+}
+
+export interface SetupCheckItem {
+  id: string;
+  label: string;
+  status: string;
+  detail: string;
+  fix?: string;
+}
+
+export interface SetupCheckResult {
+  checks: SetupCheckItem[];
+  ok: boolean;
+}
+
+export interface BakeoffModelStat {
+  model: string;
+  count: number;
+  median_latency_ms: number;
+  auto_review_warns: number;
+  warn_briefs?: number;
+  errors: number;
+}
+
+export interface BakeoffResult {
+  timestamp?: string;
+  role?: string;
+  models?: string[];
+  summary?: Record<string, BakeoffModelStat>;
+  briefs?: Array<{ id: string; title?: string; platform?: string; type?: string }>;
+  outputs?: Record<
+    string,
+    Array<{
+      label: string;
+      latency_ms?: number;
+      chars?: number;
+      error?: string | null;
+      auto_review?: { verdict?: string; findings?: unknown[] };
+    }>
+  >;
+}
+
+export interface CheckTextWarning {
+  product?: string;
+  severity: string;
+  message: string;
 }

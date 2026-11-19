@@ -6,8 +6,12 @@ import { EventsProvider, useRootEventBus } from './events';
 import { SECTIONS, useRoute, type SectionId } from './router';
 import { PlaceholderScreen } from './screens/PlaceholderScreen';
 import { SessionEndedScreen } from './screens/SessionEndedScreen';
+import { CreateSection } from './sections/create/CreateSection';
+import { LibrarySection } from './sections/library/LibrarySection';
 import { PlanSection } from './sections/plan/PlanSection';
+import { ReposSection } from './sections/repos/ReposSection';
 import { ResearchSection } from './sections/research/ResearchSection';
+import { SettingsSection } from './sections/settings/SettingsSection';
 import { TeamSection } from './sections/team/TeamSection';
 import { TodaySection } from './sections/today/TodaySection';
 import type { EngineStatusInfo, HealthInfo, JobRecord } from './types';
@@ -154,6 +158,14 @@ export function App() {
         return <ResearchSection />;
       case 'plan':
         return <PlanSection />;
+      case 'create':
+        return <CreateSection />;
+      case 'library':
+        return <LibrarySection />;
+      case 'repos':
+        return <ReposSection />;
+      case 'settings':
+        return <SettingsSection />;
       default:
         return (
           <PlaceholderScreen

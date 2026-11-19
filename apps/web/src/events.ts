@@ -193,3 +193,61 @@ export function useStudioEvents(handler: StudioEventHandler): EventsState {
 
   return ctx ? ctx.state : fallbackState;
 }
+
+/** Poll callback at most every 5 s while visible and SSE is not open. */
+export function useFallbackPoll(
+  callback: () => void,
+  active: boolean,
+  eventsState: EventsState,
+  intervalMs = 5000,
+): void {
+  const callbackRef = useRef(callback);
+  callbackRef.current = callback;
+
+  useEffect(() => {
+    if (!active || eventsState === 'open') {
+      return undefined;
+    }
+
+    const waitMs = Math.max(5000, intervalMs);
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const startTimer = () => {
+      if (timer !== null) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      timer = setInterval(() => {
+        if (typeof document === 'undefined' || document.visibilityState !== 'hidden') {
+          callbackRef.current();
+        }
+      }, waitMs);
+    };
+
+    const stopTimer = () => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        stopTimer();
+      } else {
+        callbackRef.current();
+        startTimer();
+      }
+    };
+
+    startTimer();
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibilityChange);
+    }
+
+    return () => {
+      stopTimer();
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+      }
+    };
+  }, [active, eventsState, intervalMs]);
+}

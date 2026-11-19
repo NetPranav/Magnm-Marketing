@@ -333,7 +333,7 @@ export function TodaySection({
         page={1}
         total={9}
         subtitle="Magnm Studio"
-        title="today"
+        title="Today"
         lead="What is happening now, items waiting for your sign-off, and recent activity."
       />
 
