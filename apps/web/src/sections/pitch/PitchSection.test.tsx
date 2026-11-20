@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { PitchCatalog, PitchProposal } from '../../api/pitch';
 import { PitchPresent } from './PitchPresent';
 import { PitchSection } from './PitchSection';
@@ -450,24 +450,14 @@ describe('PitchSection', () => {
       expect(screen.getAllByText('ABHA Health ID Sync').length).toBeGreaterThanOrEqual(1);
     });
 
-    // Prices tab: hides side preview, shows toggle (remembered in component state), compact Base column, Reset button text
+    // Prices tab: keeps live preview visible next to table (no Show/Hide preview toggle), compact Base column, Reset button text & nowrap class
     expect(screen.getByTestId('pitch-side-preview').hidden).toBe(false);
     expect(screen.queryByRole('button', { name: 'Show preview' })).toBeNull();
 
     fireEvent.click(screen.getByRole('tab', { name: /Prices/i }));
-    expect(screen.getByTestId('pitch-side-preview').hidden).toBe(true);
-    const previewToggle = screen.getByRole('button', { name: 'Show preview' });
-    fireEvent.click(previewToggle);
     expect(screen.getByTestId('pitch-side-preview').hidden).toBe(false);
-    expect(screen.getByRole('button', { name: 'Hide preview' })).toBeTruthy();
-
-    // Switching tabs remembers preview toggle choice for the session
-    fireEvent.click(screen.getByRole('tab', { name: /Details/i }));
-    expect(screen.getByTestId('pitch-side-preview').hidden).toBe(false);
-    fireEvent.click(screen.getByRole('tab', { name: /Prices/i }));
-    expect(screen.getByTestId('pitch-side-preview').hidden).toBe(false);
-    fireEvent.click(screen.getByRole('button', { name: 'Hide preview' }));
-    expect(screen.getByTestId('pitch-side-preview').hidden).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Show preview' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Hide preview' })).toBeNull();
 
     const priceTable = screen.getByRole('table');
     expect(within(priceTable).getByText('Admin')).toBeTruthy();
@@ -479,11 +469,12 @@ describe('PitchSection', () => {
     ) as HTMLInputElement;
     expect(wFrontInput.value).toBe('7200');
 
-    // Reset w_front to base -> button text is "Reset", clears override, source becomes Pitch
+    // Reset w_front to base -> button text is "Reset" with nowrap class, clears override, source becomes Pitch
     const wFrontResetBtn = screen.getByRole('button', {
       name: 'Reset to base for Responsive Web Application / Frontend',
     });
     expect(wFrontResetBtn.textContent).toBe('Reset');
+    expect(wFrontResetBtn.className).toContain('studio-pitch-reset-btn');
     fireEvent.click(wFrontResetBtn);
     expect(wFrontInput.value).toBe('');
     const wFrontRow = wFrontInput.closest('tr') as HTMLElement;
@@ -1152,5 +1143,896 @@ describe('PitchSection', () => {
     expect(spName0.getAttribute('aria-invalid')).toBe('true');
 
     expect(screen.getAllByText('Text cannot contain < or >')).toHaveLength(4);
+  });
+
+  it('removes and adds back sheets, disables last software option, shows included_from_hidden note, and shows dropped-items notice after save', async () => {
+    const catalog = makeCatalog();
+    let currentProp = makeProposal({
+      preset: {
+        ...makeProposal().preset,
+        initialSelected: ['a_base', 'b_db'],
+        sections: {
+          p2: ['w_front'],
+          p3: ['a_base'],
+          p4: ['b_db'],
+          p5: ['ops_cloud'],
+        },
+      },
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/pitch/catalog') return jsonResponse(catalog);
+      if (url === '/api/pitch/proposals/prop_1' && (!init?.method || init.method === 'GET')) {
+        return jsonResponse(currentProp);
+      }
+      if (url === '/api/pitch/proposals/prop_1/pdfs') {
+        return jsonResponse({ proposal_id: 'prop_1', slug: currentProp.slug, pdfs: [] });
+      }
+      if (url === '/api/pitch/proposals/prop_1' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body || '{}')) as Partial<PitchProposal>;
+        currentProp = {
+          ...currentProp,
+          ...body,
+          included_from_hidden: [
+            {
+              item_id: 'b_db',
+              name: 'Core Database & API Server',
+              sheet_shown_on: 'p3',
+              needed_for: ['Cross-Platform Mobile App (Android)'],
+            },
+          ],
+          changes: [
+            {
+              item_id: 'w_front',
+              name: 'Responsive Web Application / Frontend',
+              sheet: 'p2',
+              dropped_from: 'sections',
+              reason: 'hidden_sheet',
+              message: "Dropped 'Responsive Web Application / Frontend' (w_front) because sheet p2 is hidden",
+            },
+          ],
+        };
+        return jsonResponse(currentProp);
+      }
+      return jsonResponse({});
+    });
+
+    render(<PitchSection param="prop_1" onNavigate={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('telemed-india')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: /Deliverables/i }));
+
+    // Remove Web & SaaS (p2), Backend (p4), and AI & Ops (p5), leaving only Mobile app (p3)
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Web & SaaS from pitch' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Backend from pitch' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove AI & Ops from pitch' }));
+
+    // Last remaining software option (Mobile app) has disabled Remove button + hint
+    const lastRemoveBtn = screen.getByRole('button', {
+      name: 'Remove Mobile app from pitch',
+    }) as HTMLButtonElement;
+    expect(lastRemoveBtn.disabled).toBe(true);
+    expect(screen.getByText('Keep at least one software option')).toBeTruthy();
+
+    // Since Backend (p4) is hidden and Mobile app (p3) has a_base which requires b_db,
+    // p3 shows the included_from_hidden note
+    const mobileSection = screen.getByRole('region', { name: 'Mobile app deliverables' });
+    expect(within(mobileSection).getByText(/Core Database & API Server/)).toBeTruthy();
+    expect(
+      within(mobileSection).getByText(
+        /Included because Cross-Platform Mobile App \(Android\) needs it/,
+      ),
+    ).toBeTruthy();
+
+    // Add back AI & Ops -> Mobile app Remove button becomes enabled again
+    fireEvent.click(screen.getByRole('button', { name: 'Add back AI & Ops' }));
+    expect(lastRemoveBtn.disabled).toBe(false);
+
+    // Save proposal -> shows dropped-items notice from engine changes
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => {
+      expect(
+        screen.getAllByText(
+          /Dropped 'Responsive Web Application \/ Frontend' \(w_front\) because sheet p2 is hidden/,
+        ).length,
+      ).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  it('removes and adds back About sections while keeping field values, and supports Timeline/Payment removal in final Plans tab', async () => {
+    const catalog = makeCatalog();
+    const proposal = makeProposal();
+    const finalProp = makeProposal({
+      id: 'prop_final_about',
+      slug: 'final-about',
+      kind: 'final',
+      payment_plan: [
+        { percent: 50, label: 'kickoff split' },
+        { percent: 50, label: 'launch split' },
+      ],
+      payment_note: 'Custom final payment note',
+      timeline: [
+        { title: 'Phase Alpha', when: 'Week 1', detail: 'Alpha detail' },
+      ],
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/pitch/catalog') return jsonResponse(catalog);
+      if (url === '/api/pitch/proposals/prop_1') return jsonResponse(proposal);
+      if (url === '/api/pitch/proposals/prop_1/pdfs') {
+        return jsonResponse({ proposal_id: 'prop_1', slug: proposal.slug, pdfs: [] });
+      }
+      if (url === '/api/pitch/proposals/prop_final_about') return jsonResponse(finalProp);
+      if (url === '/api/pitch/proposals/prop_final_about/pdfs') {
+        return jsonResponse({ proposal_id: 'prop_final_about', slug: finalProp.slug, pdfs: [] });
+      }
+      return jsonResponse({});
+    });
+
+    const { unmount } = render(<PitchSection param="prop_1" onNavigate={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('TeleMed Platform')).toBeTruthy();
+    });
+
+    // Title is always shown and has no Remove button
+    expect(screen.getByText('Title is always shown')).toBeTruthy();
+
+    // Edit Intro (Lead) and Portfolio, then remove both sections
+    const leadInput = screen.getByLabelText(/^Lead/) as HTMLTextAreaElement;
+    fireEvent.change(leadInput, { target: { value: 'Preserved lead copy' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Intro from pitch' }));
+    expect(screen.queryByLabelText(/^Lead/)).toBeNull();
+
+    const portfolioInput = screen.getByLabelText('Portfolio', {
+      selector: 'input',
+    }) as HTMLInputElement;
+    fireEvent.change(portfolioInput, { target: { value: 'custom-portfolio.example.com' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Portfolio from pitch' }));
+    expect(screen.queryByLabelText('Portfolio', { selector: 'input' })).toBeNull();
+
+    // Add back Intro and Portfolio -> edited values are preserved
+    fireEvent.click(screen.getByRole('button', { name: 'Add back Intro' }));
+    expect((screen.getByLabelText(/^Lead/) as HTMLTextAreaElement).value).toBe(
+      'Preserved lead copy',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add back Portfolio' }));
+    expect(
+      (
+        screen.getByLabelText('Portfolio', {
+          selector: 'input',
+        }) as HTMLInputElement
+      ).value,
+    ).toBe('custom-portfolio.example.com');
+
+    // Non-final Details tab also has Remove buttons for What we do, This plan, Architecture block, Timeline, How you pay
+    expect(screen.getByRole('button', { name: 'Remove What we do from pitch' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Remove This plan from pitch' })).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: 'Remove Architecture block from pitch' }),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Remove Timeline from pitch' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Remove How you pay from pitch' })).toBeTruthy();
+
+    unmount();
+
+    // Mount final quotation and test Timeline & How you pay Remove/Add back in Plans tab
+    render(<PitchSection param="prop_final_about" onNavigate={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('final-about')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: /Plans/i }));
+    expect(screen.getByDisplayValue('kickoff split')).toBeTruthy();
+    expect(screen.getByDisplayValue('Phase Alpha')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove How you pay from pitch' }));
+    expect(screen.queryByDisplayValue('kickoff split')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Add back How you pay' }));
+    expect(screen.getByDisplayValue('kickoff split')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Timeline from pitch' }));
+    expect(screen.queryByDisplayValue('Phase Alpha')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Add back Timeline' }));
+    expect(screen.getByDisplayValue('Phase Alpha')).toBeTruthy();
+  });
+
+  it('adds, edits, reorders, and deletes custom categories for sheet and new_sheet placements, validates <, and counts own-page category as a software option', async () => {
+    const catalog = makeCatalog();
+    const prop = makeProposal();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/pitch/catalog') return jsonResponse(catalog);
+      if (url === '/api/pitch/proposals/prop_1') return jsonResponse(prop);
+      if (url === '/api/pitch/proposals/prop_1/pdfs') {
+        return jsonResponse({ proposal_id: 'prop_1', slug: prop.slug, pdfs: [] });
+      }
+      return jsonResponse({});
+    });
+
+    render(<PitchSection param="prop_1" onNavigate={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('telemed-india')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: /Deliverables/i }));
+
+    // Open Add category form and test < validation on category fields
+    fireEvent.click(screen.getByRole('button', { name: 'Add category' }));
+    const catNameInput = screen.getByLabelText(/^Category name/) as HTMLInputElement;
+    fireEvent.change(catNameInput, { target: { value: 'Bad <Cat>' } });
+    expect(catNameInput.getAttribute('aria-invalid')).toBe('true');
+
+    fireEvent.change(screen.getByLabelText(/^Placement/), {
+      target: { value: 'new_sheet' },
+    });
+    const sheetTitleInput = screen.getByLabelText(/^Page title/) as HTMLInputElement;
+    const sheetLeadInput = screen.getByLabelText(/^Page intro/) as HTMLInputElement;
+    fireEvent.change(sheetTitleInput, { target: { value: 'Title <x>' } });
+    fireEvent.change(sheetLeadInput, { target: { value: 'Lead > y' } });
+    expect(sheetTitleInput.getAttribute('aria-invalid')).toBe('true');
+    expect(sheetLeadInput.getAttribute('aria-invalid')).toBe('true');
+    expect(screen.getAllByText('Text cannot contain < or >')).toHaveLength(3);
+
+    // Save category 1 placed on existing sheet p3 (Mobile app)
+    fireEvent.change(catNameInput, { target: { value: 'Wearables' } });
+    fireEvent.change(screen.getByLabelText(/^Placement/), {
+      target: { value: 'p3' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save category' }));
+
+    expect(screen.getAllByText('Wearables').length).toBeGreaterThanOrEqual(1);
+
+    // Add category 2 placed on Its own page (new_sheet)
+    fireEvent.click(screen.getByRole('button', { name: 'Add category' }));
+    fireEvent.change(screen.getByLabelText(/^Category name/), {
+      target: { value: 'Drone software' },
+    });
+    fireEvent.change(screen.getByLabelText(/^Placement/), {
+      target: { value: 'new_sheet' },
+    });
+    fireEvent.change(screen.getByLabelText(/^Page title/), {
+      target: { value: 'Autonomous Drone Stack' },
+    });
+    fireEvent.change(screen.getByLabelText(/^Page intro/), {
+      target: { value: 'Flight control and telemetry' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save category' }));
+
+    expect(screen.getAllByText('Drone software').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('Its own page')).toBeTruthy();
+
+    // Add a service to Drone software category
+    fireEvent.change(screen.getByLabelText('Service name (Drone software)'), {
+      target: { value: 'Flight Controller' },
+    });
+    fireEvent.change(screen.getByLabelText('Service description (Drone software)'), {
+      target: { value: 'Autopilot and mission planner' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add service to Drone software' }));
+
+    expect(screen.getAllByText('Flight Controller').length).toBeGreaterThanOrEqual(1);
+
+    // Because Drone software has its own page AND >= 1 service, it counts as a software option!
+    // So all 4 built-in sheets can now be removed if desired.
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Web & SaaS from pitch' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Mobile app from pitch' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Backend from pitch' }));
+    const removeAiBtn = screen.getByRole('button', {
+      name: 'Remove AI & Ops from pitch',
+    }) as HTMLButtonElement;
+    expect(removeAiBtn.disabled).toBe(false);
+    fireEvent.click(removeAiBtn);
+
+    // Add back Mobile app so we can reorder/edit/delete categories cleanly
+    fireEvent.click(screen.getByRole('button', { name: 'Add back Mobile app' }));
+
+    // Reorder categories: Move Drone software up
+    fireEvent.click(screen.getByRole('button', { name: 'Move category Drone software up' }));
+    const moveDroneUpBtn = screen.getByRole('button', {
+      name: 'Move category Drone software up',
+    }) as HTMLButtonElement;
+    expect(moveDroneUpBtn.disabled).toBe(true);
+
+    // Edit category Wearables -> rename to Clinical Wearables
+    fireEvent.click(screen.getByRole('button', { name: 'Edit category Wearables' }));
+    fireEvent.change(screen.getByLabelText(/^Category name/), {
+      target: { value: 'Clinical Wearables' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Update category' }));
+    expect(screen.getAllByText('Clinical Wearables').length).toBeGreaterThanOrEqual(1);
+
+    // Delete Drone software category with confirmation -> its items are deleted too
+    fireEvent.click(screen.getByRole('button', { name: 'Delete category Drone software' }));
+    const delDialog = screen.getByRole('dialog');
+    expect(
+      within(delDialog).getByText(/All services in this category will be deleted too/),
+    ).toBeTruthy();
+    fireEvent.click(within(delDialog).getByRole('button', { name: 'Delete category' }));
+
+    expect(screen.queryByRole('button', { name: 'Edit category Drone software' })).toBeNull();
+    expect(screen.queryByText('Flight Controller')).toBeNull();
+  });
+
+  it('posts scroll-to messages on focus and IntersectionObserver, respects Follow in preview toggle, has sticky tabs with Previous/Next pager, and debounces live price updates', async () => {
+    let observerCallback: ((entries: IntersectionObserverEntry[]) => void) | null = null;
+    class MockIntersectionObserver {
+      constructor(cb: (entries: IntersectionObserverEntry[]) => void) {
+        observerCallback = cb;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
+
+    const catalog = makeCatalog();
+    const prop = makeProposal();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/pitch/catalog') return jsonResponse(catalog);
+      if (url === '/api/pitch/proposals/prop_1') return jsonResponse(prop);
+      if (url === '/api/pitch/proposals/prop_1/pdfs') {
+        return jsonResponse({ proposal_id: 'prop_1', slug: prop.slug, pdfs: [] });
+      }
+      if (url === '/api/pitch/preview_payload') {
+        return jsonResponse({});
+      }
+      return jsonResponse({});
+    });
+
+    render(<PitchSection param="prop_1" onNavigate={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('telemed-india')).toBeTruthy();
+    });
+
+    const iframe = screen.getByTitle('Pitch preview for telemed-india') as HTMLIFrameElement;
+    const postMessageMock = vi.fn();
+    Object.defineProperty(iframe, 'contentWindow', {
+      configurable: true,
+      value: {
+        postMessage: postMessageMock,
+        downloadPdf: vi.fn(),
+        focus: vi.fn(),
+      },
+    });
+
+    // Sticky tab row is present
+    const stickyBar = screen.getByTestId('pitch-sticky-tabs');
+    expect(stickyBar.className).toContain('studio-pitch-tabs-sticky');
+
+    // Focusing Lead field sends magnm:pitch-scroll-to with target 'about:lead'
+    fireEvent.focus(screen.getByLabelText(/^Lead/));
+    expect(postMessageMock).toHaveBeenCalledWith(
+      { type: 'magnm:pitch-scroll-to', target: 'about:lead' },
+      window.location.origin,
+    );
+
+    // IntersectionObserver callback posts topmost visible section target
+    postMessageMock.mockClear();
+    const archSection = document.querySelector(
+      '[data-scroll-target="about:architecture"]',
+    ) as HTMLElement;
+    expect(archSection).toBeTruthy();
+    if (observerCallback) {
+      (observerCallback as (entries: IntersectionObserverEntry[]) => void)([
+        {
+          target: archSection,
+          isIntersecting: true,
+          boundingClientRect: { top: 40 } as DOMRectReadOnly,
+        } as unknown as IntersectionObserverEntry,
+      ]);
+    }
+    await waitFor(() => {
+      expect(postMessageMock).toHaveBeenCalledWith(
+        { type: 'magnm:pitch-scroll-to', target: 'about:architecture' },
+        window.location.origin,
+      );
+    });
+
+    // Turn off "Follow in preview" toggle -> focus and intersection no longer post scroll-to
+    postMessageMock.mockClear();
+    const followToggle = screen.getByLabelText('Follow in preview') as HTMLInputElement;
+    expect(followToggle.checked).toBe(true);
+    fireEvent.click(followToggle);
+    expect(followToggle.checked).toBe(false);
+
+    fireEvent.focus(screen.getByLabelText('Portfolio', { selector: 'input' }));
+    expect(postMessageMock).not.toHaveBeenCalled();
+
+    // Turn "Follow in preview" back on
+    fireEvent.click(followToggle);
+    expect(followToggle.checked).toBe(true);
+
+    // Bottom pager: Next: Deliverables switches to Deliverables tab; Next: Prices switches to Prices; Previous: Deliverables switches back
+    fireEvent.click(screen.getByRole('button', { name: 'Next: Deliverables' }));
+    expect(
+      screen.getByRole('tab', { name: /Deliverables/i }).getAttribute('aria-selected'),
+    ).toBe('true');
+    expect(screen.getByRole('button', { name: 'Previous: Details' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next: Prices' }));
+    expect(
+      screen.getByRole('tab', { name: /Prices/i }).getAttribute('aria-selected'),
+    ).toBe('true');
+
+    // Editing a price on Prices tab posts a debounced (150ms) magnm:pitch-preview-update with the new price and a scroll-to item:<id>
+    postMessageMock.mockClear();
+    const wFrontPriceInput = screen.getByLabelText(
+      'Proposal price for Responsive Web Application / Frontend',
+    ) as HTMLInputElement;
+    fireEvent.change(wFrontPriceInput, { target: { value: '8100' } });
+
+    await waitFor(
+      () => {
+        expect(postMessageMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'magnm:pitch-preview-update',
+            payload: expect.objectContaining({
+              prices: expect.objectContaining({ w_front: 8100 }),
+            }),
+          }),
+          window.location.origin,
+        );
+        expect(postMessageMock).toHaveBeenCalledWith(
+          { type: 'magnm:pitch-scroll-to', target: 'item:w_front' },
+          window.location.origin,
+        );
+      },
+      { timeout: 1000 },
+    );
+  });
+
+  it('sends hidden_sheets in preview_payload body when removing Web & SaaS and renders included_from_hidden from preview_payload response on sheet_shown_on', async () => {
+    const catalog = makeCatalog();
+    const prop = makeProposal();
+    const previewBodies: Array<Record<string, unknown>> = [];
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/pitch/catalog') return jsonResponse(catalog);
+      if (url === '/api/pitch/proposals/prop_1') return jsonResponse(prop);
+      if (url === '/api/pitch/proposals/prop_1/pdfs') {
+        return jsonResponse({ proposal_id: 'prop_1', slug: prop.slug, pdfs: [] });
+      }
+      if (url === '/api/pitch/preview_payload' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body || '{}')) as Record<string, unknown>;
+        previewBodies.push(body);
+        return jsonResponse({
+          mode: 'preview',
+          kind: 'proposal',
+          locked: false,
+          preset: prop.preset,
+          prices: { w_front: 7200, b_db: 2800 },
+          custom_items: [],
+          hidden_sheets: body.hidden_sheets || [],
+          hidden_about: body.hidden_about || [],
+          custom_categories: body.custom_categories || [],
+          included_from_hidden: [
+            {
+              item_id: 'w_front',
+              name: 'Server Included Dependency',
+              sheet_shown_on: 'p4',
+              needed_for: ['Core Database & API Server'],
+            },
+          ],
+          pricing_summary: {
+            ...prop.pricing_summary,
+            total: 9400,
+          },
+        });
+      }
+      return jsonResponse({});
+    });
+
+    render(<PitchSection param="prop_1" onNavigate={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('telemed-india')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: /Deliverables/i }));
+
+    // Remove Web & SaaS from pitch -> next preview_payload request body has hidden_sheets containing p2
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Web & SaaS from pitch' }));
+
+    await waitFor(() => {
+      expect(previewBodies.length).toBeGreaterThanOrEqual(1);
+      const lastBody = previewBodies[previewBodies.length - 1];
+      expect(lastBody.hidden_sheets).toContain('p2');
+    });
+
+    // Server preview_payload response's included_from_hidden is shown on sheet_shown_on (p4 = Backend)
+    const backendSection = screen.getByRole('region', { name: 'Backend deliverables' });
+    await waitFor(() => {
+      expect(within(backendSection).getByText('Server Included Dependency')).toBeTruthy();
+      expect(
+        within(backendSection).getByText(/Included because Core Database & API Server needs it/),
+      ).toBeTruthy();
+    });
+
+    // Add back Web & SaaS -> next preview_payload request body has hidden_sheets without p2
+    fireEvent.click(screen.getByRole('button', { name: 'Add back Web & SaaS' }));
+    await waitFor(() => {
+      const lastBody = previewBodies[previewBodies.length - 1];
+      expect(lastBody.hidden_sheets).not.toContain('p2');
+    });
+  });
+
+  it('collapses Portfolio to one row with Add back and no Title remove button, and updates hidden_about in final Plans tab', async () => {
+    const catalog = makeCatalog();
+    const proposal = makeProposal();
+    const finalProp = makeProposal({
+      id: 'prop_final_plans',
+      slug: 'final-plans',
+      kind: 'final',
+      payment_plan: [
+        { percent: 50, label: 'kickoff' },
+        { percent: 50, label: 'launch' },
+      ],
+      payment_note: 'Final note',
+      timeline: [{ title: 'Kickoff', when: 'Day 1', detail: 'Start' }],
+    });
+    const previewBodies: Array<Record<string, unknown>> = [];
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/pitch/catalog') return jsonResponse(catalog);
+      if (url === '/api/pitch/proposals/prop_1') return jsonResponse(proposal);
+      if (url === '/api/pitch/proposals/prop_1/pdfs') {
+        return jsonResponse({ proposal_id: 'prop_1', slug: proposal.slug, pdfs: [] });
+      }
+      if (url === '/api/pitch/proposals/prop_final_plans') return jsonResponse(finalProp);
+      if (url === '/api/pitch/proposals/prop_final_plans/pdfs') {
+        return jsonResponse({ proposal_id: 'prop_final_plans', slug: finalProp.slug, pdfs: [] });
+      }
+      if (url === '/api/pitch/preview_payload' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body || '{}')) as Record<string, unknown>;
+        previewBodies.push(body);
+        return jsonResponse({
+          mode: 'preview',
+          kind: body.kind,
+          locked: body.kind === 'final',
+          preset: body.preset,
+          hidden_about: body.hidden_about || [],
+        });
+      }
+      return jsonResponse({});
+    });
+
+    const { unmount } = render(<PitchSection param="prop_1" onNavigate={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('TeleMed Platform')).toBeTruthy();
+    });
+
+    // Title has no remove button
+    expect(screen.queryByRole('button', { name: /Remove.*Title/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Remove.*Headline/i })).toBeNull();
+
+    // Portfolio section collapses to one row with Add back and preserves field value
+    const portfolioSection = screen.getByRole('region', { name: 'Portfolio section' });
+    const portfolioInput = within(portfolioSection).getByLabelText('Portfolio') as HTMLInputElement;
+    fireEvent.change(portfolioInput, { target: { value: 'kept-portfolio.magnm.studio' } });
+    fireEvent.click(within(portfolioSection).getByRole('button', { name: 'Remove Portfolio from pitch' }));
+
+    expect(within(portfolioSection).queryByRole('textbox')).toBeNull();
+    expect(within(portfolioSection).getByRole('button', { name: 'Add back Portfolio' })).toBeTruthy();
+
+    fireEvent.click(within(portfolioSection).getByRole('button', { name: 'Add back Portfolio' }));
+    expect(
+      (within(portfolioSection).getByLabelText('Portfolio') as HTMLInputElement).value,
+    ).toBe('kept-portfolio.magnm.studio');
+
+    unmount();
+    previewBodies.length = 0;
+
+    // Final quotation Plans tab: Timeline and How you pay update hidden_about
+    render(<PitchSection param="prop_final_plans" onNavigate={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('final-plans')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: /Plans/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove How you pay from pitch' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Timeline from pitch' }));
+
+    await waitFor(() => {
+      expect(previewBodies.length).toBeGreaterThanOrEqual(1);
+      const lastBody = previewBodies[previewBodies.length - 1];
+      expect(lastBody.hidden_about).toEqual(expect.arrayContaining(['payment', 'timeline']));
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add back How you pay' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add back Timeline' }));
+
+    await waitFor(() => {
+      const lastBody = previewBodies[previewBodies.length - 1];
+      expect(lastBody.hidden_about).toEqual([]);
+    });
+  });
+
+  it('requires page title for own-page category and enforces max 6 custom categories', async () => {
+    const catalog = makeCatalog();
+    const prop = makeProposal();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/pitch/catalog') return jsonResponse(catalog);
+      if (url === '/api/pitch/proposals/prop_1') return jsonResponse(prop);
+      if (url === '/api/pitch/proposals/prop_1/pdfs') {
+        return jsonResponse({ proposal_id: 'prop_1', slug: prop.slug, pdfs: [] });
+      }
+      return jsonResponse({});
+    });
+
+    render(<PitchSection param="prop_1" onNavigate={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('telemed-india')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: /Deliverables/i }));
+
+    // Try saving own-page category without page title -> shows validation message
+    fireEvent.click(screen.getByRole('button', { name: 'Add category' }));
+    fireEvent.change(screen.getByLabelText(/^Category name/), {
+      target: { value: 'Hardware Systems' },
+    });
+    fireEvent.change(screen.getByLabelText(/^Placement/), {
+      target: { value: 'new_sheet' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save category' }));
+
+    expect(
+      screen.getByText('Page title is required when placement is Its own page.'),
+    ).toBeTruthy();
+
+    // Provide Page title and save category 1
+    fireEvent.change(screen.getByLabelText(/^Page title/), {
+      target: { value: 'Embedded Hardware' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save category' }));
+    expect(screen.getByText('Custom categories (1/6)')).toBeTruthy();
+
+    // Add 5 more categories to reach max 6
+    for (let i = 2; i <= 6; i += 1) {
+      fireEvent.click(screen.getByRole('button', { name: 'Add category' }));
+      fireEvent.change(screen.getByLabelText(/^Category name/), {
+        target: { value: `Custom Category ${i}` },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Save category' }));
+    }
+
+    expect(screen.getByText('Custom categories (6/6)')).toBeTruthy();
+    const addCatBtn = screen.getByRole('button', { name: 'Add category' }) as HTMLButtonElement;
+    expect(addCatBtn.disabled).toBe(true);
+  });
+
+  it('posts about:portfolio and item:<id> on focus, persists Follow in preview in localStorage with try/catch, and scrolls form to top on Next/Previous navigation', async () => {
+    const catalog = makeCatalog();
+    const prop = makeProposal();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/pitch/catalog') return jsonResponse(catalog);
+      if (url === '/api/pitch/proposals/prop_1') return jsonResponse(prop);
+      if (url === '/api/pitch/proposals/prop_1/pdfs') {
+        return jsonResponse({ proposal_id: 'prop_1', slug: prop.slug, pdfs: [] });
+      }
+      return jsonResponse({});
+    });
+
+    const scrollToSpy = vi.fn();
+    const scrollIntoViewSpy = vi.fn();
+    vi.stubGlobal('scrollTo', scrollToSpy);
+    Element.prototype.scrollIntoView = scrollIntoViewSpy;
+    const setItemSpy = vi.fn();
+    const getItemSpy = vi.fn(() => 'true');
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: getItemSpy,
+        setItem: setItemSpy,
+        removeItem: vi.fn(),
+        clear: vi.fn(),
+      },
+    });
+
+    render(<PitchSection param="prop_1" onNavigate={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('telemed-india')).toBeTruthy();
+    });
+
+    const iframe = screen.getByTitle('Pitch preview for telemed-india') as HTMLIFrameElement;
+    const postMessageMock = vi.fn();
+    Object.defineProperty(iframe, 'contentWindow', {
+      configurable: true,
+      value: {
+        postMessage: postMessageMock,
+        downloadPdf: vi.fn(),
+        focus: vi.fn(),
+      },
+    });
+
+    // Focusing Portfolio field posts about:portfolio
+    fireEvent.focus(screen.getByLabelText('Portfolio', { selector: 'input' }));
+    expect(postMessageMock).toHaveBeenCalledWith(
+      { type: 'magnm:pitch-scroll-to', target: 'about:portfolio' },
+      window.location.origin,
+    );
+
+    // Next: Deliverables at the end of Details switches tab and scrolls form to top
+    fireEvent.click(screen.getByRole('button', { name: 'Next: Deliverables' }));
+    expect(
+      screen.getByRole('tab', { name: /Deliverables/i }).getAttribute('aria-selected'),
+    ).toBe('true');
+    expect(scrollIntoViewSpy).toHaveBeenCalled();
+    expect(scrollToSpy).toHaveBeenCalled();
+
+    // Navigate to last tab (Prices) and verify Previous: Deliverables works on last tab
+    fireEvent.click(screen.getByRole('button', { name: 'Next: Prices' }));
+    expect(screen.getByRole('tab', { name: /Prices/i }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
+
+    // Focusing a price input posts item:<id>
+    postMessageMock.mockClear();
+    const wFrontInput = screen.getByLabelText(
+      'Proposal price for Responsive Web Application / Frontend',
+    );
+    fireEvent.focus(wFrontInput);
+    expect(postMessageMock).toHaveBeenCalledWith(
+      { type: 'magnm:pitch-scroll-to', target: 'item:w_front' },
+      window.location.origin,
+    );
+
+    // Turning off Follow in preview persists to localStorage and handles localStorage errors gracefully
+    const followToggle = screen.getByLabelText('Follow in preview') as HTMLInputElement;
+    fireEvent.click(followToggle);
+    expect(setItemSpy).toHaveBeenCalledWith('magnm-pitch-follow-preview', 'false');
+
+    setItemSpy.mockImplementationOnce(() => {
+      throw new Error('QuotaExceededError');
+    });
+    expect(() => fireEvent.click(followToggle)).not.toThrow();
+
+    // Previous: Deliverables works on the last tab
+    scrollIntoViewSpy.mockClear();
+    scrollToSpy.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Previous: Deliverables' }));
+    expect(
+      screen.getByRole('tab', { name: /Deliverables/i }).getAttribute('aria-selected'),
+    ).toBe('true');
+    expect(scrollIntoViewSpy).toHaveBeenCalled();
+    expect(scrollToSpy).toHaveBeenCalled();
+  });
+
+  it('debounces price edits with fake timers, updates bottom bar to Total (unsaved) with preview_payload total and recurring line, and restores Total after save', async () => {
+    const catalog = makeCatalog();
+    let currentProp = makeProposal({
+      price_overrides: { w_front: 7200 },
+      pricing_summary: {
+        lines: [],
+        custom_items: [],
+        subtotal: 10000,
+        standalone_fee: 0,
+        standalone_label: '',
+        total: 10000,
+        differs_from_base: [],
+      },
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/pitch/catalog') return jsonResponse(catalog);
+      if (url === '/api/pitch/proposals/prop_1' && (!init?.method || init.method === 'GET')) {
+        return jsonResponse(currentProp);
+      }
+      if (url === '/api/pitch/proposals/prop_1/pdfs') {
+        return jsonResponse({ proposal_id: 'prop_1', slug: currentProp.slug, pdfs: [] });
+      }
+      if (url === '/api/pitch/preview_payload' && init?.method === 'POST') {
+        return jsonResponse({
+          mode: 'preview',
+          kind: currentProp.kind,
+          locked: false,
+          preset: currentProp.preset,
+          prices: { w_front: 8500, b_db: 2800 },
+          custom_items: [],
+          hidden_sheets: [],
+          hidden_about: [],
+          custom_categories: [],
+          included_from_hidden: [],
+          pricing_summary: {
+            ...currentProp.pricing_summary,
+            subtotal: 11300,
+            total: 11300,
+            recurring_totals: { monthly: 3200, quarterly: 0, yearly: 0 },
+          },
+        });
+      }
+      if (url === '/api/pitch/proposals/prop_1' && init?.method === 'POST') {
+        currentProp = {
+          ...currentProp,
+          price_overrides: { w_front: 8500 },
+          pricing_summary: {
+            ...currentProp.pricing_summary,
+            subtotal: 11300,
+            total: 11300,
+          },
+        };
+        return jsonResponse(currentProp);
+      }
+      return jsonResponse({});
+    });
+
+    render(<PitchSection param="prop_1" onNavigate={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('telemed-india')).toBeTruthy();
+    });
+
+    const iframe = screen.getByTitle('Pitch preview for telemed-india') as HTMLIFrameElement;
+    const postMessageMock = vi.fn();
+    Object.defineProperty(iframe, 'contentWindow', {
+      configurable: true,
+      value: {
+        postMessage: postMessageMock,
+        downloadPdf: vi.fn(),
+        focus: vi.fn(),
+      },
+    });
+
+    // Switch to Prices tab -> preview is visible
+    fireEvent.click(screen.getByRole('tab', { name: /Prices/i }));
+    expect(screen.getByTestId('pitch-side-preview').hidden).toBe(false);
+    expect(screen.getAllByText('Total').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('₹10,000').length).toBeGreaterThanOrEqual(1);
+
+    // Use fake timers to verify price edit posts within the 150ms debounce window
+    vi.useFakeTimers();
+    try {
+      const wFrontInput = screen.getByLabelText(
+        'Proposal price for Responsive Web Application / Frontend',
+      ) as HTMLInputElement;
+      fireEvent.change(wFrontInput, { target: { value: '8500' } });
+
+      expect(postMessageMock).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(160);
+      });
+
+      expect(postMessageMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'magnm:pitch-preview-update',
+          payload: expect.objectContaining({
+            prices: expect.objectContaining({ w_front: 8500 }),
+          }),
+        }),
+        window.location.origin,
+      );
+      expect(postMessageMock).toHaveBeenCalledWith(
+        { type: 'magnm:pitch-scroll-to', target: 'item:w_front' },
+        window.location.origin,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // Bottom bar caption shows "Total (unsaved)" with preview_payload total (₹11,300) and recurring line
+    await waitFor(() => {
+      expect(screen.getByText('Total (unsaved)')).toBeTruthy();
+      expect(screen.getAllByText('₹11,300').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByText('+ ₹3,200 / month')).toBeTruthy();
+    });
+
+    // Save proposal -> bottom bar goes back to "Total" with saved total
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => {
+      expect(screen.queryByText('Total (unsaved)')).toBeNull();
+      expect(screen.getAllByText('Total').length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText('₹11,300').length).toBeGreaterThanOrEqual(1);
+    });
   });
 });

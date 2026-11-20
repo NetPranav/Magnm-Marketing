@@ -8,6 +8,7 @@ import {
 } from '@magnm/design/react';
 import {
   formatRupees,
+  type PitchAboutSectionKey,
   type PitchCatalog,
   type PitchPricingSummary,
   type PitchRuleViolation,
@@ -34,6 +35,7 @@ export interface PitchPlansTabProps {
   dirty: boolean;
   violations: PitchRuleViolation[];
   onChange: (updater: (prev: PitchDraftState) => PitchDraftState) => void;
+  onScrollTo?: (target: string) => void;
 }
 
 function getFieldViolation(violations: PitchRuleViolation[], field: string): string | null {
@@ -67,11 +69,30 @@ export function PitchPlansTab({
   dirty,
   violations,
   onChange,
+  onScrollTo,
 }: PitchPlansTabProps) {
   const paymentRows = draft.payment_plan;
   const timelineSteps = draft.timeline;
   const servicePlans = draft.service_plans;
   const defaults = getDefaultFinalPlans(catalog);
+  const hiddenAboutSet = new Set<PitchAboutSectionKey>(draft.hidden_about || []);
+  const isPaymentHidden = hiddenAboutSet.has('payment');
+  const isTimelineHidden = hiddenAboutSet.has('timeline');
+
+  const toggleAboutSection = (key: PitchAboutSectionKey, hide: boolean) => {
+    onChange((prev) => {
+      const current = prev.hidden_about || [];
+      const next = hide
+        ? current.includes(key)
+          ? current
+          : [...current, key]
+        : current.filter((k) => k !== key);
+      return {
+        ...prev,
+        hidden_about: next,
+      };
+    });
+  };
 
   const percentSum = paymentRows.reduce(
     (sum, row) => sum + (Number.isFinite(row.percent) ? row.percent : 0),
@@ -148,504 +169,548 @@ export function PitchPlansTab({
 
   return (
     <div className="studio-stack">
-      <section aria-label="Payment plan">
+      <section aria-label="Payment plan" data-scroll-target="about:payment">
         <Card>
           <div className="studio-stack-sm">
             <div className="studio-section-bar">
               <span className="mg-label">
-                Payment plan ({paymentRows.length}/{MAX_PAYMENT_ROWS})
+                {isPaymentHidden
+                  ? 'How you pay'
+                  : `How you pay (${paymentRows.length}/${MAX_PAYMENT_ROWS})`}
               </span>
               <div className="studio-btn-group">
+                {!isPaymentHidden ? (
+                  <>
+                    <PillButton
+                      variant="outline"
+                      size="sm"
+                      onClick={handleResetPaymentPlan}
+                    >
+                      Reset to Pitch&apos;s default
+                    </PillButton>
+                    <PillButton
+                      variant="outline"
+                      size="sm"
+                      disabled={paymentRows.length >= MAX_PAYMENT_ROWS}
+                      onClick={handleAddPaymentRow}
+                    >
+                      Add row
+                    </PillButton>
+                  </>
+                ) : null}
                 <PillButton
                   variant="outline"
                   size="sm"
-                  onClick={handleResetPaymentPlan}
+                  aria-label={isPaymentHidden ? 'Add back How you pay' : 'Remove How you pay from pitch'}
+                  onClick={() => toggleAboutSection('payment', !isPaymentHidden)}
                 >
-                  Reset to Pitch&apos;s default
-                </PillButton>
-                <PillButton
-                  variant="outline"
-                  size="sm"
-                  disabled={paymentRows.length >= MAX_PAYMENT_ROWS}
-                  onClick={handleAddPaymentRow}
-                >
-                  Add row
+                  {isPaymentHidden ? 'Add back' : 'Remove from pitch'}
                 </PillButton>
               </div>
             </div>
 
-          <div className="studio-section-bar">
-            <span className="studio-mono" data-testid="payment-plan-sum">
-              Total split: {percentSum}%
-            </span>
-            {dirty ? (
-              <span className="studio-mono">Save to refresh rupee amounts</span>
+            {!isPaymentHidden ? (
+              <>
+                <div className="studio-section-bar">
+                  <span className="studio-mono" data-testid="payment-plan-sum">
+                    Total split: {percentSum}%
+                  </span>
+                  {dirty ? (
+                    <span className="studio-mono">Save to refresh rupee amounts</span>
+                  ) : null}
+                </div>
+
+                {!sumValid ? (
+                  <div className="mg-notice" role="alert">
+                    Payment percentages sum to {percentSum}%. They must equal 100%.
+                  </div>
+                ) : null}
+
+                {paymentPlanServerErr ? (
+                  <div className="mg-notice" role="alert">
+                    {paymentPlanServerErr}
+                  </div>
+                ) : null}
+
+                <div className="studio-stack-sm">
+                  {paymentRows.map((row, idx) => {
+                    const pctErr = getFieldViolation(violations, `payment_plan[${idx}].percent`);
+                    const labelErr = getTextFieldError(
+                      violations,
+                      `payment_plan[${idx}].label`,
+                      row.label,
+                    );
+                    const engineRow = !dirty ? enginePaymentRows[idx] : undefined;
+                    const amountText =
+                      engineRow && typeof engineRow.amount === 'number'
+                        ? formatRupees(engineRow.amount)
+                        : 'Save to compute';
+
+                    return (
+                      <Card key={`pay-row-${idx}`} outline>
+                        <div className="studio-stack-sm">
+                          <div className="studio-section-bar">
+                            <span className="studio-mono">
+                              Installment {idx + 1} · {amountText}
+                            </span>
+                            <PillButton
+                              variant="quiet"
+                              size="sm"
+                              aria-label={`Remove payment row ${idx + 1}`}
+                              disabled={paymentRows.length <= MIN_PAYMENT_ROWS}
+                              onClick={() => handleRemovePaymentRow(idx)}
+                            >
+                              Remove
+                            </PillButton>
+                          </div>
+                          <div className="studio-pitch-plan-row">
+                            <Field
+                              label="Percent (%)"
+                              htmlFor={`pay-percent-${idx}`}
+                              hint={renderFieldError(pctErr)}
+                            >
+                              <TextInput
+                                id={`pay-percent-${idx}`}
+                                type="number"
+                                min={1}
+                                max={100}
+                                step={1}
+                                aria-invalid={Boolean(pctErr)}
+                                value={String(row.percent)}
+                                onFocus={() => onScrollTo?.('about:payment')}
+                                onChange={(e) => {
+                                  const val = Math.trunc(Number(e.target.value) || 0);
+                                  onChange((prev) => ({
+                                    ...prev,
+                                    payment_plan: prev.payment_plan.map((item, i) =>
+                                      i === idx ? { ...item, percent: val } : item,
+                                    ),
+                                  }));
+                                }}
+                              />
+                            </Field>
+                            <Field
+                              label="Label"
+                              htmlFor={`pay-label-${idx}`}
+                              hint={renderFieldError(labelErr)}
+                            >
+                              <TextInput
+                                id={`pay-label-${idx}`}
+                                aria-invalid={Boolean(labelErr)}
+                                placeholder="e.g. to start"
+                                value={row.label}
+                                onFocus={() => onScrollTo?.('about:payment')}
+                                onChange={(e) =>
+                                  onChange((prev) => ({
+                                    ...prev,
+                                    payment_plan: prev.payment_plan.map((item, i) =>
+                                      i === idx ? { ...item, label: e.target.value } : item,
+                                    ),
+                                  }))
+                                }
+                              />
+                            </Field>
+                          </div>
+                        </div>
+                      </Card>
+                    );
+                  })}
+                </div>
+
+                <Field
+                  label="Payment note"
+                  htmlFor="pitch-payment-note"
+                  hint={renderFieldError(paymentNoteErr)}
+                >
+                  <TextArea
+                    id="pitch-payment-note"
+                    rows={2}
+                    aria-invalid={Boolean(paymentNoteErr)}
+                    value={draft.payment_note}
+                    onFocus={() => onScrollTo?.('about:payment')}
+                    onChange={(e) =>
+                      onChange((prev) => ({ ...prev, payment_note: e.target.value }))
+                    }
+                  />
+                </Field>
+              </>
             ) : null}
           </div>
-
-          {!sumValid ? (
-            <div className="mg-notice" role="alert">
-              Payment percentages sum to {percentSum}%. They must equal 100%.
-            </div>
-          ) : null}
-
-          {paymentPlanServerErr ? (
-            <div className="mg-notice" role="alert">
-              {paymentPlanServerErr}
-            </div>
-          ) : null}
-
-          <div className="studio-stack-sm">
-            {paymentRows.map((row, idx) => {
-              const pctErr = getFieldViolation(violations, `payment_plan[${idx}].percent`);
-              const labelErr = getTextFieldError(
-                violations,
-                `payment_plan[${idx}].label`,
-                row.label,
-              );
-              const engineRow = !dirty ? enginePaymentRows[idx] : undefined;
-              const amountText =
-                engineRow && typeof engineRow.amount === 'number'
-                  ? formatRupees(engineRow.amount)
-                  : 'Save to compute';
-
-              return (
-                <Card key={`pay-row-${idx}`} outline>
-                  <div className="studio-stack-sm">
-                    <div className="studio-section-bar">
-                      <span className="studio-mono">
-                        Installment {idx + 1} · {amountText}
-                      </span>
-                      <PillButton
-                        variant="quiet"
-                        size="sm"
-                        aria-label={`Remove payment row ${idx + 1}`}
-                        disabled={paymentRows.length <= MIN_PAYMENT_ROWS}
-                        onClick={() => handleRemovePaymentRow(idx)}
-                      >
-                        Remove
-                      </PillButton>
-                    </div>
-                    <div className="studio-pitch-plan-row">
-                      <Field
-                        label="Percent (%)"
-                        htmlFor={`pay-percent-${idx}`}
-                        hint={renderFieldError(pctErr)}
-                      >
-                        <TextInput
-                          id={`pay-percent-${idx}`}
-                          type="number"
-                          min={1}
-                          max={100}
-                          step={1}
-                          aria-invalid={Boolean(pctErr)}
-                          value={String(row.percent)}
-                          onChange={(e) => {
-                            const val = Math.trunc(Number(e.target.value) || 0);
-                            onChange((prev) => ({
-                              ...prev,
-                              payment_plan: prev.payment_plan.map((item, i) =>
-                                i === idx ? { ...item, percent: val } : item,
-                              ),
-                            }));
-                          }}
-                        />
-                      </Field>
-                      <Field
-                        label="Label"
-                        htmlFor={`pay-label-${idx}`}
-                        hint={renderFieldError(labelErr)}
-                      >
-                        <TextInput
-                          id={`pay-label-${idx}`}
-                          aria-invalid={Boolean(labelErr)}
-                          placeholder="e.g. to start"
-                          value={row.label}
-                          onChange={(e) =>
-                            onChange((prev) => ({
-                              ...prev,
-                              payment_plan: prev.payment_plan.map((item, i) =>
-                                i === idx ? { ...item, label: e.target.value } : item,
-                              ),
-                            }))
-                          }
-                        />
-                      </Field>
-                    </div>
-                  </div>
-                </Card>
-              );
-            })}
-          </div>
-          </div>
         </Card>
       </section>
 
-      <Card>
-        <Field
-          label="Payment note"
-          htmlFor="pitch-payment-note"
-          hint={renderFieldError(paymentNoteErr)}
-        >
-          <TextArea
-            id="pitch-payment-note"
-            rows={2}
-            aria-invalid={Boolean(paymentNoteErr)}
-            value={draft.payment_note}
-            onChange={(e) =>
-              onChange((prev) => ({ ...prev, payment_note: e.target.value }))
-            }
-          />
-        </Field>
-      </Card>
-
-      <section aria-label="Timeline">
+      <section aria-label="Timeline" data-scroll-target="about:timeline">
         <Card>
           <div className="studio-stack-sm">
             <div className="studio-section-bar">
               <span className="mg-label">
-                Timeline ({timelineSteps.length}/{MAX_TIMELINE_STEPS})
+                {isTimelineHidden
+                  ? 'Timeline'
+                  : `Timeline (${timelineSteps.length}/${MAX_TIMELINE_STEPS})`}
               </span>
               <div className="studio-btn-group">
+                {!isTimelineHidden ? (
+                  <>
+                    <PillButton
+                      variant="outline"
+                      size="sm"
+                      onClick={handleResetTimeline}
+                    >
+                      Reset to Pitch&apos;s default
+                    </PillButton>
+                    <PillButton
+                      variant="outline"
+                      size="sm"
+                      disabled={timelineSteps.length >= MAX_TIMELINE_STEPS}
+                      onClick={handleAddTimelineStep}
+                    >
+                      Add step
+                    </PillButton>
+                  </>
+                ) : null}
                 <PillButton
                   variant="outline"
                   size="sm"
-                  onClick={handleResetTimeline}
+                  aria-label={isTimelineHidden ? 'Add back Timeline' : 'Remove Timeline from pitch'}
+                  onClick={() => toggleAboutSection('timeline', !isTimelineHidden)}
                 >
-                  Reset to Pitch&apos;s default
-                </PillButton>
-                <PillButton
-                  variant="outline"
-                  size="sm"
-                  disabled={timelineSteps.length >= MAX_TIMELINE_STEPS}
-                  onClick={handleAddTimelineStep}
-                >
-                  Add step
+                  {isTimelineHidden ? 'Add back' : 'Remove from pitch'}
                 </PillButton>
               </div>
             </div>
 
-          {timelineServerErr ? (
-            <div className="mg-notice" role="alert">
-              {timelineServerErr}
-            </div>
-          ) : null}
-
-          <div className="studio-stack-sm">
-            {timelineSteps.map((step, idx) => {
-              const titleErr = getTextFieldError(
-                violations,
-                `timeline[${idx}].title`,
-                step.title,
-              );
-              const whenErr = getTextFieldError(
-                violations,
-                `timeline[${idx}].when`,
-                step.when,
-              );
-              const detailErr = getTextFieldError(
-                violations,
-                `timeline[${idx}].detail`,
-                step.detail,
-              );
-
-              return (
-                <Card key={`timeline-step-${idx}`} outline>
-                  <div className="studio-stack-sm">
-                    <div className="studio-section-bar">
-                      <span className="studio-mono">
-                        Step {String(idx + 1).padStart(2, '0')}
-                      </span>
-                      <div className="studio-btn-group">
-                        <PillButton
-                          variant="quiet"
-                          size="sm"
-                          aria-label={`Move step ${idx + 1} up`}
-                          disabled={idx === 0}
-                          onClick={() =>
-                            onChange((prev) => ({
-                              ...prev,
-                              timeline: swapListItems(prev.timeline, idx, idx - 1),
-                            }))
-                          }
-                        >
-                          Up
-                        </PillButton>
-                        <PillButton
-                          variant="quiet"
-                          size="sm"
-                          aria-label={`Move step ${idx + 1} down`}
-                          disabled={idx === timelineSteps.length - 1}
-                          onClick={() =>
-                            onChange((prev) => ({
-                              ...prev,
-                              timeline: swapListItems(prev.timeline, idx, idx + 1),
-                            }))
-                          }
-                        >
-                          Down
-                        </PillButton>
-                        <PillButton
-                          variant="quiet"
-                          size="sm"
-                          aria-label={`Remove step ${idx + 1}`}
-                          disabled={timelineSteps.length <= MIN_TIMELINE_STEPS}
-                          onClick={() =>
-                            onChange((prev) => ({
-                              ...prev,
-                              timeline: prev.timeline.filter((_, i) => i !== idx),
-                            }))
-                          }
-                        >
-                          Remove
-                        </PillButton>
-                      </div>
-                    </div>
-
-                    <div className="studio-grid-2">
-                      <Field
-                        label="Title"
-                        htmlFor={`timeline-title-${idx}`}
-                        hint={renderFieldError(titleErr)}
-                      >
-                        <TextInput
-                          id={`timeline-title-${idx}`}
-                          aria-invalid={Boolean(titleErr)}
-                          placeholder="e.g. Architecture & UI/UX Screens"
-                          value={step.title}
-                          onChange={(e) =>
-                            onChange((prev) => ({
-                              ...prev,
-                              timeline: prev.timeline.map((item, i) =>
-                                i === idx ? { ...item, title: e.target.value } : item,
-                              ),
-                            }))
-                          }
-                        />
-                      </Field>
-                      <Field
-                        label="When"
-                        htmlFor={`timeline-when-${idx}`}
-                        hint={renderFieldError(whenErr)}
-                      >
-                        <TextInput
-                          id={`timeline-when-${idx}`}
-                          aria-invalid={Boolean(whenErr)}
-                          placeholder="e.g. Week 1"
-                          value={step.when}
-                          onChange={(e) =>
-                            onChange((prev) => ({
-                              ...prev,
-                              timeline: prev.timeline.map((item, i) =>
-                                i === idx ? { ...item, when: e.target.value } : item,
-                              ),
-                            }))
-                          }
-                        />
-                      </Field>
-                    </div>
-
-                    <Field
-                      label="Detail"
-                      htmlFor={`timeline-detail-${idx}`}
-                      hint={renderFieldError(detailErr)}
-                    >
-                      <TextArea
-                        id={`timeline-detail-${idx}`}
-                        rows={2}
-                        aria-invalid={Boolean(detailErr)}
-                        placeholder="Describe what happens in this phase"
-                        value={step.detail}
-                        onChange={(e) =>
-                          onChange((prev) => ({
-                            ...prev,
-                            timeline: prev.timeline.map((item, i) =>
-                              i === idx ? { ...item, detail: e.target.value } : item,
-                            ),
-                          }))
-                        }
-                      />
-                    </Field>
+            {!isTimelineHidden ? (
+              <>
+                {timelineServerErr ? (
+                  <div className="mg-notice" role="alert">
+                    {timelineServerErr}
                   </div>
-                </Card>
-              );
-            })}
-          </div>
+                ) : null}
+
+                <div className="studio-stack-sm">
+                  {timelineSteps.map((step, idx) => {
+                    const titleErr = getTextFieldError(
+                      violations,
+                      `timeline[${idx}].title`,
+                      step.title,
+                    );
+                    const whenErr = getTextFieldError(
+                      violations,
+                      `timeline[${idx}].when`,
+                      step.when,
+                    );
+                    const detailErr = getTextFieldError(
+                      violations,
+                      `timeline[${idx}].detail`,
+                      step.detail,
+                    );
+
+                    return (
+                      <Card key={`timeline-step-${idx}`} outline>
+                        <div className="studio-stack-sm">
+                          <div className="studio-section-bar">
+                            <span className="studio-mono">
+                              Step {String(idx + 1).padStart(2, '0')}
+                            </span>
+                            <div className="studio-btn-group">
+                              <PillButton
+                                variant="quiet"
+                                size="sm"
+                                aria-label={`Move step ${idx + 1} up`}
+                                disabled={idx === 0}
+                                onClick={() =>
+                                  onChange((prev) => ({
+                                    ...prev,
+                                    timeline: swapListItems(prev.timeline, idx, idx - 1),
+                                  }))
+                                }
+                              >
+                                Up
+                              </PillButton>
+                              <PillButton
+                                variant="quiet"
+                                size="sm"
+                                aria-label={`Move step ${idx + 1} down`}
+                                disabled={idx === timelineSteps.length - 1}
+                                onClick={() =>
+                                  onChange((prev) => ({
+                                    ...prev,
+                                    timeline: swapListItems(prev.timeline, idx, idx + 1),
+                                  }))
+                                }
+                              >
+                                Down
+                              </PillButton>
+                              <PillButton
+                                variant="quiet"
+                                size="sm"
+                                aria-label={`Remove step ${idx + 1}`}
+                                disabled={timelineSteps.length <= MIN_TIMELINE_STEPS}
+                                onClick={() =>
+                                  onChange((prev) => ({
+                                    ...prev,
+                                    timeline: prev.timeline.filter((_, i) => i !== idx),
+                                  }))
+                                }
+                              >
+                                Remove
+                              </PillButton>
+                            </div>
+                          </div>
+
+                          <div className="studio-grid-2">
+                            <Field
+                              label="Title"
+                              htmlFor={`timeline-title-${idx}`}
+                              hint={renderFieldError(titleErr)}
+                            >
+                              <TextInput
+                                id={`timeline-title-${idx}`}
+                                aria-invalid={Boolean(titleErr)}
+                                placeholder="e.g. Architecture & UI/UX Screens"
+                                value={step.title}
+                                onFocus={() => onScrollTo?.('about:timeline')}
+                                onChange={(e) =>
+                                  onChange((prev) => ({
+                                    ...prev,
+                                    timeline: prev.timeline.map((item, i) =>
+                                      i === idx ? { ...item, title: e.target.value } : item,
+                                    ),
+                                  }))
+                                }
+                              />
+                            </Field>
+                            <Field
+                              label="When"
+                              htmlFor={`timeline-when-${idx}`}
+                              hint={renderFieldError(whenErr)}
+                            >
+                              <TextInput
+                                id={`timeline-when-${idx}`}
+                                aria-invalid={Boolean(whenErr)}
+                                placeholder="e.g. Week 1"
+                                value={step.when}
+                                onFocus={() => onScrollTo?.('about:timeline')}
+                                onChange={(e) =>
+                                  onChange((prev) => ({
+                                    ...prev,
+                                    timeline: prev.timeline.map((item, i) =>
+                                      i === idx ? { ...item, when: e.target.value } : item,
+                                    ),
+                                  }))
+                                }
+                              />
+                            </Field>
+                          </div>
+
+                          <Field
+                            label="Detail"
+                            htmlFor={`timeline-detail-${idx}`}
+                            hint={renderFieldError(detailErr)}
+                          >
+                            <TextArea
+                              id={`timeline-detail-${idx}`}
+                              rows={2}
+                              aria-invalid={Boolean(detailErr)}
+                              placeholder="Describe what happens in this phase"
+                              value={step.detail}
+                              onFocus={() => onScrollTo?.('about:timeline')}
+                              onChange={(e) =>
+                                onChange((prev) => ({
+                                  ...prev,
+                                  timeline: prev.timeline.map((item, i) =>
+                                    i === idx ? { ...item, detail: e.target.value } : item,
+                                  ),
+                                }))
+                              }
+                            />
+                          </Field>
+                        </div>
+                      </Card>
+                    );
+                  })}
+                </div>
+              </>
+            ) : null}
           </div>
         </Card>
       </section>
 
-      <section aria-label="Service plans">
+      <section aria-label="Service plans" data-scroll-target="p5">
         <Card>
-        <div className="studio-stack-sm">
-          <div className="studio-section-bar">
-            <span className="mg-label">
-              Service plans ({servicePlans.length}/{MAX_SERVICE_PLANS})
-            </span>
-            <PillButton
-              variant="outline"
-              size="sm"
-              disabled={servicePlans.length >= MAX_SERVICE_PLANS}
-              onClick={handleAddServicePlan}
-            >
-              Add service plan
-            </PillButton>
-          </div>
-
-          {servicePlansServerErr ? (
-            <div className="mg-notice" role="alert">
-              {servicePlansServerErr}
+          <div className="studio-stack-sm">
+            <div className="studio-section-bar">
+              <span className="mg-label">
+                Service plans ({servicePlans.length}/{MAX_SERVICE_PLANS})
+              </span>
+              <PillButton
+                variant="outline"
+                size="sm"
+                disabled={servicePlans.length >= MAX_SERVICE_PLANS}
+                onClick={handleAddServicePlan}
+              >
+                Add service plan
+              </PillButton>
             </div>
-          ) : null}
 
-          {servicePlans.length === 0 ? (
-            <div className="studio-hint">
-              Add up to {MAX_SERVICE_PLANS} optional one-time or recurring service plans (for example, monthly maintenance or annual hosting).
-            </div>
-          ) : (
-            <div className="studio-stack-sm">
-              {servicePlans.map((sp, idx) => {
-                const nameErr = getTextFieldError(
-                  violations,
-                  `service_plans[${idx}].name`,
-                  sp.name,
-                );
-                const descErr = getTextFieldError(
-                  violations,
-                  `service_plans[${idx}].description`,
-                  sp.description,
-                );
-                const priceErr = getFieldViolation(violations, `service_plans[${idx}].price`);
-                const periodErr = getFieldViolation(violations, `service_plans[${idx}].period`);
+            {servicePlansServerErr ? (
+              <div className="mg-notice" role="alert">
+                {servicePlansServerErr}
+              </div>
+            ) : null}
 
-                return (
-                  <Card key={sp.id || `sp-${idx}`} outline>
-                    <div className="studio-stack-sm">
-                      <div className="studio-section-bar">
-                        <span className="studio-mono">
-                          Plan {idx + 1} · {sp.id}
-                        </span>
-                        <PillButton
-                          variant="quiet"
-                          size="sm"
-                          aria-label={`Remove service plan ${idx + 1}`}
-                          onClick={() =>
-                            onChange((prev) => ({
-                              ...prev,
-                              service_plans: prev.service_plans.filter((_, i) => i !== idx),
-                            }))
-                          }
-                        >
-                          Remove
-                        </PillButton>
-                      </div>
+            {servicePlans.length === 0 ? (
+              <div className="studio-hint">
+                Add up to {MAX_SERVICE_PLANS} optional one-time or recurring service plans (for example, monthly maintenance or annual hosting).
+              </div>
+            ) : (
+              <div className="studio-stack-sm">
+                {servicePlans.map((sp, idx) => {
+                  const nameErr = getTextFieldError(
+                    violations,
+                    `service_plans[${idx}].name`,
+                    sp.name,
+                  );
+                  const descErr = getTextFieldError(
+                    violations,
+                    `service_plans[${idx}].description`,
+                    sp.description,
+                  );
+                  const priceErr = getFieldViolation(violations, `service_plans[${idx}].price`);
+                  const periodErr = getFieldViolation(violations, `service_plans[${idx}].period`);
 
-                      <div className="studio-grid-2">
-                        <Field
-                          label="Plan name"
-                          htmlFor={`sp-name-${idx}`}
-                          hint={renderFieldError(nameErr)}
-                        >
-                          <TextInput
-                            id={`sp-name-${idx}`}
-                            aria-invalid={Boolean(nameErr)}
-                            placeholder="e.g. Monthly Care"
-                            value={sp.name}
-                            onChange={(e) =>
+                  return (
+                    <Card key={sp.id || `sp-${idx}`} outline>
+                      <div className="studio-stack-sm">
+                        <div className="studio-section-bar">
+                          <span className="studio-mono">
+                            Plan {idx + 1} · {sp.id}
+                          </span>
+                          <PillButton
+                            variant="quiet"
+                            size="sm"
+                            aria-label={`Remove service plan ${idx + 1}`}
+                            onClick={() =>
                               onChange((prev) => ({
                                 ...prev,
-                                service_plans: prev.service_plans.map((item, i) =>
-                                  i === idx ? { ...item, name: e.target.value } : item,
-                                ),
-                              }))
-                            }
-                          />
-                        </Field>
-                        <Field
-                          label="Description"
-                          htmlFor={`sp-desc-${idx}`}
-                          hint={renderFieldError(descErr)}
-                        >
-                          <TextInput
-                            id={`sp-desc-${idx}`}
-                            aria-invalid={Boolean(descErr)}
-                            placeholder="e.g. Updates, backups, and uptime checks"
-                            value={sp.description}
-                            onChange={(e) =>
-                              onChange((prev) => ({
-                                ...prev,
-                                service_plans: prev.service_plans.map((item, i) =>
-                                  i === idx ? { ...item, description: e.target.value } : item,
-                                ),
-                              }))
-                            }
-                          />
-                        </Field>
-                      </div>
-
-                      <div className="studio-grid-2">
-                        <Field
-                          label="Price (INR)"
-                          htmlFor={`sp-price-${idx}`}
-                          hint={renderFieldError(priceErr)}
-                        >
-                          <TextInput
-                            id={`sp-price-${idx}`}
-                            type="number"
-                            min={0}
-                            max={10000000}
-                            step={1}
-                            aria-invalid={Boolean(priceErr)}
-                            value={String(sp.price)}
-                            onChange={(e) => {
-                              const parsed = Math.max(0, Math.trunc(Number(e.target.value) || 0));
-                              onChange((prev) => ({
-                                ...prev,
-                                service_plans: prev.service_plans.map((item, i) =>
-                                  i === idx ? { ...item, price: parsed } : item,
-                                ),
-                              }));
-                            }}
-                          />
-                        </Field>
-                        <Field
-                          label="Billing period"
-                          htmlFor={`sp-period-${idx}`}
-                          hint={renderFieldError(periodErr)}
-                        >
-                          <Select
-                            id={`sp-period-${idx}`}
-                            value={sp.period}
-                            onChange={(e) =>
-                              onChange((prev) => ({
-                                ...prev,
-                                service_plans: prev.service_plans.map((item, i) =>
-                                  i === idx
-                                    ? {
-                                        ...item,
-                                        period: e.target.value as PitchServicePlanPeriod,
-                                      }
-                                    : item,
-                                ),
+                                service_plans: prev.service_plans.filter((_, i) => i !== idx),
                               }))
                             }
                           >
-                            {SERVICE_PLAN_PERIOD_OPTIONS.map((opt) => (
-                              <option key={opt.value} value={opt.value}>
-                                {opt.label}
-                              </option>
-                            ))}
-                          </Select>
-                        </Field>
+                            Remove
+                          </PillButton>
+                        </div>
+
+                        <div className="studio-grid-2">
+                          <Field
+                            label="Plan name"
+                            htmlFor={`sp-name-${idx}`}
+                            hint={renderFieldError(nameErr)}
+                          >
+                            <TextInput
+                              id={`sp-name-${idx}`}
+                              aria-invalid={Boolean(nameErr)}
+                              placeholder="e.g. Monthly Care"
+                              value={sp.name}
+                              onFocus={() => onScrollTo?.(`item:${sp.id}`)}
+                              onChange={(e) =>
+                                onChange((prev) => ({
+                                  ...prev,
+                                  service_plans: prev.service_plans.map((item, i) =>
+                                    i === idx ? { ...item, name: e.target.value } : item,
+                                  ),
+                                }))
+                              }
+                            />
+                          </Field>
+                          <Field
+                            label="Description"
+                            htmlFor={`sp-desc-${idx}`}
+                            hint={renderFieldError(descErr)}
+                          >
+                            <TextInput
+                              id={`sp-desc-${idx}`}
+                              aria-invalid={Boolean(descErr)}
+                              placeholder="e.g. Updates, backups, and uptime checks"
+                              value={sp.description}
+                              onFocus={() => onScrollTo?.(`item:${sp.id}`)}
+                              onChange={(e) =>
+                                onChange((prev) => ({
+                                  ...prev,
+                                  service_plans: prev.service_plans.map((item, i) =>
+                                    i === idx ? { ...item, description: e.target.value } : item,
+                                  ),
+                                }))
+                              }
+                            />
+                          </Field>
+                        </div>
+
+                        <div className="studio-grid-2">
+                          <Field
+                            label="Price (INR)"
+                            htmlFor={`sp-price-${idx}`}
+                            hint={renderFieldError(priceErr)}
+                          >
+                            <TextInput
+                              id={`sp-price-${idx}`}
+                              type="number"
+                              min={0}
+                              max={10000000}
+                              step={1}
+                              aria-invalid={Boolean(priceErr)}
+                              value={String(sp.price)}
+                              onFocus={() => onScrollTo?.(`item:${sp.id}`)}
+                              onChange={(e) => {
+                                const parsed = Math.max(0, Math.trunc(Number(e.target.value) || 0));
+                                onChange((prev) => ({
+                                  ...prev,
+                                  service_plans: prev.service_plans.map((item, i) =>
+                                    i === idx ? { ...item, price: parsed } : item,
+                                  ),
+                                }));
+                              }}
+                            />
+                          </Field>
+                          <Field
+                            label="Billing period"
+                            htmlFor={`sp-period-${idx}`}
+                            hint={renderFieldError(periodErr)}
+                          >
+                            <Select
+                              id={`sp-period-${idx}`}
+                              value={sp.period}
+                              onFocus={() => onScrollTo?.(`item:${sp.id}`)}
+                              onChange={(e) =>
+                                onChange((prev) => ({
+                                  ...prev,
+                                  service_plans: prev.service_plans.map((item, i) =>
+                                    i === idx
+                                      ? {
+                                          ...item,
+                                          period: e.target.value as PitchServicePlanPeriod,
+                                        }
+                                      : item,
+                                  ),
+                                }))
+                              }
+                            >
+                              {SERVICE_PLAN_PERIOD_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </Select>
+                          </Field>
+                        </div>
                       </div>
-                    </div>
-                  </Card>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </Card>
+                    </Card>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </Card>
       </section>
     </div>
   );

@@ -2,11 +2,16 @@ import type { StatusState } from '@magnm/design/react';
 import { ApiError } from '../../api';
 import {
   formatRupees,
+  type PitchAboutSectionKey,
   type PitchCatalog,
   type PitchCatalogItem,
+  type PitchCategoryPlacement,
   type PitchContact,
+  type PitchCustomCategory,
   type PitchCustomItem,
   type PitchDefaultPlans,
+  type PitchDroppedItemChange,
+  type PitchIncludedFromHidden,
   type PitchPaymentPlanRow,
   type PitchPreset,
   type PitchPricingSummary,
@@ -29,6 +34,21 @@ export const MAX_PAYMENT_ROWS = 4;
 export const MIN_TIMELINE_STEPS = 1;
 export const MAX_TIMELINE_STEPS = 8;
 export const MAX_SERVICE_PLANS = 6;
+export const MAX_CUSTOM_CATEGORIES = 6;
+export const FOLLOW_PREVIEW_STORAGE_KEY = 'magnm-pitch-follow-preview';
+
+export const PITCH_ABOUT_SECTIONS: Array<{
+  key: PitchAboutSectionKey;
+  label: string;
+}> = [
+  { key: 'lead', label: 'Intro' },
+  { key: 'what_we_do', label: 'What we do' },
+  { key: 'portfolio', label: 'Portfolio' },
+  { key: 'this_plan', label: 'This plan' },
+  { key: 'architecture', label: 'Architecture block' },
+  { key: 'timeline', label: 'Timeline' },
+  { key: 'payment', label: 'How you pay' },
+];
 
 export const SERVICE_PLAN_PERIOD_OPTIONS: Array<{
   value: PitchServicePlanPeriod;
@@ -80,7 +100,7 @@ export interface SheetGroupSpec {
 
 export const PITCH_SHEETS: SheetGroupSpec[] = [
   { key: 'p2', label: 'Web & SaaS', groups: ['Web & SaaS'] },
-  { key: 'p3', label: 'Mobile', groups: ['Mobile app'] },
+  { key: 'p3', label: 'Mobile app', groups: ['Mobile app'] },
   { key: 'p4', label: 'Backend', groups: ['Backend'] },
   { key: 'p5', label: 'AI & Ops', groups: ['AI & Automation', 'DevOps & Maintenance'] },
 ];
@@ -93,8 +113,256 @@ export const GROUP_TO_SECTION: Record<string, PitchSectionKey> = {
   'DevOps & Maintenance': 'p5',
 };
 
-export function sectionForGroup(groupName: string): PitchSectionKey {
+export function sectionForGroup(
+  groupName: string,
+  customCategories: PitchCustomCategory[] = [],
+): PitchSectionKey | null {
+  const cat = customCategories.find((c) => c.name === groupName);
+  if (cat) {
+    if (
+      cat.placement === 'p2' ||
+      cat.placement === 'p3' ||
+      cat.placement === 'p4' ||
+      cat.placement === 'p5'
+    ) {
+      return cat.placement;
+    }
+    return null;
+  }
   return GROUP_TO_SECTION[groupName] || 'p5';
+}
+
+export function itemSheetKey(
+  itemId: string,
+  allItems: Record<string, { g: string }>,
+  customCategories: PitchCustomCategory[] = [],
+): string {
+  const item = allItems[itemId];
+  if (!item) return 'p5';
+  const cat = customCategories.find((c) => c.name === item.g);
+  if (cat) {
+    if (
+      cat.placement === 'p2' ||
+      cat.placement === 'p3' ||
+      cat.placement === 'p4' ||
+      cat.placement === 'p5'
+    ) {
+      return cat.placement;
+    }
+    return cat.id || 'new_sheet';
+  }
+  return GROUP_TO_SECTION[item.g] || 'p5';
+}
+
+/** Count visible software options (visible built-in p2..p5 + new_sheet categories with >= 1 item). */
+export function countVisibleSoftwareOptions(draft: {
+  hidden_sheets: PitchSectionKey[];
+  custom_categories: PitchCustomCategory[];
+  custom_items: PitchCustomItem[];
+}): {
+  visibleBuiltinCount: number;
+  activeNewSheetCount: number;
+  totalSoftwareOptions: number;
+} {
+  const hiddenSet = new Set(draft.hidden_sheets || []);
+  const visibleBuiltinCount = PITCH_SHEETS.filter((s) => !hiddenSet.has(s.key)).length;
+  const activeNewSheetCount = (draft.custom_categories || []).filter(
+    (cat) =>
+      cat.placement === 'new_sheet' &&
+      Boolean(cat.name) &&
+      (draft.custom_items || []).some((ci) => ci.g === cat.name),
+  ).length;
+  return {
+    visibleBuiltinCount,
+    activeNewSheetCount,
+    totalSoftwareOptions: visibleBuiltinCount + activeNewSheetCount,
+  };
+}
+
+/** Compute required items from hidden sheets needed by items on visible sheets (mirroring pitch_host.py). */
+export function computeLocalIncludedFromHidden(
+  draft: {
+    kind: PitchProposalKind;
+    hidden_sheets: PitchSectionKey[];
+    custom_items: PitchCustomItem[];
+    custom_categories: PitchCustomCategory[];
+    preset: PitchPreset;
+  },
+  allItems: Record<string, { g: string; n: string; r: string[] }>,
+): PitchIncludedFromHidden[] {
+  if (draft.kind === 'default') return [];
+  const hiddenSet = new Set<string>(draft.hidden_sheets || []);
+  const customCategories = draft.custom_categories || [];
+  const customItems = draft.custom_items || [];
+
+  if (draft.kind === 'final') {
+    const rawSelected = (draft.preset.initialSelected || []).filter((id) => Boolean(allItems[id]));
+    const visibleSeeds = rawSelected.filter(
+      (id) => !hiddenSet.has(itemSheetKey(id, allItems, customCategories)),
+    );
+    const { selected: expanded } = expandSelectionWithDeps(visibleSeeds, allItems);
+    const sheetsWithAgreed = new Set(
+      expanded
+        .map((id) => itemSheetKey(id, allItems, customCategories))
+        .filter((sk) => !hiddenSet.has(sk)),
+    );
+    for (const s of PITCH_SHEETS) {
+      if (!hiddenSet.has(s.key) && !sheetsWithAgreed.has(s.key)) {
+        hiddenSet.add(s.key);
+      }
+    }
+  }
+
+  if (hiddenSet.size === 0) return [];
+
+  const visibleSheets: Array<[string, string[]]> = [];
+  if (draft.kind === 'final') {
+    const rawSelected = (draft.preset.initialSelected || []).filter((id) => Boolean(allItems[id]));
+    const visibleSeeds = rawSelected.filter(
+      (id) => !hiddenSet.has(itemSheetKey(id, allItems, customCategories)),
+    );
+    const { selected: expanded } = expandSelectionWithDeps(visibleSeeds, allItems);
+    const agreedSet = new Set(expanded);
+    for (const s of PITCH_SHEETS) {
+      if (hiddenSet.has(s.key)) continue;
+      const sheetItems = expanded.filter(
+        (id) => itemSheetKey(id, allItems, customCategories) === s.key,
+      );
+      if (sheetItems.length > 0) {
+        visibleSheets.push([s.key, sheetItems]);
+      }
+    }
+    for (const cat of customCategories) {
+      if (cat.placement === 'new_sheet' && cat.id) {
+        const sheetItems = customItems
+          .filter((c) => c.g === cat.name && agreedSet.has(c.id))
+          .map((c) => c.id);
+        if (sheetItems.length > 0) {
+          visibleSheets.push([cat.id, sheetItems]);
+        }
+      }
+    }
+  } else {
+    const sections = draft.preset.sections || { p2: [], p3: [], p4: [], p5: [] };
+    const initialSel = (draft.preset.initialSelected || []).filter((id) => Boolean(allItems[id]));
+    for (const s of PITCH_SHEETS) {
+      if (hiddenSet.has(s.key)) continue;
+      const sheetItems: string[] = [];
+      const seenOnSheet = new Set<string>();
+      for (const id of sections[s.key] || []) {
+        if (allItems[id] && !seenOnSheet.has(id)) {
+          if (!hiddenSet.has(itemSheetKey(id, allItems, customCategories))) {
+            seenOnSheet.add(id);
+            sheetItems.push(id);
+          }
+        }
+      }
+      for (const c of customItems) {
+        if (!seenOnSheet.has(c.id) && itemSheetKey(c.id, allItems, customCategories) === s.key) {
+          seenOnSheet.add(c.id);
+          sheetItems.push(c.id);
+        }
+      }
+      for (const id of initialSel) {
+        if (!seenOnSheet.has(id) && itemSheetKey(id, allItems, customCategories) === s.key) {
+          seenOnSheet.add(id);
+          sheetItems.push(id);
+        }
+      }
+      visibleSheets.push([s.key, sheetItems]);
+    }
+    for (const cat of customCategories) {
+      if (cat.placement === 'new_sheet' && cat.id) {
+        const sheetItems = customItems.filter((c) => c.g === cat.name).map((c) => c.id);
+        if (sheetItems.length > 0) {
+          visibleSheets.push([cat.id, sheetItems]);
+        }
+      }
+    }
+  }
+
+  const outById: Record<string, PitchIncludedFromHidden> = {};
+  const outOrder: string[] = [];
+
+  for (const [sheetKey, sheetItems] of visibleSheets) {
+    const entriesById: Record<string, PitchIncludedFromHidden> = {};
+    const orderedIds: string[] = [];
+    for (const vid of sheetItems) {
+      const vitem = allItems[vid];
+      if (!vitem) continue;
+      const vname = vitem.n || vid;
+      for (const depId of vitem.r || []) {
+        if (!allItems[depId]) continue;
+        if (hiddenSet.has(itemSheetKey(depId, allItems, customCategories))) {
+          if (!entriesById[depId]) {
+            entriesById[depId] = {
+              item_id: depId,
+              name: allItems[depId].n || depId,
+              sheet_shown_on: sheetKey,
+              needed_for: [vname],
+            };
+            orderedIds.push(depId);
+          } else if (!entriesById[depId].needed_for.includes(vname)) {
+            entriesById[depId].needed_for.push(vname);
+          }
+        }
+      }
+    }
+
+    let idx = 0;
+    while (idx < orderedIds.length) {
+      const hid = orderedIds[idx];
+      idx += 1;
+      const parentNeeded = entriesById[hid].needed_for;
+      for (const transId of allItems[hid]?.r || []) {
+        if (!allItems[transId]) continue;
+        if (hiddenSet.has(itemSheetKey(transId, allItems, customCategories))) {
+          if (!entriesById[transId]) {
+            entriesById[transId] = {
+              item_id: transId,
+              name: allItems[transId].n || transId,
+              sheet_shown_on: sheetKey,
+              needed_for: [...parentNeeded],
+            };
+            orderedIds.push(transId);
+          } else {
+            for (const pname of parentNeeded) {
+              if (!entriesById[transId].needed_for.includes(pname)) {
+                entriesById[transId].needed_for.push(pname);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    for (const did of orderedIds) {
+      const entry = entriesById[did];
+      if (!outById[did]) {
+        outById[did] = {
+          item_id: entry.item_id,
+          name: entry.name,
+          sheet_shown_on: entry.sheet_shown_on,
+          needed_for: [...entry.needed_for],
+          also_needed_on: [],
+        };
+        outOrder.push(did);
+      } else {
+        const existing = outById[did];
+        if (!existing.also_needed_on) existing.also_needed_on = [];
+        if (sheetKey !== existing.sheet_shown_on && !existing.also_needed_on.includes(sheetKey)) {
+          existing.also_needed_on.push(sheetKey);
+        }
+        for (const nname of entry.needed_for) {
+          if (!existing.needed_for.includes(nname)) {
+            existing.needed_for.push(nname);
+          }
+        }
+      }
+    }
+  }
+
+  return outOrder.map((did) => outById[did]);
 }
 
 /** Reject < and > in text fields rendered on the hosted Pitch page. */
@@ -314,14 +582,19 @@ export function swapListItems<T>(list: T[], indexA: number, indexB: number): T[]
 export function deriveFinalSections(
   selectedIds: string[],
   allItems: Record<string, { g: string }>,
+  customCategories: PitchCustomCategory[] = [],
+  hiddenSheets: PitchSectionKey[] = [],
 ): PitchSections {
   const sections: PitchSections = { p2: [], p3: [], p4: [], p5: [] };
+  const hiddenSet = new Set(hiddenSheets);
   const seen = new Set<string>();
   for (const id of selectedIds) {
     if (seen.has(id) || !allItems[id]) continue;
     seen.add(id);
-    const secKey = sectionForGroup(allItems[id].g);
-    sections[secKey].push(id);
+    const secKey = sectionForGroup(allItems[id].g, customCategories);
+    if (secKey && !hiddenSet.has(secKey)) {
+      sections[secKey].push(id);
+    }
   }
   return sections;
 }
@@ -381,6 +654,23 @@ export function createServicePlanId(name: string, existingIds: Set<string>): str
   return `${seed}-${idx}`;
 }
 
+/** Generate a valid unique custom category ID matching ^cat_[a-z0-9][a-z0-9_-]{0,58}$. */
+export function createCustomCategoryId(name: string, existingIds: Set<string>): string {
+  const rawSlug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^[-_]+|[-_]+$/g, '')
+    .slice(0, 40);
+  const body = rawSlug && /^[a-z0-9]/.test(rawSlug) ? rawSlug : `cat${rawSlug ? `_${rawSlug}` : ''}`;
+  const seed = `cat_${body}`;
+  if (!existingIds.has(seed)) return seed;
+  let idx = 2;
+  while (existingIds.has(`${seed}_${idx}`)) {
+    idx += 1;
+  }
+  return `${seed}_${idx}`;
+}
+
 export interface PitchDraftState {
   slug: string;
   kind: PitchProposalKind;
@@ -396,6 +686,9 @@ export interface PitchDraftState {
   preset: PitchPreset;
   price_overrides: Record<string, number>;
   custom_items: PitchCustomItem[];
+  hidden_sheets: PitchSectionKey[];
+  hidden_about: PitchAboutSectionKey[];
+  custom_categories: PitchCustomCategory[];
   payment_plan: PitchPaymentPlanRow[];
   payment_note: string;
   timeline: PitchTimelineStep[];
@@ -451,6 +744,15 @@ export function proposalToDraft(proposal: PitchProposal): PitchDraftState {
       ...c,
       r: Array.isArray(c.r) ? [...c.r] : [],
     })),
+    hidden_sheets: Array.isArray(proposal.hidden_sheets) ? [...proposal.hidden_sheets] : [],
+    hidden_about: Array.isArray(proposal.hidden_about) ? [...proposal.hidden_about] : [],
+    custom_categories: (proposal.custom_categories || []).map((cat) => ({
+      id: cat.id || '',
+      name: cat.name || '',
+      placement: (cat.placement as PitchCategoryPlacement) || 'p2',
+      sheet_title: cat.sheet_title || '',
+      sheet_lead: cat.sheet_lead || '',
+    })),
     payment_plan: (proposal.payment_plan || []).map((row) => ({
       percent: Number(row.percent) || 0,
       label: row.label || '',
@@ -472,21 +774,11 @@ export function proposalToDraft(proposal: PitchProposal): PitchDraftState {
   };
 }
 
-/** Build live preview postMessage payload for the embedded Pitch iframe. */
-export function buildLivePreviewPayload(
-  draft: PitchDraftState,
+/** Build effective price map for all catalog items + proposal price overrides. */
+export function buildEffectivePriceMap(
+  draft: Pick<PitchDraftState, 'price_overrides'>,
   catalog: PitchCatalog | null,
-): {
-  locked: boolean;
-  preset: PitchPreset;
-  custom_items: PitchCustomItem[];
-  prices: Record<string, number>;
-  contact: PitchContact & { business?: string };
-  payment_plan?: PitchPaymentPlanRow[];
-  payment_note?: string;
-  timeline?: PitchTimelineStep[];
-  service_plans?: PitchServicePlan[];
-} {
+): Record<string, number> {
   const prices: Record<string, number> = {};
   if (catalog?.items) {
     for (const [id, item] of Object.entries(catalog.items)) {
@@ -498,17 +790,90 @@ export function buildLivePreviewPayload(
       prices[id] = override;
     }
   }
+  return prices;
+}
+
+/** Format dropped items notice returned by engine `changes` after saving. */
+export function formatDroppedItemsNotice(changes?: PitchDroppedItemChange[] | null): string | null {
+  if (!Array.isArray(changes) || changes.length === 0) return null;
+  const messages = changes
+    .map((c) => c.message || (c.name ? `Dropped '${c.name}' (${c.item_id})` : ''))
+    .filter(Boolean);
+  if (messages.length === 0) return null;
+  return messages.join(' · ');
+}
+
+/** Build live preview postMessage payload for the embedded Pitch iframe. */
+export function buildLivePreviewPayload(
+  draft: PitchDraftState,
+  catalog: PitchCatalog | null,
+): {
+  kind: PitchProposalKind;
+  locked: boolean;
+  preset: PitchPreset;
+  custom_items: PitchCustomItem[];
+  prices: Record<string, number>;
+  contact: PitchContact & { business?: string };
+  hidden_sheets: PitchSectionKey[];
+  hidden_about: PitchAboutSectionKey[];
+  custom_categories: PitchCustomCategory[];
+  included_from_hidden: PitchIncludedFromHidden[];
+  payment_plan?: PitchPaymentPlanRow[];
+  payment_note?: string;
+  timeline?: PitchTimelineStep[];
+  service_plans?: PitchServicePlan[];
+} {
+  const prices = buildEffectivePriceMap(draft, catalog);
   const isFinal = draft.kind === 'final';
   const allItems = buildAllItemsMap(catalog, draft.custom_items);
+  const hiddenSet = new Set(draft.hidden_sheets || []);
+  const visibleInitialSeeds = (draft.preset.initialSelected || []).filter(
+    (id) => !hiddenSet.has(itemSheetKey(id, allItems, draft.custom_categories) as PitchSectionKey),
+  );
   const { selected: expandedSelected } = expandSelectionWithDeps(
-    draft.preset.initialSelected,
+    visibleInitialSeeds,
     allItems,
   );
   const sections = isFinal
-    ? deriveFinalSections(expandedSelected, allItems)
-    : draft.preset.sections;
+    ? deriveFinalSections(
+        expandedSelected,
+        allItems,
+        draft.custom_categories,
+        draft.hidden_sheets,
+      )
+    : {
+        p2: hiddenSet.has('p2') ? [] : draft.preset.sections.p2 || [],
+        p3: hiddenSet.has('p3') ? [] : draft.preset.sections.p3 || [],
+        p4: hiddenSet.has('p4') ? [] : draft.preset.sections.p4 || [],
+        p5: hiddenSet.has('p5') ? [] : draft.preset.sections.p5 || [],
+      };
+
+  const agreedSet = new Set(expandedSelected);
+  const customCategoriesWithItems = (draft.custom_categories || []).map((cat) => ({
+    ...cat,
+    item_ids: (draft.custom_items || [])
+      .filter((ci) => ci.g === cat.name && (!isFinal || agreedSet.has(ci.id)))
+      .map((ci) => ci.id),
+  }));
+
+  let effectiveHiddenSheets = [...(draft.hidden_sheets || [])];
+  if (isFinal) {
+    const sheetsWithAgreed = new Set(
+      expandedSelected
+        .map((id) => itemSheetKey(id, allItems, draft.custom_categories))
+        .filter((sk) => !hiddenSet.has(sk as PitchSectionKey)),
+    );
+    for (const s of PITCH_SHEETS) {
+      if (!effectiveHiddenSheets.includes(s.key) && !sheetsWithAgreed.has(s.key)) {
+        effectiveHiddenSheets.push(s.key);
+      }
+    }
+  }
+
+  const includedFromHidden = computeLocalIncludedFromHidden(draft, allItems);
 
   return {
+    kind: draft.kind,
     locked: isFinal,
     preset: {
       ...draft.preset,
@@ -516,7 +881,7 @@ export function buildLivePreviewPayload(
       clientName: draft.preset.clientName || draft.client_name,
       businessName: draft.preset.businessName || draft.business_name,
       name: draft.preset.name || draft.business_name || draft.client_name || draft.slug,
-      initialSelected: isFinal ? expandedSelected : draft.preset.initialSelected,
+      initialSelected: isFinal ? expandedSelected : visibleInitialSeeds,
       sections,
     },
     custom_items: draft.custom_items,
@@ -528,6 +893,10 @@ export function buildLivePreviewPayload(
       email: draft.contact.email,
       notes: draft.contact.notes,
     },
+    hidden_sheets: effectiveHiddenSheets,
+    hidden_about: draft.hidden_about || [],
+    custom_categories: customCategoriesWithItems,
+    included_from_hidden: includedFromHidden,
     ...(isFinal
       ? {
           payment_plan: draft.payment_plan,
