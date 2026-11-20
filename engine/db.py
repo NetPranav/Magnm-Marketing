@@ -22,7 +22,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -651,6 +651,19 @@ def _apply_migration_v11(conn):
         )
 
 
+def _apply_migration_v12(conn):
+    cols = {
+        r["name"]
+        for r in conn.execute("PRAGMA table_info(pitch_proposals)").fetchall()
+    }
+    if "hidden_sheets_json" not in cols:
+        conn.execute("ALTER TABLE pitch_proposals ADD COLUMN hidden_sheets_json TEXT NOT NULL DEFAULT '[]'")
+    if "hidden_about_json" not in cols:
+        conn.execute("ALTER TABLE pitch_proposals ADD COLUMN hidden_about_json TEXT NOT NULL DEFAULT '[]'")
+    if "custom_categories_json" not in cols:
+        conn.execute("ALTER TABLE pitch_proposals ADD COLUMN custom_categories_json TEXT NOT NULL DEFAULT '[]'")
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -663,6 +676,7 @@ _MIGRATIONS = (
     (9, _apply_migration_v9),
     (10, _apply_migration_v10),
     (11, _apply_migration_v11),
+    (12, _apply_migration_v12),
 )
 
 
@@ -3647,6 +3661,9 @@ def _deserialize_pitch_proposal(row):
     price_overrides = json.loads(row["price_overrides_json"]) if row["price_overrides_json"] else {}
     custom_items = json.loads(row["custom_items_json"]) if row["custom_items_json"] else []
     keys = row.keys()
+    hidden_sheets = json.loads(row["hidden_sheets_json"]) if ("hidden_sheets_json" in keys and row["hidden_sheets_json"]) else []
+    hidden_about = json.loads(row["hidden_about_json"]) if ("hidden_about_json" in keys and row["hidden_about_json"]) else []
+    custom_categories = json.loads(row["custom_categories_json"]) if ("custom_categories_json" in keys and row["custom_categories_json"]) else []
     payment_plan = json.loads(row["payment_plan_json"]) if ("payment_plan_json" in keys and row["payment_plan_json"]) else []
     payment_note = (row["payment_note"] or "") if "payment_note" in keys else ""
     timeline = json.loads(row["timeline_json"]) if ("timeline_json" in keys and row["timeline_json"]) else []
@@ -3662,6 +3679,9 @@ def _deserialize_pitch_proposal(row):
         "preset": preset,
         "price_overrides": price_overrides,
         "custom_items": custom_items,
+        "hidden_sheets": hidden_sheets,
+        "hidden_about": hidden_about,
+        "custom_categories": custom_categories,
         "payment_plan": payment_plan,
         "payment_note": payment_note,
         "timeline": timeline,
@@ -3691,6 +3711,9 @@ def create_pitch_proposal(
     created_by,
     share_id,
     pitch_commit,
+    hidden_sheets=None,
+    hidden_about=None,
+    custom_categories=None,
     payment_plan=None,
     payment_note="",
     timeline=None,
@@ -3707,10 +3730,11 @@ def create_pitch_proposal(
             INSERT INTO pitch_proposals (
                 id, slug, kind, status, client_name, business_name,
                 contact_json, preset_json, price_overrides_json, custom_items_json,
+                hidden_sheets_json, hidden_about_json, custom_categories_json,
                 notes, created_by, share_id, pitch_commit,
                 payment_plan_json, payment_note, timeline_json, service_plans_json,
                 created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(proposal_id),
@@ -3723,6 +3747,9 @@ def create_pitch_proposal(
                 json.dumps(preset or {}, ensure_ascii=False),
                 json.dumps(price_overrides or {}, ensure_ascii=False),
                 json.dumps(custom_items or [], ensure_ascii=False),
+                json.dumps(hidden_sheets if hidden_sheets is not None else [], ensure_ascii=False),
+                json.dumps(hidden_about if hidden_about is not None else [], ensure_ascii=False),
+                json.dumps(custom_categories if custom_categories is not None else [], ensure_ascii=False),
                 str(notes or ""),
                 str(created_by or "user"),
                 str(share_id),
@@ -3829,6 +3856,9 @@ def update_pitch_proposal(proposal_id, updates, updated_at=None):
         "preset": "preset_json",
         "price_overrides": "price_overrides_json",
         "custom_items": "custom_items_json",
+        "hidden_sheets": "hidden_sheets_json",
+        "hidden_about": "hidden_about_json",
+        "custom_categories": "custom_categories_json",
         "payment_plan": "payment_plan_json",
         "timeline": "timeline_json",
         "service_plans": "service_plans_json",

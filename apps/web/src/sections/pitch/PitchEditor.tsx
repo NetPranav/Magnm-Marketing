@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BottomBar,
   Card,
+  Checkbox,
   NumberedTabs,
   PillButton,
   Row,
@@ -13,11 +14,15 @@ import {
 import {
   formatRupees,
   getPitchCatalog,
+  getPitchPreviewPayload,
   getProposal,
   listProposalPdfs,
   updateProposal,
   type PitchCatalog,
+  type PitchDroppedItemChange,
+  type PitchIncludedFromHidden,
   type PitchPdfRecord,
+  type PitchPricingSummary,
   type PitchProposal,
   type PitchRuleViolation,
 } from '../../api/pitch';
@@ -30,9 +35,12 @@ import { DraftWithWriterDialog, UnsavedChangesDialog } from './PitchDialogs';
 import { PitchPlansTab } from './PitchPlansTab';
 import { PitchPricesTab } from './PitchPricesTab';
 import {
+  FOLLOW_PREVIEW_STORAGE_KEY,
+  buildEffectivePriceMap,
   buildLivePreviewPayload,
   extractRuleViolations,
   formatAgentChip,
+  formatDroppedItemsNotice,
   formatKindLabel,
   formatRecurringTotalsLine,
   mapProposalStatusState,
@@ -42,6 +50,25 @@ import {
 
 type EditorTabId = 'details' | 'deliverables' | 'prices' | 'plans' | 'preview';
 type LayoutMode = 'wide' | 'medium' | 'narrow';
+
+function readStoredFollowPreview(): boolean {
+  try {
+    const raw = window.localStorage.getItem(FOLLOW_PREVIEW_STORAGE_KEY);
+    if (raw === '0' || raw === 'false') return false;
+    if (raw === '1' || raw === 'true') return true;
+  } catch {
+    // Ignore localStorage access errors in restricted browsers.
+  }
+  return true;
+}
+
+function writeStoredFollowPreview(enabled: boolean): void {
+  try {
+    window.localStorage.setItem(FOLLOW_PREVIEW_STORAGE_KEY, enabled ? 'true' : 'false');
+  } catch {
+    // Ignore localStorage write errors.
+  }
+}
 
 function useEditorLayoutMode(): LayoutMode {
   const getMode = (): LayoutMode => {
@@ -92,7 +119,7 @@ export interface PitchEditorProps {
 export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditorProps) {
   const layoutMode = useEditorLayoutMode();
   const [activeTab, setActiveTab] = useState<EditorTabId>('details');
-  const [showPricesPreview, setShowPricesPreview] = useState(false);
+  const [followPreview, setFollowPreview] = useState<boolean>(readStoredFollowPreview);
 
   const [proposal, setProposal] = useState<PitchProposal | null>(null);
   const [draft, setDraft] = useState<PitchDraftState | null>(null);
@@ -106,6 +133,13 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
   const [previewRev, setPreviewRev] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [droppedChanges, setDroppedChanges] = useState<PitchDroppedItemChange[]>([]);
+  const [liveIncludedFromHidden, setLiveIncludedFromHidden] = useState<
+    PitchIncludedFromHidden[] | undefined
+  >(undefined);
+  const [livePricingSummary, setLivePricingSummary] = useState<PitchPricingSummary | null>(
+    null,
+  );
   const [violations, setViolations] = useState<PitchRuleViolation[]>([]);
 
   const [pendingLeaveAction, setPendingLeaveAction] = useState<(() => void) | null>(null);
@@ -113,7 +147,14 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
   const [writerBusy, setWriterBusy] = useState(false);
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const formContainerRef = useRef<HTMLDivElement | null>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const priceDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const priceOnlyEditRef = useRef<boolean>(false);
+  const pendingPriceItemRef = useRef<string | null>(null);
+  const lastScrollPostAtRef = useRef<number>(0);
+  const scrollThrottleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingScrollTargetRef = useRef<string | null>(null);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -128,6 +169,9 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
       setDraft(proposalToDraft(propRes));
       setCatalog(catRes);
       setPdfs(Array.isArray(pdfRes?.pdfs) ? pdfRes.pdfs : []);
+      setLiveIncludedFromHidden(propRes.included_from_hidden);
+      setLivePricingSummary(null);
+      setDroppedChanges([]);
       setDirty(false);
       setViolations([]);
     } catch (err) {
@@ -211,51 +255,316 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
     ),
   );
 
-  // Debounced live preview push (at most once per second while typing).
-  const pushLivePreview = useCallback(
-    (nextDraft: PitchDraftState) => {
-      const win = iframeRef.current?.contentWindow;
-      if (!win || typeof win.postMessage !== 'function') return;
-      win.postMessage(
-        {
-          type: 'magnm:pitch-preview-update',
-          payload: buildLivePreviewPayload(nextDraft, catalog),
-        },
-        window.location.origin,
-      );
+  // Scroll sync postMessage helper
+  const postScrollToIframe = useCallback((target: string) => {
+    const win = iframeRef.current?.contentWindow;
+    if (!win || typeof win.postMessage !== 'function') return;
+    lastScrollPostAtRef.current = Date.now();
+    win.postMessage(
+      {
+        type: 'magnm:pitch-scroll-to',
+        target,
+      },
+      window.location.origin,
+    );
+  }, []);
+
+  // Immediate scroll-to on focus when Follow in preview is enabled
+  const handleFocusScrollTo = useCallback(
+    (target: string) => {
+      if (!followPreview || !target) return;
+      if (scrollThrottleTimerRef.current) {
+        clearTimeout(scrollThrottleTimerRef.current);
+        scrollThrottleTimerRef.current = null;
+      }
+      pendingScrollTargetRef.current = null;
+      postScrollToIframe(target);
     },
-    [catalog],
+    [followPreview, postScrollToIframe],
+  );
+
+  // Throttled scroll-to (at most 1 per 200 ms) for IntersectionObserver scroll sync
+  const handleIntersectionScrollTo = useCallback(
+    (target: string) => {
+      if (!followPreview || !target) return;
+      const now = Date.now();
+      const elapsed = now - lastScrollPostAtRef.current;
+      if (elapsed >= 200) {
+        if (scrollThrottleTimerRef.current) {
+          clearTimeout(scrollThrottleTimerRef.current);
+          scrollThrottleTimerRef.current = null;
+        }
+        pendingScrollTargetRef.current = null;
+        postScrollToIframe(target);
+        return;
+      }
+      pendingScrollTargetRef.current = target;
+      if (!scrollThrottleTimerRef.current) {
+        scrollThrottleTimerRef.current = setTimeout(() => {
+          scrollThrottleTimerRef.current = null;
+          const nextTarget = pendingScrollTargetRef.current;
+          pendingScrollTargetRef.current = null;
+          if (nextTarget) {
+            postScrollToIframe(nextTarget);
+          }
+        }, Math.max(10, 200 - elapsed));
+      }
+    },
+    [followPreview, postScrollToIframe],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (scrollThrottleTimerRef.current) {
+        clearTimeout(scrollThrottleTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Observe form sections with [data-scroll-target] and scroll preview to topmost visible section.
+  useEffect(() => {
+    if (!followPreview || typeof IntersectionObserver !== 'function') return undefined;
+    const container = formContainerRef.current;
+    if (!container) return undefined;
+
+    const elements = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-scroll-target]'),
+    );
+    if (elements.length === 0) return undefined;
+
+    const visibleMap = new Map<Element, IntersectionObserverEntry>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            visibleMap.set(entry.target, entry);
+          } else {
+            visibleMap.delete(entry.target);
+          }
+        }
+        if (visibleMap.size === 0) return;
+        let topmostEl: HTMLElement | null = null;
+        let bestTop = Number.POSITIVE_INFINITY;
+        for (const [el, entry] of visibleMap.entries()) {
+          const top =
+            entry.boundingClientRect && typeof entry.boundingClientRect.top === 'number'
+              ? entry.boundingClientRect.top
+              : (el as HTMLElement).getBoundingClientRect?.().top ?? 0;
+          if (top < bestTop) {
+            bestTop = top;
+            topmostEl = el as HTMLElement;
+          }
+        }
+        const target = topmostEl?.getAttribute('data-scroll-target');
+        if (target) {
+          handleIntersectionScrollTo(target);
+        }
+      },
+      { threshold: [0.1, 0.5] },
+    );
+
+    for (const el of elements) {
+      observer.observe(el);
+    }
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [
+    followPreview,
+    activeTab,
+    draft?.hidden_sheets,
+    draft?.hidden_about,
+    draft?.custom_categories,
+    handleIntersectionScrollTo,
+  ]);
+
+  // Live preview update via POST /api/pitch/preview_payload (debounced 300 ms) with local fallback.
+  const pushLivePreview = useCallback(
+    async (nextDraft: PitchDraftState) => {
+      const localPayload = buildLivePreviewPayload(nextDraft, catalog);
+      setLiveIncludedFromHidden(localPayload.included_from_hidden);
+      try {
+        const res = await getPitchPreviewPayload({
+          id: proposalId,
+          slug: nextDraft.slug,
+          kind: nextDraft.kind,
+          status: nextDraft.status,
+          client_name: nextDraft.client_name,
+          business_name: nextDraft.business_name,
+          contact: nextDraft.contact,
+          preset: {
+            ...nextDraft.preset,
+            slug: nextDraft.slug,
+            name:
+              nextDraft.preset.name ||
+              nextDraft.business_name ||
+              nextDraft.client_name ||
+              nextDraft.slug,
+          },
+          price_overrides: nextDraft.price_overrides,
+          custom_items: nextDraft.custom_items,
+          hidden_sheets: nextDraft.hidden_sheets,
+          hidden_about: nextDraft.hidden_about,
+          custom_categories: nextDraft.custom_categories,
+          ...(nextDraft.kind === 'final'
+            ? {
+                payment_plan: nextDraft.payment_plan,
+                payment_note: nextDraft.payment_note,
+                timeline: nextDraft.timeline,
+                service_plans: nextDraft.service_plans,
+              }
+            : {}),
+          notes: nextDraft.notes,
+        });
+        if (res && typeof res === 'object') {
+          if (Array.isArray(res.included_from_hidden)) {
+            setLiveIncludedFromHidden(res.included_from_hidden);
+          }
+          if (res.pricing_summary && typeof res.pricing_summary === 'object') {
+            setLivePricingSummary(res.pricing_summary);
+          }
+          if (res.preset) {
+            const win = iframeRef.current?.contentWindow;
+            if (win && typeof win.postMessage === 'function') {
+              win.postMessage(
+                {
+                  type: 'magnm:pitch-preview-update',
+                  payload: res,
+                },
+                window.location.origin,
+              );
+            }
+            return;
+          }
+        }
+      } catch {
+        // Fallback to local preview payload if network/mock is unavailable.
+      }
+      const win = iframeRef.current?.contentWindow;
+      if (win && typeof win.postMessage === 'function') {
+        win.postMessage(
+          {
+            type: 'magnm:pitch-preview-update',
+            payload: localPayload,
+          },
+          window.location.origin,
+        );
+      }
+    },
+    [catalog, proposalId],
+  );
+
+  // Instant price-only live preview push (debounced 150 ms) + scroll-to item:<id> + refresh preview_payload
+  const pushPriceOnlyPreview = useCallback(
+    (nextDraft: PitchDraftState, itemId: string | null) => {
+      const win = iframeRef.current?.contentWindow;
+      if (win && typeof win.postMessage === 'function') {
+        win.postMessage(
+          {
+            type: 'magnm:pitch-preview-update',
+            payload: {
+              prices: buildEffectivePriceMap(nextDraft, catalog),
+              custom_items: nextDraft.custom_items,
+            },
+          },
+          window.location.origin,
+        );
+      }
+      if (itemId && followPreview) {
+        postScrollToIframe(`item:${itemId}`);
+      }
+      void pushLivePreview(nextDraft);
+    },
+    [catalog, followPreview, postScrollToIframe, pushLivePreview],
   );
 
   useEffect(() => {
     if (!draft || !dirty) return undefined;
+
+    if (priceOnlyEditRef.current) {
+      priceOnlyEditRef.current = false;
+      const targetItemId = pendingPriceItemRef.current;
+      pendingPriceItemRef.current = null;
+      if (priceDebounceTimerRef.current) {
+        clearTimeout(priceDebounceTimerRef.current);
+      }
+      priceDebounceTimerRef.current = setTimeout(() => {
+        pushPriceOnlyPreview(draft, targetItemId);
+      }, 150);
+      return () => {
+        if (priceDebounceTimerRef.current) {
+          clearTimeout(priceDebounceTimerRef.current);
+        }
+      };
+    }
+
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
     }
     debounceTimerRef.current = setTimeout(() => {
-      pushLivePreview(draft);
-    }, 1000);
+      void pushLivePreview(draft);
+    }, 300);
     return () => {
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [draft, dirty, pushLivePreview]);
+  }, [draft, dirty, pushLivePreview, pushPriceOnlyPreview]);
 
   const handleDraftChange = useCallback(
     (updater: (prev: PitchDraftState) => PitchDraftState) => {
+      priceOnlyEditRef.current = false;
       setDraft((prev) => (prev ? updater(prev) : prev));
       setDirty(true);
       setNotice(null);
+      setDroppedChanges([]);
     },
     [],
   );
+
+  const handlePriceDraftChange = useCallback(
+    (itemId: string, updater: (prev: PitchDraftState) => PitchDraftState) => {
+      priceOnlyEditRef.current = true;
+      pendingPriceItemRef.current = itemId;
+      setDraft((prev) => (prev ? updater(prev) : prev));
+      setDirty(true);
+      setNotice(null);
+      setDroppedChanges([]);
+    },
+    [],
+  );
+
+  const handleToggleFollowPreview = (checked: boolean) => {
+    setFollowPreview(checked);
+    writeStoredFollowPreview(checked);
+  };
+
+  const switchTabAndScrollTop = (nextTabId: EditorTabId) => {
+    setActiveTab(nextTabId);
+    const colEl = formContainerRef.current;
+    if (colEl && typeof colEl.scrollIntoView === 'function') {
+      try {
+        colEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch {
+        colEl.scrollIntoView();
+      }
+    }
+    if (typeof window !== 'undefined' && typeof window.scrollTo === 'function') {
+      try {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      } catch {
+        window.scrollTo(0, 0);
+      }
+    }
+  };
 
   const handleSave = async () => {
     if (!draft || draft.kind === 'default') return;
     setSaving(true);
     setError(null);
     setNotice(null);
+    setDroppedChanges([]);
     setViolations([]);
     try {
       const updated = await updateProposal(proposalId, {
@@ -276,6 +585,9 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
         },
         price_overrides: draft.price_overrides,
         custom_items: draft.custom_items,
+        hidden_sheets: draft.hidden_sheets,
+        hidden_about: draft.hidden_about,
+        custom_categories: draft.custom_categories,
         ...(draft.kind === 'final'
           ? {
               payment_plan: draft.payment_plan,
@@ -288,10 +600,14 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
       });
       setProposal(updated);
       setDraft(proposalToDraft(updated));
+      setLiveIncludedFromHidden(updated.included_from_hidden);
+      setLivePricingSummary(null);
+      setDroppedChanges(Array.isArray(updated.changes) ? updated.changes : []);
       setDirty(false);
       setViolations([]);
       setPreviewRev((rev) => rev + 1);
-      setNotice('Proposal saved.');
+      const dropText = formatDroppedItemsNotice(updated.changes);
+      setNotice(dropText ? `Proposal saved. ${dropText}` : 'Proposal saved.');
     } catch (err) {
       const ruleErrors = extractRuleViolations(err);
       setViolations(ruleErrors);
@@ -338,6 +654,31 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
     () => Object.keys(catalog?.presets || {}),
     [catalog],
   );
+
+  const hasUnsavedPricingChanges = useMemo(() => {
+    if (!dirty || !proposal || !draft) return false;
+    const savedDraft = proposalToDraft(proposal);
+    return (
+      JSON.stringify({
+        price_overrides: draft.price_overrides,
+        initialSelected: draft.preset.initialSelected,
+        sections: draft.preset.sections,
+        custom_items: draft.custom_items,
+        hidden_sheets: draft.hidden_sheets,
+        custom_categories: draft.custom_categories,
+        service_plans: draft.service_plans,
+      }) !==
+      JSON.stringify({
+        price_overrides: savedDraft.price_overrides,
+        initialSelected: savedDraft.preset.initialSelected,
+        sections: savedDraft.preset.sections,
+        custom_items: savedDraft.custom_items,
+        hidden_sheets: savedDraft.hidden_sheets,
+        custom_categories: savedDraft.custom_categories,
+        service_plans: savedDraft.service_plans,
+      })
+    );
+  }, [dirty, proposal, draft]);
 
   if (loading) {
     return (
@@ -386,28 +727,40 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
   ];
   const tabs: TabItem[] =
     layoutMode === 'wide' ? formTabs : [...formTabs, { id: 'preview', label: 'Preview' }];
-  const isPricesFullWidth = layoutMode === 'wide' && activeTab === 'prices';
-  const recurringLine = formatRecurringTotalsLine(proposal.pricing_summary);
+
+  const currentTabIdx = tabs.findIndex((t) => t.id === activeTab);
+  const prevTab = currentTabIdx > 0 ? tabs[currentTabIdx - 1] : null;
+  const nextTab =
+    currentTabIdx >= 0 && currentTabIdx < tabs.length - 1 ? tabs[currentTabIdx + 1] : null;
+
+  const activePricingSummary =
+    hasUnsavedPricingChanges && livePricingSummary
+      ? livePricingSummary
+      : proposal.pricing_summary;
+  const recurringLine = formatRecurringTotalsLine(activePricingSummary);
+  const bottomBarCaption = hasUnsavedPricingChanges
+    ? 'Total (unsaved)'
+    : isFinal
+      ? 'Total (one-time)'
+      : 'Total';
 
   const formContent = (
-    <div className="studio-stack-sm">
-      <div className="studio-pitch-tabs-bar">
+    <div ref={formContainerRef} className="studio-stack-sm">
+      <div
+        className="studio-pitch-tabs-bar studio-pitch-tabs-sticky"
+        data-testid="pitch-sticky-tabs"
+      >
         <NumberedTabs
           items={tabs}
           current={activeTab}
           onSelect={(id) => setActiveTab(id as EditorTabId)}
           ariaLabel="Proposal editor tabs"
         />
-        {isPricesFullWidth ? (
-          <PillButton
-            variant="outline"
-            size="sm"
-            aria-pressed={showPricesPreview}
-            onClick={() => setShowPricesPreview((prev) => !prev)}
-          >
-            {showPricesPreview ? 'Hide preview' : 'Show preview'}
-          </PillButton>
-        ) : null}
+        <Checkbox
+          label="Follow in preview"
+          checked={followPreview}
+          onChange={(e) => handleToggleFollowPreview(e.target.checked)}
+        />
       </div>
 
       {activeTab === 'details' ? (
@@ -417,6 +770,7 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
           reservedPresets={reservedPresets}
           violations={violations}
           onChange={handleDraftChange}
+          onScrollTo={handleFocusScrollTo}
         />
       ) : null}
 
@@ -424,8 +778,10 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
         <PitchDeliverablesTab
           draft={draft}
           catalog={catalog}
+          includedFromHidden={liveIncludedFromHidden}
           violations={violations}
           onChange={handleDraftChange}
+          onScrollTo={handleFocusScrollTo}
         />
       ) : null}
 
@@ -437,6 +793,8 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
           dirty={dirty}
           violations={violations}
           onChange={handleDraftChange}
+          onPriceChange={handlePriceDraftChange}
+          onScrollTo={handleFocusScrollTo}
         />
       ) : null}
 
@@ -448,7 +806,38 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
           dirty={dirty}
           violations={violations}
           onChange={handleDraftChange}
+          onScrollTo={handleFocusScrollTo}
         />
+      ) : null}
+
+      {activeTab !== 'preview' ? (
+        <nav
+          className="studio-pitch-tab-pager"
+          aria-label="Section navigation"
+        >
+          <div>
+            {prevTab ? (
+              <PillButton
+                variant="outline"
+                size="sm"
+                onClick={() => switchTabAndScrollTop(prevTab.id as EditorTabId)}
+              >
+                Previous: {prevTab.label}
+              </PillButton>
+            ) : null}
+          </div>
+          <div>
+            {nextTab ? (
+              <PillButton
+                variant="outline"
+                size="sm"
+                onClick={() => switchTabAndScrollTop(nextTab.id as EditorTabId)}
+              >
+                Next: {nextTab.label}
+              </PillButton>
+            ) : null}
+          </div>
+        </nav>
       ) : null}
     </div>
   );
@@ -456,8 +845,9 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
   const previewVisible = isDefault
     ? true
     : layoutMode === 'wide'
-      ? activeTab !== 'prices' || showPricesPreview
+      ? true
       : activeTab === 'preview';
+
   const previewPane = (
     <div
       className="studio-pitch-preview-pane"
@@ -484,7 +874,7 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
           className="studio-pitch-iframe"
           onLoad={() => {
             if (!isDefault && dirty && draft) {
-              pushLivePreview(draft);
+              void pushLivePreview(draft);
             }
           }}
         />
@@ -569,6 +959,13 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
         </div>
       ) : null}
 
+      {droppedChanges.length > 0 ? (
+        <div className="mg-notice" role="status" aria-label="Dropped items from hidden sheets">
+          <strong>Items dropped from removed sheets:</strong>{' '}
+          {droppedChanges.map((c) => c.message).join(' · ')}
+        </div>
+      ) : null}
+
       {warnings.length > 0 ? (
         <div className="mg-notice" role="status" aria-label="Product rule warnings">
           <strong>Product rule notice:</strong>{' '}
@@ -582,7 +979,7 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
         </div>
       ) : layoutMode === 'wide' ? (
         <div
-          className={isPricesFullWidth ? 'studio-pitch-full' : 'studio-pitch-split'}
+          className="studio-pitch-split"
           data-testid="pitch-wide-layout"
         >
           <div className="studio-pitch-form-col">{formContent}</div>
@@ -643,10 +1040,10 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
       ) : null}
 
       <BottomBar
-        caption={isFinal ? 'Total (one-time)' : 'Total'}
+        caption={bottomBarCaption}
         value={
           <>
-            <span>{formatRupees(proposal.pricing_summary.total)}</span>
+            <span>{formatRupees(activePricingSummary.total)}</span>
             {recurringLine ? (
               <span className="studio-mono studio-pitch-bar-recurring">
                 {recurringLine}

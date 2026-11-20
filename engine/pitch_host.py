@@ -33,6 +33,16 @@ ALLOWED_PITCH_FILES = frozenset({
 })
 
 VALID_MODES = ("preview", "present", "form")
+VALID_SHEET_KEYS = ("p2", "p3", "p4", "p5")
+VALID_ABOUT_KEYS = ("lead", "what_we_do", "portfolio", "this_plan", "architecture", "timeline", "payment")
+
+GROUP_TO_SHEET = {
+    "Web & SaaS": "p2",
+    "Mobile app": "p3",
+    "Backend": "p4",
+    "AI & Automation": "p5",
+    "DevOps & Maintenance": "p5",
+}
 
 _GOOGLE_FONTS_RE = re.compile(
     r'<link\s+rel="preconnect"\s+href="https://fonts\.googleapis\.com"\s*>\s*'
@@ -339,6 +349,258 @@ def _extract_contact(proposal, preset):
     }
 
 
+def item_sheet(item_id, all_items, custom_categories=None):
+    """Return the home sheet key ('p2'..'p5' or 'cat_<slug>') for an item."""
+    cat_by_name = {
+        c["name"]: c
+        for c in (custom_categories or [])
+        if isinstance(c, dict) and c.get("name")
+    }
+    item = (all_items or {}).get(item_id) or {}
+    grp = item.get("g", "")
+    if grp in cat_by_name:
+        cat = cat_by_name[grp]
+        placement = cat.get("placement", "")
+        if placement in VALID_SHEET_KEYS:
+            return placement
+        return cat.get("id") or "new_sheet"
+    return GROUP_TO_SHEET.get(grp, "p5")
+
+
+def build_all_items(cat_items, custom_items):
+    """Merge catalog items and proposal custom items into one lookup map."""
+    all_items = dict(cat_items or {})
+    for citem in custom_items or []:
+        if isinstance(citem, dict) and citem.get("id"):
+            all_items[citem["id"]] = citem
+    return all_items
+
+
+def compute_effective_hidden_sheets(proposal, all_items=None):
+    """Return effective hidden_sheets (including auto-hidden empty sheets for final quotations)."""
+    if not isinstance(proposal, dict) or proposal.get("kind") == "default":
+        return []
+    stored = []
+    seen = set()
+    for s in proposal.get("hidden_sheets") or []:
+        if isinstance(s, str) and s.strip() in VALID_SHEET_KEYS:
+            skey = s.strip()
+            if skey not in seen:
+                seen.add(skey)
+                stored.append(skey)
+    if proposal.get("kind") != "final":
+        return stored
+
+    if all_items is None:
+        cat_items = (load_catalog().get("items") or {})
+        all_items = build_all_items(cat_items, proposal.get("custom_items"))
+
+    custom_categories = proposal.get("custom_categories") or []
+    preset = proposal.get("preset") if isinstance(proposal.get("preset"), dict) else {}
+    raw_selected = [
+        iid
+        for iid in (preset.get("initialSelected") or [])
+        if isinstance(iid, str) and iid in all_items
+    ]
+    visible_seeds = [
+        iid
+        for iid in raw_selected
+        if item_sheet(iid, all_items, custom_categories) not in seen
+    ]
+    expanded, _ = expand_selected_ids(visible_seeds, all_items)
+    sheets_with_agreed = {
+        item_sheet(iid, all_items, custom_categories)
+        for iid in expanded
+        if item_sheet(iid, all_items, custom_categories) not in seen
+    }
+    for skey in VALID_SHEET_KEYS:
+        if skey not in seen and skey not in sheets_with_agreed:
+            seen.add(skey)
+    return [k for k in VALID_SHEET_KEYS if k in seen]
+
+
+def compute_included_from_hidden(proposal, all_items=None, effective_hidden_sheets=None):
+    """Compute required items from hidden sheets needed by items on visible sheets."""
+    if not isinstance(proposal, dict) or proposal.get("kind") == "default":
+        return []
+    if all_items is None:
+        cat_items = (load_catalog().get("items") or {})
+        all_items = build_all_items(cat_items, proposal.get("custom_items"))
+    if effective_hidden_sheets is None:
+        effective_hidden_sheets = compute_effective_hidden_sheets(proposal, all_items=all_items)
+
+    hidden_set = set(effective_hidden_sheets or [])
+    if not hidden_set:
+        return []
+
+    kind = proposal.get("kind") or "proposal"
+    preset = proposal.get("preset") if isinstance(proposal.get("preset"), dict) else {}
+    custom_items = [c for c in (proposal.get("custom_items") or []) if isinstance(c, dict) and c.get("id")]
+    custom_categories = [c for c in (proposal.get("custom_categories") or []) if isinstance(c, dict) and c.get("name")]
+
+    visible_sheets = []
+    if kind == "final":
+        raw_selected = [
+            iid
+            for iid in (preset.get("initialSelected") or [])
+            if isinstance(iid, str) and iid in all_items
+        ]
+        visible_seeds = [
+            iid
+            for iid in raw_selected
+            if item_sheet(iid, all_items, custom_categories) not in hidden_set
+        ]
+        expanded, _ = expand_selected_ids(visible_seeds, all_items)
+        agreed_set = set(expanded)
+        for skey in VALID_SHEET_KEYS:
+            if skey in hidden_set:
+                continue
+            sheet_items = [
+                iid
+                for iid in expanded
+                if item_sheet(iid, all_items, custom_categories) == skey
+            ]
+            if sheet_items:
+                visible_sheets.append((skey, sheet_items))
+        for cat in custom_categories:
+            if cat.get("placement") == "new_sheet" and cat.get("id"):
+                sheet_items = [
+                    c["id"]
+                    for c in custom_items
+                    if c.get("g") == cat.get("name") and c["id"] in agreed_set
+                ]
+                if sheet_items:
+                    visible_sheets.append((cat["id"], sheet_items))
+    else:
+        sections = preset.get("sections") if isinstance(preset.get("sections"), dict) else {}
+        initial_sel = [
+            iid
+            for iid in (preset.get("initialSelected") or [])
+            if isinstance(iid, str) and iid in all_items
+        ]
+        for skey in VALID_SHEET_KEYS:
+            if skey in hidden_set:
+                continue
+            sheet_items = []
+            seen_on_sheet = set()
+            for iid in (sections.get(skey) or []):
+                if isinstance(iid, str) and iid in all_items and iid not in seen_on_sheet:
+                    if item_sheet(iid, all_items, custom_categories) not in hidden_set:
+                        seen_on_sheet.add(iid)
+                        sheet_items.append(iid)
+            for c in custom_items:
+                cid = c["id"]
+                if cid not in seen_on_sheet and item_sheet(cid, all_items, custom_categories) == skey:
+                    seen_on_sheet.add(cid)
+                    sheet_items.append(cid)
+            for iid in initial_sel:
+                if iid not in seen_on_sheet and item_sheet(iid, all_items, custom_categories) == skey:
+                    seen_on_sheet.add(iid)
+                    sheet_items.append(iid)
+            visible_sheets.append((skey, sheet_items))
+        for cat in custom_categories:
+            if cat.get("placement") == "new_sheet" and cat.get("id"):
+                sheet_items = [
+                    c["id"]
+                    for c in custom_items
+                    if c.get("g") == cat.get("name")
+                ]
+                if sheet_items:
+                    visible_sheets.append((cat["id"], sheet_items))
+
+    out_by_id = {}
+    out_order = []
+    for sheet_key, sheet_items in visible_sheets:
+        entries_by_id = {}
+        ordered_ids = []
+        for vid in sheet_items:
+            vitem = all_items.get(vid)
+            if not vitem:
+                continue
+            vname = str(vitem.get("n") or vid)
+            for dep_id in vitem.get("r") or []:
+                if dep_id not in all_items:
+                    continue
+                if item_sheet(dep_id, all_items, custom_categories) in hidden_set:
+                    if dep_id not in entries_by_id:
+                        entries_by_id[dep_id] = {
+                            "item_id": dep_id,
+                            "name": str(all_items[dep_id].get("n") or dep_id),
+                            "sheet_shown_on": sheet_key,
+                            "needed_for": [vname],
+                        }
+                        ordered_ids.append(dep_id)
+                    elif vname not in entries_by_id[dep_id]["needed_for"]:
+                        entries_by_id[dep_id]["needed_for"].append(vname)
+
+        idx = 0
+        while idx < len(ordered_ids):
+            hid = ordered_ids[idx]
+            idx += 1
+            parent_needed = entries_by_id[hid]["needed_for"]
+            for trans_id in (all_items.get(hid) or {}).get("r") or []:
+                if trans_id not in all_items:
+                    continue
+                if item_sheet(trans_id, all_items, custom_categories) in hidden_set:
+                    if trans_id not in entries_by_id:
+                        entries_by_id[trans_id] = {
+                            "item_id": trans_id,
+                            "name": str(all_items[trans_id].get("n") or trans_id),
+                            "sheet_shown_on": sheet_key,
+                            "needed_for": list(parent_needed),
+                        }
+                        ordered_ids.append(trans_id)
+                    else:
+                        for pname in parent_needed:
+                            if pname not in entries_by_id[trans_id]["needed_for"]:
+                                entries_by_id[trans_id]["needed_for"].append(pname)
+
+        for did in ordered_ids:
+            entry = entries_by_id[did]
+            if did not in out_by_id:
+                out_by_id[did] = {
+                    "item_id": entry["item_id"],
+                    "name": entry["name"],
+                    "sheet_shown_on": entry["sheet_shown_on"],
+                    "needed_for": list(entry["needed_for"]),
+                    "also_needed_on": [],
+                }
+                out_order.append(did)
+            else:
+                existing = out_by_id[did]
+                if sheet_key != existing["sheet_shown_on"] and sheet_key not in existing["also_needed_on"]:
+                    existing["also_needed_on"].append(sheet_key)
+                for nname in entry["needed_for"]:
+                    if nname not in existing["needed_for"]:
+                        existing["needed_for"].append(nname)
+
+    return [out_by_id[did] for did in out_order]
+
+
+def build_payload_custom_categories(custom_categories, custom_items, kind=None, agreed_ids=None):
+    """Return custom_categories list with each category's item_ids in order."""
+    out = []
+    for cat in custom_categories or []:
+        if not isinstance(cat, dict):
+            continue
+        cat_name = str(cat.get("name") or "")
+        item_ids = []
+        for c in custom_items or []:
+            if isinstance(c, dict) and c.get("id") and c.get("g") == cat_name:
+                if kind == "final" and agreed_ids is not None and c["id"] not in agreed_ids:
+                    continue
+                item_ids.append(c["id"])
+        out.append({
+            "id": str(cat.get("id") or ""),
+            "name": cat_name,
+            "placement": str(cat.get("placement") or ""),
+            "sheet_title": str(cat.get("sheet_title") or ""),
+            "sheet_lead": str(cat.get("sheet_lead") or ""),
+            "item_ids": item_ids,
+        })
+    return out
+
+
 def _compute_final_total(selected_ids, prices, custom_items, standalone_fee, service_plans, cat_items):
     all_items = dict(cat_items)
     custom_map = {}
@@ -389,6 +651,10 @@ def build_payload(mode="preview", proposal=None, price_overrides=None):
     payment_note = ""
     timeline = []
     service_plans = []
+    hidden_sheets = []
+    hidden_about = []
+    custom_categories = []
+    included_from_hidden = []
 
     if isinstance(proposal, dict):
         proposal_id = proposal.get("id") or proposal.get("proposal_id")
@@ -407,10 +673,21 @@ def build_payload(mode="preview", proposal=None, price_overrides=None):
             custom_items = list(proposal.get("custom_items") or [])
             _apply_price_overrides(prices, proposal.get("price_overrides"))
             contact = _extract_contact(proposal, preset)
+            all_items = build_all_items(items, custom_items)
+            hidden_sheets = compute_effective_hidden_sheets(proposal, all_items=all_items)
+            seen_about = set()
+            for akey in proposal.get("hidden_about") or []:
+                if isinstance(akey, str) and akey.strip() in VALID_ABOUT_KEYS and akey.strip() not in seen_about:
+                    seen_about.add(akey.strip())
+                    hidden_about.append(akey.strip())
+
+            agreed_ids_set = None
             if kind == "final":
                 locked = True
                 service_plans = [dict(sp) for sp in (proposal.get("service_plans") or []) if isinstance(sp, dict)]
                 selected_ids = list((preset or {}).get("initialSelected") or []) if isinstance(preset, dict) else []
+                expanded_sel, _ = expand_selected_ids(selected_ids, all_items)
+                agreed_ids_set = set(expanded_sel)
                 total = _compute_final_total(
                     selected_ids,
                     prices,
@@ -422,6 +699,18 @@ def build_payload(mode="preview", proposal=None, price_overrides=None):
                 payment_plan = compute_payment_plan_amounts(proposal.get("payment_plan") or [], total)
                 payment_note = str(proposal.get("payment_note") or "")
                 timeline = [dict(st) for st in (proposal.get("timeline") or []) if isinstance(st, dict)]
+
+            custom_categories = build_payload_custom_categories(
+                proposal.get("custom_categories"),
+                custom_items,
+                kind=kind,
+                agreed_ids=agreed_ids_set,
+            )
+            included_from_hidden = compute_included_from_hidden(
+                proposal,
+                all_items=all_items,
+                effective_hidden_sheets=hidden_sheets,
+            )
 
     return {
         "mode": norm_mode,
@@ -436,7 +725,18 @@ def build_payload(mode="preview", proposal=None, price_overrides=None):
         "payment_note": payment_note,
         "timeline": timeline,
         "service_plans": service_plans,
+        "hidden_sheets": hidden_sheets,
+        "hidden_about": hidden_about,
+        "custom_categories": custom_categories,
+        "included_from_hidden": included_from_hidden,
     }
+
+
+def preview_payload(proposal_like):
+    """Validate proposal_like without saving and return the Pitch payload with violations and derived fields."""
+    import pitch
+
+    return pitch.preview_payload(proposal_like)
 
 
 def safe_json_for_script(payload):
@@ -603,6 +903,9 @@ def serve(handler, url):
                     "preset": preset_copy,
                     "price_overrides": prop.get("price_overrides") or {},
                     "custom_items": prop.get("custom_items") or [],
+                    "hidden_sheets": prop.get("hidden_sheets") or [],
+                    "hidden_about": prop.get("hidden_about") or [],
+                    "custom_categories": prop.get("custom_categories") or [],
                     "payment_plan": prop.get("payment_plan") or [],
                     "payment_note": prop.get("payment_note") or "",
                     "timeline": prop.get("timeline") or [],

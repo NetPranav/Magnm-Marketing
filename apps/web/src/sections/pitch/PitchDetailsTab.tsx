@@ -1,5 +1,9 @@
 import { Card, Field, PillButton, Select, TextArea, TextInput } from '@magnm/design/react';
-import type { PitchCatalog, PitchRuleViolation } from '../../api/pitch';
+import type {
+  PitchAboutSectionKey,
+  PitchCatalog,
+  PitchRuleViolation,
+} from '../../api/pitch';
 import {
   MAX_ARCH_ROLES,
   MAX_ROLE_POINTS,
@@ -16,6 +20,7 @@ export interface PitchDetailsTabProps {
   reservedPresets: string[];
   violations: PitchRuleViolation[];
   onChange: (updater: (prev: PitchDraftState) => PitchDraftState) => void;
+  onScrollTo?: (target: string) => void;
 }
 
 function getFieldViolation(violations: PitchRuleViolation[], field: string): string | null {
@@ -37,14 +42,18 @@ function renderFieldError(err: string | null) {
   return err ? <span className="studio-field-error" role="alert">{err}</span> : undefined;
 }
 
-/** Editor tab 1: Details, contact info, Pitch preset copy, and architecture roles. */
+/** Editor tab 1: Details, contact info, Pitch preset copy, and removable About sections. */
 export function PitchDetailsTab({
   draft,
   catalog = null,
   reservedPresets,
   violations,
   onChange,
+  onScrollTo,
 }: PitchDetailsTabProps) {
+  const isFinal = draft.kind === 'final';
+  const hiddenAboutSet = new Set<PitchAboutSectionKey>(draft.hidden_about || []);
+
   const liveSlugErr = validateSlug(draft.slug, reservedPresets);
   const slugErr = getFieldViolation(violations, 'slug') || liveSlugErr;
   const clientNameErr = getPitchFieldError(violations, 'client_name', draft.client_name);
@@ -70,6 +79,22 @@ export function PitchDetailsTab({
     draft.preset.architectureBlock.sub,
   );
   const roles = draft.preset.architectureBlock.roles;
+  const defaults = getDefaultFinalPlans(catalog);
+
+  const toggleAboutSection = (key: PitchAboutSectionKey, hide: boolean) => {
+    onChange((prev) => {
+      const current = prev.hidden_about || [];
+      const next = hide
+        ? current.includes(key)
+          ? current
+          : [...current, key]
+        : current.filter((k) => k !== key);
+      return {
+        ...prev,
+        hidden_about: next,
+      };
+    });
+  };
 
   const updatePreset = (patch: Partial<PitchDraftState['preset']>) => {
     onChange((prev) => ({
@@ -88,517 +113,718 @@ export function PitchDetailsTab({
     }));
   };
 
+  const renderAboutSectionHeader = (
+    key: PitchAboutSectionKey,
+    label: string,
+    extraActions?: React.ReactNode,
+  ) => {
+    const isHidden = hiddenAboutSet.has(key);
+    return (
+      <div className="studio-section-bar">
+        <span className="mg-label">{label}</span>
+        <div className="studio-btn-group">
+          {!isHidden ? extraActions : null}
+          <PillButton
+            variant="outline"
+            size="sm"
+            aria-label={isHidden ? `Add back ${label}` : `Remove ${label} from pitch`}
+            onClick={() => toggleAboutSection(key, !isHidden)}
+          >
+            {isHidden ? 'Add back' : 'Remove from pitch'}
+          </PillButton>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="studio-stack">
-      <Card>
-        <div className="studio-stack-sm">
-          <div className="mg-label">Proposal identity</div>
-          <div className="studio-grid-2">
-            <Field
-              label="Slug"
-              htmlFor="pitch-field-slug"
-              hint={slugErr ? <span className="studio-field-error" role="alert">{slugErr}</span> : 'URL slug for client route'}
-            >
-              <TextInput
-                id="pitch-field-slug"
-                aria-invalid={Boolean(slugErr)}
-                value={draft.slug}
-                onChange={(e) => {
-                  const nextSlug = e.target.value.toLowerCase();
-                  onChange((prev) => ({
-                    ...prev,
-                    slug: nextSlug,
-                    preset: { ...prev.preset, slug: nextSlug },
-                  }));
-                }}
-              />
-            </Field>
-
-            <Field
-              label="Kind"
-              htmlFor="pitch-field-kind"
-              hint={getFieldViolation(violations, 'kind') ? <span className="studio-field-error" role="alert">{getFieldViolation(violations, 'kind')}</span> : undefined}
-            >
-              <Select
-                id="pitch-field-kind"
-                value={draft.kind}
-                onChange={(e) => {
-                  const nextKind = e.target.value as PitchDraftState['kind'];
-                  onChange((prev) => {
-                    if (nextKind === 'final' && prev.kind !== 'final') {
-                      const defaults = getDefaultFinalPlans(catalog);
-                      return {
-                        ...prev,
-                        kind: nextKind,
-                        payment_plan:
-                          prev.payment_plan.length >= 2 ? prev.payment_plan : defaults.payment_plan,
-                        payment_note: prev.payment_note || defaults.payment_note,
-                        timeline: prev.timeline.length >= 1 ? prev.timeline : defaults.timeline,
-                      };
-                    }
-                    return { ...prev, kind: nextKind };
-                  });
-                }}
-              >
-                <option value="proposal">Proposal</option>
-                <option value="quote_form">Quote form</option>
-                <option value="final">Final quotation</option>
-              </Select>
-            </Field>
-
-            <Field
-              label="Status"
-              htmlFor="pitch-field-status"
-              hint={getFieldViolation(violations, 'status') ? <span className="studio-field-error" role="alert">{getFieldViolation(violations, 'status')}</span> : undefined}
-            >
-              <Select
-                id="pitch-field-status"
-                value={draft.status}
-                onChange={(e) =>
-                  onChange((prev) => ({
-                    ...prev,
-                    status: e.target.value as PitchDraftState['status'],
-                  }))
+      <div data-scroll-target="about">
+        <Card>
+          <div className="studio-stack-sm">
+            <div className="mg-label">Proposal identity</div>
+            <div className="studio-grid-2">
+              <Field
+                label="Slug"
+                htmlFor="pitch-field-slug"
+                hint={
+                  slugErr ? (
+                    <span className="studio-field-error" role="alert">
+                      {slugErr}
+                    </span>
+                  ) : (
+                    'URL slug for client route'
+                  )
                 }
               >
-                <option value="draft">Draft</option>
-                <option value="ready">Ready</option>
-                <option value="sent">Sent</option>
-                <option value="archived">Archived</option>
-              </Select>
-            </Field>
+                <TextInput
+                  id="pitch-field-slug"
+                  aria-invalid={Boolean(slugErr)}
+                  value={draft.slug}
+                  onFocus={() => onScrollTo?.('about')}
+                  onChange={(e) => {
+                    const nextSlug = e.target.value.toLowerCase();
+                    onChange((prev) => ({
+                      ...prev,
+                      slug: nextSlug,
+                      preset: { ...prev.preset, slug: nextSlug },
+                    }));
+                  }}
+                />
+              </Field>
 
-            <Field
-              label="Client name"
-              htmlFor="pitch-field-client-name"
-              hint={renderFieldError(clientNameErr)}
-            >
-              <TextInput
-                id="pitch-field-client-name"
-                aria-invalid={Boolean(clientNameErr)}
-                value={draft.client_name}
-                onChange={(e) =>
-                  onChange((prev) => ({
-                    ...prev,
-                    client_name: e.target.value,
-                    preset: { ...prev.preset, clientName: e.target.value },
-                  }))
+              <Field
+                label="Kind"
+                htmlFor="pitch-field-kind"
+                hint={
+                  getFieldViolation(violations, 'kind') ? (
+                    <span className="studio-field-error" role="alert">
+                      {getFieldViolation(violations, 'kind')}
+                    </span>
+                  ) : undefined
                 }
-              />
-            </Field>
+              >
+                <Select
+                  id="pitch-field-kind"
+                  value={draft.kind}
+                  onFocus={() => onScrollTo?.('about')}
+                  onChange={(e) => {
+                    const nextKind = e.target.value as PitchDraftState['kind'];
+                    onChange((prev) => {
+                      if (nextKind === 'final' && prev.kind !== 'final') {
+                        const defs = getDefaultFinalPlans(catalog);
+                        return {
+                          ...prev,
+                          kind: nextKind,
+                          payment_plan:
+                            prev.payment_plan.length >= 2
+                              ? prev.payment_plan
+                              : defs.payment_plan,
+                          payment_note: prev.payment_note || defs.payment_note,
+                          timeline:
+                            prev.timeline.length >= 1 ? prev.timeline : defs.timeline,
+                        };
+                      }
+                      return { ...prev, kind: nextKind };
+                    });
+                  }}
+                >
+                  <option value="proposal">Proposal</option>
+                  <option value="quote_form">Quote form</option>
+                  <option value="final">Final quotation</option>
+                </Select>
+              </Field>
 
+              <Field
+                label="Status"
+                htmlFor="pitch-field-status"
+                hint={
+                  getFieldViolation(violations, 'status') ? (
+                    <span className="studio-field-error" role="alert">
+                      {getFieldViolation(violations, 'status')}
+                    </span>
+                  ) : undefined
+                }
+              >
+                <Select
+                  id="pitch-field-status"
+                  value={draft.status}
+                  onFocus={() => onScrollTo?.('about')}
+                  onChange={(e) =>
+                    onChange((prev) => ({
+                      ...prev,
+                      status: e.target.value as PitchDraftState['status'],
+                    }))
+                  }
+                >
+                  <option value="draft">Draft</option>
+                  <option value="ready">Ready</option>
+                  <option value="sent">Sent</option>
+                  <option value="archived">Archived</option>
+                </Select>
+              </Field>
+
+              <Field
+                label="Client name"
+                htmlFor="pitch-field-client-name"
+                hint={renderFieldError(clientNameErr)}
+              >
+                <TextInput
+                  id="pitch-field-client-name"
+                  aria-invalid={Boolean(clientNameErr)}
+                  value={draft.client_name}
+                  onFocus={() => onScrollTo?.('about')}
+                  onChange={(e) =>
+                    onChange((prev) => ({
+                      ...prev,
+                      client_name: e.target.value,
+                      preset: { ...prev.preset, clientName: e.target.value },
+                    }))
+                  }
+                />
+              </Field>
+
+              <Field
+                label="Business name"
+                htmlFor="pitch-field-business-name"
+                hint={renderFieldError(businessNameErr)}
+              >
+                <TextInput
+                  id="pitch-field-business-name"
+                  aria-invalid={Boolean(businessNameErr)}
+                  value={draft.business_name}
+                  onFocus={() => onScrollTo?.('about')}
+                  onChange={(e) =>
+                    onChange((prev) => ({
+                      ...prev,
+                      business_name: e.target.value,
+                      preset: { ...prev.preset, businessName: e.target.value },
+                    }))
+                  }
+                />
+              </Field>
+            </div>
+          </div>
+        </Card>
+      </div>
+
+      <div data-scroll-target="about">
+        <Card>
+          <div className="studio-stack-sm">
+            <div className="mg-label">Client contact</div>
+            <div className="studio-grid-2">
+              <Field
+                label="Contact name"
+                htmlFor="pitch-contact-name"
+                hint={renderFieldError(contactNameErr)}
+              >
+                <TextInput
+                  id="pitch-contact-name"
+                  aria-invalid={Boolean(contactNameErr)}
+                  value={draft.contact.name}
+                  onFocus={() => onScrollTo?.('about')}
+                  onChange={(e) =>
+                    onChange((prev) => ({
+                      ...prev,
+                      contact: { ...prev.contact, name: e.target.value },
+                    }))
+                  }
+                />
+              </Field>
+              <Field
+                label="Contact email"
+                htmlFor="pitch-contact-email"
+                hint={renderFieldError(contactEmailErr)}
+              >
+                <TextInput
+                  id="pitch-contact-email"
+                  type="email"
+                  aria-invalid={Boolean(contactEmailErr)}
+                  value={draft.contact.email}
+                  onFocus={() => onScrollTo?.('about')}
+                  onChange={(e) =>
+                    onChange((prev) => ({
+                      ...prev,
+                      contact: { ...prev.contact, email: e.target.value },
+                    }))
+                  }
+                />
+              </Field>
+              <Field
+                label="Contact phone"
+                htmlFor="pitch-contact-phone"
+                hint={renderFieldError(contactPhoneErr)}
+              >
+                <TextInput
+                  id="pitch-contact-phone"
+                  aria-invalid={Boolean(contactPhoneErr)}
+                  value={draft.contact.phone}
+                  onFocus={() => onScrollTo?.('about')}
+                  onChange={(e) =>
+                    onChange((prev) => ({
+                      ...prev,
+                      contact: { ...prev.contact, phone: e.target.value },
+                    }))
+                  }
+                />
+              </Field>
+            </div>
             <Field
-              label="Business name"
-              htmlFor="pitch-field-business-name"
-              hint={renderFieldError(businessNameErr)}
+              label="Contact notes"
+              htmlFor="pitch-contact-notes"
+              hint={renderFieldError(contactNotesErr)}
             >
-              <TextInput
-                id="pitch-field-business-name"
-                aria-invalid={Boolean(businessNameErr)}
-                value={draft.business_name}
+              <TextArea
+                id="pitch-contact-notes"
+                rows={2}
+                aria-invalid={Boolean(contactNotesErr)}
+                value={draft.contact.notes}
+                onFocus={() => onScrollTo?.('about')}
                 onChange={(e) =>
                   onChange((prev) => ({
                     ...prev,
-                    business_name: e.target.value,
-                    preset: { ...prev.preset, businessName: e.target.value },
+                    contact: { ...prev.contact, notes: e.target.value },
                   }))
                 }
               />
             </Field>
           </div>
-        </div>
-      </Card>
+        </Card>
+      </div>
 
-      <Card>
-        <div className="studio-stack-sm">
-          <div className="mg-label">Client contact</div>
-          <div className="studio-grid-2">
-            <Field
-              label="Contact name"
-              htmlFor="pitch-contact-name"
-              hint={renderFieldError(contactNameErr)}
-            >
-              <TextInput
-                id="pitch-contact-name"
-                aria-invalid={Boolean(contactNameErr)}
-                value={draft.contact.name}
-                onChange={(e) =>
-                  onChange((prev) => ({
-                    ...prev,
-                    contact: { ...prev.contact, name: e.target.value },
-                  }))
+      {/* Title cannot be removed */}
+      <div data-scroll-target="about">
+        <Card>
+          <div className="studio-stack-sm">
+            <div className="studio-section-bar">
+              <span className="mg-label">Pitch headline</span>
+              <span className="studio-mono">Title is always shown</span>
+            </div>
+            <div className="studio-grid-2">
+              <Field
+                label="Badge"
+                htmlFor="pitch-preset-badge"
+                hint={renderFieldError(badgeErr)}
+              >
+                <TextInput
+                  id="pitch-preset-badge"
+                  aria-invalid={Boolean(badgeErr)}
+                  value={draft.preset.badge}
+                  onFocus={() => onScrollTo?.('about')}
+                  onChange={(e) => updatePreset({ badge: e.target.value })}
+                />
+              </Field>
+              <Field
+                label="Headline (title)"
+                htmlFor="pitch-preset-title"
+                hint={renderFieldError(titleErr)}
+              >
+                <TextInput
+                  id="pitch-preset-title"
+                  aria-invalid={Boolean(titleErr)}
+                  value={draft.preset.title}
+                  onFocus={() => onScrollTo?.('about')}
+                  onChange={(e) => updatePreset({ title: e.target.value })}
+                />
+              </Field>
+            </div>
+          </div>
+        </Card>
+      </div>
+
+      {/* Page-1 section 1: Intro (lead) */}
+      <section aria-label="Intro section" data-scroll-target="about:lead">
+        <Card>
+          <div className="studio-stack-sm">
+            {renderAboutSectionHeader('lead', 'Intro')}
+            {!hiddenAboutSet.has('lead') ? (
+              <Field
+                label="Lead"
+                htmlFor="pitch-preset-lead"
+                hint={renderFieldError(leadErr)}
+              >
+                <TextArea
+                  id="pitch-preset-lead"
+                  rows={2}
+                  aria-invalid={Boolean(leadErr)}
+                  value={draft.preset.lead}
+                  onFocus={() => onScrollTo?.('about:lead')}
+                  onChange={(e) => updatePreset({ lead: e.target.value })}
+                />
+              </Field>
+            ) : null}
+          </div>
+        </Card>
+      </section>
+
+      {/* Page-1 section 2: What we do */}
+      <section aria-label="What we do section" data-scroll-target="about:what_we_do">
+        <Card>
+          <div className="studio-stack-sm">
+            {renderAboutSectionHeader('what_we_do', 'What we do')}
+            {!hiddenAboutSet.has('what_we_do') ? (
+              <Field
+                label="What we do"
+                htmlFor="pitch-preset-whatwedo"
+                hint={renderFieldError(whatWeDoErr)}
+              >
+                <TextInput
+                  id="pitch-preset-whatwedo"
+                  aria-invalid={Boolean(whatWeDoErr)}
+                  value={draft.preset.whatWeDo}
+                  onFocus={() => onScrollTo?.('about:what_we_do')}
+                  onChange={(e) => updatePreset({ whatWeDo: e.target.value })}
+                />
+              </Field>
+            ) : null}
+          </div>
+        </Card>
+      </section>
+
+      {/* Page-1 section 3: Portfolio */}
+      <section aria-label="Portfolio section" data-scroll-target="about:portfolio">
+        <Card>
+          <div className="studio-stack-sm">
+            {renderAboutSectionHeader('portfolio', 'Portfolio')}
+            {!hiddenAboutSet.has('portfolio') ? (
+              <Field
+                label="Portfolio"
+                htmlFor="pitch-preset-portfolio"
+                hint={renderFieldError(portfolioErr)}
+              >
+                <TextInput
+                  id="pitch-preset-portfolio"
+                  aria-invalid={Boolean(portfolioErr)}
+                  value={draft.preset.portfolio}
+                  onFocus={() => onScrollTo?.('about:portfolio')}
+                  onChange={(e) => updatePreset({ portfolio: e.target.value })}
+                />
+              </Field>
+            ) : null}
+          </div>
+        </Card>
+      </section>
+
+      {/* Page-1 section 4: This plan */}
+      <section aria-label="This plan section" data-scroll-target="about:this_plan">
+        <Card>
+          <div className="studio-stack-sm">
+            {renderAboutSectionHeader('this_plan', 'This plan')}
+            {!hiddenAboutSet.has('this_plan') ? (
+              <Field
+                label="This plan"
+                htmlFor="pitch-preset-thisplan"
+                hint={renderFieldError(thisPlanErr)}
+              >
+                <TextInput
+                  id="pitch-preset-thisplan"
+                  aria-invalid={Boolean(thisPlanErr)}
+                  value={draft.preset.thisPlan}
+                  onFocus={() => onScrollTo?.('about:this_plan')}
+                  onChange={(e) => updatePreset({ thisPlan: e.target.value })}
+                />
+              </Field>
+            ) : null}
+          </div>
+        </Card>
+      </section>
+
+      {/* Page-1 section 5: Architecture block */}
+      <section aria-label="Architecture block" data-scroll-target="about:architecture">
+        <Card>
+          <div className="studio-stack-sm">
+            {renderAboutSectionHeader(
+              'architecture',
+              'Architecture block',
+              <PillButton
+                variant="outline"
+                size="sm"
+                disabled={roles.length >= MAX_ARCH_ROLES}
+                onClick={() =>
+                  updateArch({
+                    roles: [...roles, { label: '', points: [''] }],
+                  })
                 }
-              />
-            </Field>
-            <Field
-              label="Contact email"
-              htmlFor="pitch-contact-email"
-              hint={renderFieldError(contactEmailErr)}
-            >
-              <TextInput
-                id="pitch-contact-email"
-                type="email"
-                aria-invalid={Boolean(contactEmailErr)}
-                value={draft.contact.email}
-                onChange={(e) =>
-                  onChange((prev) => ({
-                    ...prev,
-                    contact: { ...prev.contact, email: e.target.value },
-                  }))
-                }
-              />
-            </Field>
-            <Field
-              label="Contact phone"
-              htmlFor="pitch-contact-phone"
-              hint={renderFieldError(contactPhoneErr)}
-            >
-              <TextInput
-                id="pitch-contact-phone"
-                aria-invalid={Boolean(contactPhoneErr)}
-                value={draft.contact.phone}
-                onChange={(e) =>
-                  onChange((prev) => ({
-                    ...prev,
-                    contact: { ...prev.contact, phone: e.target.value },
-                  }))
-                }
-              />
-            </Field>
-          </div>
-          <Field
-            label="Contact notes"
-            htmlFor="pitch-contact-notes"
-            hint={renderFieldError(contactNotesErr)}
-          >
-            <TextArea
-              id="pitch-contact-notes"
-              rows={2}
-              aria-invalid={Boolean(contactNotesErr)}
-              value={draft.contact.notes}
-              onChange={(e) =>
-                onChange((prev) => ({
-                  ...prev,
-                  contact: { ...prev.contact, notes: e.target.value },
-                }))
-              }
-            />
-          </Field>
-        </div>
-      </Card>
+              >
+                Add role
+              </PillButton>,
+            )}
 
-      <Card>
-        <div className="studio-stack-sm">
-          <div className="mg-label">Pitch copy</div>
-          <div className="studio-grid-2">
-            <Field
-              label="Badge"
-              htmlFor="pitch-preset-badge"
-              hint={renderFieldError(badgeErr)}
-            >
-              <TextInput
-                id="pitch-preset-badge"
-                aria-invalid={Boolean(badgeErr)}
-                value={draft.preset.badge}
-                onChange={(e) => updatePreset({ badge: e.target.value })}
-              />
-            </Field>
-            <Field
-              label="Headline (title)"
-              htmlFor="pitch-preset-title"
-              hint={renderFieldError(titleErr)}
-            >
-              <TextInput
-                id="pitch-preset-title"
-                aria-invalid={Boolean(titleErr)}
-                value={draft.preset.title}
-                onChange={(e) => updatePreset({ title: e.target.value })}
-              />
-            </Field>
-          </div>
+            {!hiddenAboutSet.has('architecture') ? (
+              <>
+                <Field
+                  label="Architecture heading"
+                  htmlFor="pitch-arch-heading"
+                  hint={renderFieldError(archHeadingErr)}
+                >
+                  <TextInput
+                    id="pitch-arch-heading"
+                    aria-invalid={Boolean(archHeadingErr)}
+                    value={draft.preset.architectureBlock.heading}
+                    onFocus={() => onScrollTo?.('about:architecture')}
+                    onChange={(e) => updateArch({ heading: e.target.value })}
+                  />
+                </Field>
 
-          <Field
-            label="Lead"
-            htmlFor="pitch-preset-lead"
-            hint={renderFieldError(leadErr)}
-          >
-            <TextArea
-              id="pitch-preset-lead"
-              rows={2}
-              aria-invalid={Boolean(leadErr)}
-              value={draft.preset.lead}
-              onChange={(e) => updatePreset({ lead: e.target.value })}
-            />
-          </Field>
+                <Field
+                  label="Architecture subheading"
+                  htmlFor="pitch-arch-sub"
+                  hint={renderFieldError(archSubErr)}
+                >
+                  <TextInput
+                    id="pitch-arch-sub"
+                    aria-invalid={Boolean(archSubErr)}
+                    value={draft.preset.architectureBlock.sub}
+                    onFocus={() => onScrollTo?.('about:architecture')}
+                    onChange={(e) => updateArch({ sub: e.target.value })}
+                  />
+                </Field>
 
-          <Field
-            label="What we do"
-            htmlFor="pitch-preset-whatwedo"
-            hint={renderFieldError(whatWeDoErr)}
-          >
-            <TextInput
-              id="pitch-preset-whatwedo"
-              aria-invalid={Boolean(whatWeDoErr)}
-              value={draft.preset.whatWeDo}
-              onChange={(e) => updatePreset({ whatWeDo: e.target.value })}
-            />
-          </Field>
+                {roles.length === 0 ? (
+                  <div className="mg-empty">
+                    No architecture roles yet. Add up to {MAX_ARCH_ROLES} roles.
+                  </div>
+                ) : (
+                  <div className="studio-stack-sm">
+                    {roles.map((role, rIdx) => {
+                      const roleLabelErr = getPitchFieldError(
+                        violations,
+                        `preset.architectureBlock.roles[${rIdx}].label`,
+                        role.label,
+                      );
+                      return (
+                        <Card key={`role-${rIdx}`} outline>
+                          <div className="studio-stack-sm">
+                            <div className="studio-section-bar">
+                              <span className="studio-mono">Role {rIdx + 1}</span>
+                              <div className="studio-btn-group">
+                                <PillButton
+                                  variant="quiet"
+                                  size="sm"
+                                  aria-label={`Move role ${rIdx + 1} up`}
+                                  disabled={rIdx === 0}
+                                  onClick={() =>
+                                    updateArch({ roles: swapListItems(roles, rIdx, rIdx - 1) })
+                                  }
+                                >
+                                  Up
+                                </PillButton>
+                                <PillButton
+                                  variant="quiet"
+                                  size="sm"
+                                  aria-label={`Move role ${rIdx + 1} down`}
+                                  disabled={rIdx === roles.length - 1}
+                                  onClick={() =>
+                                    updateArch({ roles: swapListItems(roles, rIdx, rIdx + 1) })
+                                  }
+                                >
+                                  Down
+                                </PillButton>
+                                <PillButton
+                                  variant="quiet"
+                                  size="sm"
+                                  aria-label={`Remove role ${rIdx + 1}`}
+                                  onClick={() =>
+                                    updateArch({
+                                      roles: roles.filter((_, idx) => idx !== rIdx),
+                                    })
+                                  }
+                                >
+                                  Remove
+                                </PillButton>
+                              </div>
+                            </div>
 
-          <div className="studio-grid-2">
-            <Field
-              label="Portfolio"
-              htmlFor="pitch-preset-portfolio"
-              hint={renderFieldError(portfolioErr)}
-            >
-              <TextInput
-                id="pitch-preset-portfolio"
-                aria-invalid={Boolean(portfolioErr)}
-                value={draft.preset.portfolio}
-                onChange={(e) => updatePreset({ portfolio: e.target.value })}
-              />
-            </Field>
-            <Field
-              label="This plan"
-              htmlFor="pitch-preset-thisplan"
-              hint={renderFieldError(thisPlanErr)}
-            >
-              <TextInput
-                id="pitch-preset-thisplan"
-                aria-invalid={Boolean(thisPlanErr)}
-                value={draft.preset.thisPlan}
-                onChange={(e) => updatePreset({ thisPlan: e.target.value })}
-              />
-            </Field>
-          </div>
-        </div>
-      </Card>
+                            <Field
+                              label="Role label"
+                              htmlFor={`pitch-role-label-${rIdx}`}
+                              hint={renderFieldError(roleLabelErr)}
+                            >
+                              <TextInput
+                                id={`pitch-role-label-${rIdx}`}
+                                aria-invalid={Boolean(roleLabelErr)}
+                                value={role.label}
+                                onFocus={() => onScrollTo?.('about:architecture')}
+                                onChange={(e) => {
+                                  const nextRoles = roles.map((item, idx) =>
+                                    idx === rIdx ? { ...item, label: e.target.value } : item,
+                                  );
+                                  updateArch({ roles: nextRoles });
+                                }}
+                              />
+                            </Field>
 
-      <Card>
-        <div className="studio-stack-sm">
-          <div className="studio-section-bar">
-            <span className="mg-label">Architecture block (up to {MAX_ARCH_ROLES} roles)</span>
-            <PillButton
-              variant="outline"
-              size="sm"
-              disabled={roles.length >= MAX_ARCH_ROLES}
-              onClick={() =>
-                updateArch({
-                  roles: [...roles, { label: '', points: [''] }],
-                })
-              }
-            >
-              Add role
-            </PillButton>
-          </div>
-
-          <Field
-            label="Architecture heading"
-            htmlFor="pitch-arch-heading"
-            hint={renderFieldError(archHeadingErr)}
-          >
-            <TextInput
-              id="pitch-arch-heading"
-              aria-invalid={Boolean(archHeadingErr)}
-              value={draft.preset.architectureBlock.heading}
-              onChange={(e) => updateArch({ heading: e.target.value })}
-            />
-          </Field>
-
-          <Field
-            label="Architecture subheading"
-            htmlFor="pitch-arch-sub"
-            hint={renderFieldError(archSubErr)}
-          >
-            <TextInput
-              id="pitch-arch-sub"
-              aria-invalid={Boolean(archSubErr)}
-              value={draft.preset.architectureBlock.sub}
-              onChange={(e) => updateArch({ sub: e.target.value })}
-            />
-          </Field>
-
-          {roles.length === 0 ? (
-            <div className="mg-empty">No architecture roles yet. Add up to {MAX_ARCH_ROLES} roles.</div>
-          ) : (
-            <div className="studio-stack-sm">
-              {roles.map((role, rIdx) => {
-                const roleLabelErr = getPitchFieldError(
-                  violations,
-                  `preset.architectureBlock.roles[${rIdx}].label`,
-                  role.label,
-                );
-                return (
-                  <Card key={`role-${rIdx}`} outline>
-                    <div className="studio-stack-sm">
-                      <div className="studio-section-bar">
-                        <span className="studio-mono">Role {rIdx + 1}</span>
-                        <div className="studio-btn-group">
-                          <PillButton
-                            variant="quiet"
-                            size="sm"
-                            aria-label={`Move role ${rIdx + 1} up`}
-                            disabled={rIdx === 0}
-                            onClick={() => updateArch({ roles: swapListItems(roles, rIdx, rIdx - 1) })}
-                          >
-                            Up
-                          </PillButton>
-                          <PillButton
-                            variant="quiet"
-                            size="sm"
-                            aria-label={`Move role ${rIdx + 1} down`}
-                            disabled={rIdx === roles.length - 1}
-                            onClick={() => updateArch({ roles: swapListItems(roles, rIdx, rIdx + 1) })}
-                          >
-                            Down
-                          </PillButton>
-                          <PillButton
-                            variant="quiet"
-                            size="sm"
-                            aria-label={`Remove role ${rIdx + 1}`}
-                            onClick={() =>
-                              updateArch({
-                                roles: roles.filter((_, idx) => idx !== rIdx),
-                              })
-                            }
-                          >
-                            Remove
-                          </PillButton>
-                        </div>
-                      </div>
-
-                      <Field
-                        label="Role label"
-                        htmlFor={`pitch-role-label-${rIdx}`}
-                        hint={renderFieldError(roleLabelErr)}
-                      >
-                        <TextInput
-                          id={`pitch-role-label-${rIdx}`}
-                          aria-invalid={Boolean(roleLabelErr)}
-                          value={role.label}
-                          onChange={(e) => {
-                            const nextRoles = roles.map((item, idx) =>
-                              idx === rIdx ? { ...item, label: e.target.value } : item,
-                            );
-                            updateArch({ roles: nextRoles });
-                          }}
-                        />
-                      </Field>
-
-                      <div className="studio-stack-xs">
-                        <div className="studio-section-bar">
-                          <span className="mg-label">Points ({role.points.length}/{MAX_ROLE_POINTS})</span>
-                          <PillButton
-                            variant="outline"
-                            size="sm"
-                            disabled={role.points.length >= MAX_ROLE_POINTS}
-                            onClick={() => {
-                              const nextRoles = roles.map((item, idx) =>
-                                idx === rIdx ? { ...item, points: [...item.points, ''] } : item,
-                              );
-                              updateArch({ roles: nextRoles });
-                            }}
-                          >
-                            Add point
-                          </PillButton>
-                        </div>
-
-                        {role.points.map((pt, pIdx) => {
-                          const pointErr = getPitchFieldError(
-                            violations,
-                            `preset.architectureBlock.roles[${rIdx}].points[${pIdx}]`,
-                            pt,
-                          );
-                          return (
-                            <div key={`role-${rIdx}-pt-${pIdx}`} className="studio-stack-xs">
-                              <div className="studio-pitch-point-row">
-                                <TextInput
-                                  aria-label={`Role ${rIdx + 1} point ${pIdx + 1}`}
-                                  aria-invalid={Boolean(pointErr)}
-                                  value={pt}
-                                  onChange={(e) => {
-                                    const nextRoles = roles.map((item, idx) => {
-                                      if (idx !== rIdx) return item;
-                                      const nextPts = item.points.map((p, j) =>
-                                        j === pIdx ? e.target.value : p,
-                                      );
-                                      return { ...item, points: nextPts };
-                                    });
+                            <div className="studio-stack-xs">
+                              <div className="studio-section-bar">
+                                <span className="mg-label">
+                                  Points ({role.points.length}/{MAX_ROLE_POINTS})
+                                </span>
+                                <PillButton
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={role.points.length >= MAX_ROLE_POINTS}
+                                  onClick={() => {
+                                    const nextRoles = roles.map((item, idx) =>
+                                      idx === rIdx
+                                        ? { ...item, points: [...item.points, ''] }
+                                        : item,
+                                    );
                                     updateArch({ roles: nextRoles });
                                   }}
-                                />
-                                <div className="studio-row-actions">
-                                  <PillButton
-                                    variant="quiet"
-                                    size="sm"
-                                    aria-label={`Move role ${rIdx + 1} point ${pIdx + 1} up`}
-                                    disabled={pIdx === 0}
-                                    onClick={() => {
-                                      const nextRoles = roles.map((item, idx) =>
-                                        idx === rIdx
-                                          ? { ...item, points: swapListItems(item.points, pIdx, pIdx - 1) }
-                                          : item,
-                                      );
-                                      updateArch({ roles: nextRoles });
-                                    }}
-                                  >
-                                    Up
-                                  </PillButton>
-                                  <PillButton
-                                    variant="quiet"
-                                    size="sm"
-                                    aria-label={`Move role ${rIdx + 1} point ${pIdx + 1} down`}
-                                    disabled={pIdx === role.points.length - 1}
-                                    onClick={() => {
-                                      const nextRoles = roles.map((item, idx) =>
-                                        idx === rIdx
-                                          ? { ...item, points: swapListItems(item.points, pIdx, pIdx + 1) }
-                                          : item,
-                                      );
-                                      updateArch({ roles: nextRoles });
-                                    }}
-                                  >
-                                    Down
-                                  </PillButton>
-                                  <PillButton
-                                    variant="quiet"
-                                    size="sm"
-                                    aria-label={`Remove role ${rIdx + 1} point ${pIdx + 1}`}
-                                    onClick={() => {
-                                      const nextRoles = roles.map((item, idx) =>
-                                        idx === rIdx
-                                          ? { ...item, points: item.points.filter((_, j) => j !== pIdx) }
-                                          : item,
-                                      );
-                                      updateArch({ roles: nextRoles });
-                                    }}
-                                  >
-                                    Remove
-                                  </PillButton>
-                                </div>
+                                >
+                                  Add point
+                                </PillButton>
                               </div>
-                              {pointErr ? (
-                                <span className="studio-field-error" role="alert">
-                                  {pointErr}
-                                </span>
-                              ) : null}
+
+                              {role.points.map((pt, pIdx) => {
+                                const pointErr = getPitchFieldError(
+                                  violations,
+                                  `preset.architectureBlock.roles[${rIdx}].points[${pIdx}]`,
+                                  pt,
+                                );
+                                return (
+                                  <div
+                                    key={`role-${rIdx}-pt-${pIdx}`}
+                                    className="studio-stack-xs"
+                                  >
+                                    <div className="studio-pitch-point-row">
+                                      <TextInput
+                                        aria-label={`Role ${rIdx + 1} point ${pIdx + 1}`}
+                                        aria-invalid={Boolean(pointErr)}
+                                        value={pt}
+                                        onFocus={() => onScrollTo?.('about:architecture')}
+                                        onChange={(e) => {
+                                          const nextRoles = roles.map((item, idx) => {
+                                            if (idx !== rIdx) return item;
+                                            const nextPts = item.points.map((p, j) =>
+                                              j === pIdx ? e.target.value : p,
+                                            );
+                                            return { ...item, points: nextPts };
+                                          });
+                                          updateArch({ roles: nextRoles });
+                                        }}
+                                      />
+                                      <div className="studio-row-actions">
+                                        <PillButton
+                                          variant="quiet"
+                                          size="sm"
+                                          aria-label={`Move role ${rIdx + 1} point ${pIdx + 1} up`}
+                                          disabled={pIdx === 0}
+                                          onClick={() => {
+                                            const nextRoles = roles.map((item, idx) =>
+                                              idx === rIdx
+                                                ? {
+                                                    ...item,
+                                                    points: swapListItems(
+                                                      item.points,
+                                                      pIdx,
+                                                      pIdx - 1,
+                                                    ),
+                                                  }
+                                                : item,
+                                            );
+                                            updateArch({ roles: nextRoles });
+                                          }}
+                                        >
+                                          Up
+                                        </PillButton>
+                                        <PillButton
+                                          variant="quiet"
+                                          size="sm"
+                                          aria-label={`Move role ${rIdx + 1} point ${pIdx + 1} down`}
+                                          disabled={pIdx === role.points.length - 1}
+                                          onClick={() => {
+                                            const nextRoles = roles.map((item, idx) =>
+                                              idx === rIdx
+                                                ? {
+                                                    ...item,
+                                                    points: swapListItems(
+                                                      item.points,
+                                                      pIdx,
+                                                      pIdx + 1,
+                                                    ),
+                                                  }
+                                                : item,
+                                            );
+                                            updateArch({ roles: nextRoles });
+                                          }}
+                                        >
+                                          Down
+                                        </PillButton>
+                                        <PillButton
+                                          variant="quiet"
+                                          size="sm"
+                                          aria-label={`Remove role ${rIdx + 1} point ${pIdx + 1}`}
+                                          onClick={() => {
+                                            const nextRoles = roles.map((item, idx) =>
+                                              idx === rIdx
+                                                ? {
+                                                    ...item,
+                                                    points: item.points.filter(
+                                                      (_, j) => j !== pIdx,
+                                                    ),
+                                                  }
+                                                : item,
+                                            );
+                                            updateArch({ roles: nextRoles });
+                                          }}
+                                        >
+                                          Remove
+                                        </PillButton>
+                                      </div>
+                                    </div>
+                                    {pointErr ? (
+                                      <span className="studio-field-error" role="alert">
+                                        {pointErr}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                );
+                              })}
                             </div>
-                          );
-                        })}
+                          </div>
+                        </Card>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            ) : null}
+          </div>
+        </Card>
+      </section>
+
+      {/* For non-final proposals/quote forms, Timeline and How you pay live in Details */}
+      {!isFinal ? (
+        <>
+          <section aria-label="Timeline" data-scroll-target="about:timeline">
+            <Card>
+              <div className="studio-stack-sm">
+                {renderAboutSectionHeader('timeline', 'Timeline')}
+                {!hiddenAboutSet.has('timeline') ? (
+                  <div className="studio-stack-xs">
+                    {defaults.timeline.map((step, idx) => (
+                      <div key={`default-step-${idx}`} className="studio-mono">
+                        {String(idx + 1).padStart(2, '0')} · {step.title} ({step.when})
                       </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            </Card>
+          </section>
+
+          <section aria-label="How you pay" data-scroll-target="about:payment">
+            <Card>
+              <div className="studio-stack-sm">
+                {renderAboutSectionHeader('payment', 'How you pay')}
+                {!hiddenAboutSet.has('payment') ? (
+                  <div className="studio-stack-xs">
+                    <div className="studio-mono">
+                      {defaults.payment_plan
+                        .map((row) => `${row.percent}% ${row.label}`)
+                        .join(' · ')}
                     </div>
-                  </Card>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </Card>
+                    <div className="studio-hint">{defaults.payment_note}</div>
+                  </div>
+                ) : null}
+              </div>
+            </Card>
+          </section>
+        </>
+      ) : null}
 
       <Card>
         <Field
           label="Internal notes"
           htmlFor="pitch-field-notes"
-          hint={getFieldViolation(violations, 'notes') ? <span className="studio-field-error" role="alert">{getFieldViolation(violations, 'notes')}</span> : undefined}
+          hint={
+            getFieldViolation(violations, 'notes') ? (
+              <span className="studio-field-error" role="alert">
+                {getFieldViolation(violations, 'notes')}
+              </span>
+            ) : undefined
+          }
         >
           <TextArea
             id="pitch-field-notes"

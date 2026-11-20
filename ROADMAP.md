@@ -74,6 +74,15 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
   - The PDF for a final quotation follows Pitch's PDF layout with the agreed information (plans, recurring section,
     timeline). A test flags it whenever Pitch's own PDF code changes on a re-pin.
   - Its read-only web link switches on in Phase 4 with the other links.
+- **Phase 3d done (2026-11-20):** pitch editing improvements asked for by the user. Built by agy (Gemini 4 Argon
+  Medium from now on), reviewed and tested by Claude.
+  - Remove a whole software option (Web & SaaS, Mobile app, Backend, AI & Ops) from a pitch; at least one must stay.
+    Tabs and "Page N of M" labels renumber. Services a remaining sheet needs from a removed sheet appear once under
+    "Included services", so the price never includes something the client cannot see. Final quotations drop empty sheets.
+  - Remove any About-page section (intro, what we do, portfolio, this plan, architecture, timeline, how you pay).
+  - New deliverable categories with their own services, on an existing sheet or as a new page with its own tab.
+  - The preview follows the form (scroll and focus), the tab row stays visible with Previous/Next at the end of each tab,
+    and the Prices tab shows the live preview with prices updating as you type.
 
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.

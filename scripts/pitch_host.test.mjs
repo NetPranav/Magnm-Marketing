@@ -937,3 +937,506 @@ test('wraps instance-own doc.save (jsPDF 2.x UMD pattern) to POST PDF blob once'
   assert.equal(fetchCalls.length, 1);
   assert.equal(fetchCalls[0].url, '/api/pitch/proposals/prop-final-1/pdf');
 });
+
+test('hidden sheets hide nav buttons and sections, renumber nav and .pageno, update nav grid, and render Included services once', async () => {
+  // Hide p2 and p5 -> visible sheets: p1 (About), p3 (Mobile App), p4 (Backend) => 3 sheets
+  // Also test hiding p4 instead to verify Included services on p3
+  const payload = {
+    mode: 'preview',
+    kind: 'proposal',
+    proposal_id: 'prop-hidden-1',
+    prices: {},
+    custom_items: [],
+    hidden_sheets: ['p2', 'p5'],
+    hidden_about: [],
+    custom_categories: [],
+    included_from_hidden: [
+      {
+        item_id: 'ops_cloud',
+        name: 'Production Cloud Infrastructure & CDN',
+        sheet_shown_on: 'p3',
+        needed_for: ['Cross-Platform Mobile App (Android)'],
+        also_needed_on: ['p4'],
+      },
+    ],
+    preset: {
+      slug: 'hidden-test',
+      name: 'Hidden Test',
+      badge: 'Proposal for Hidden Test',
+      initialSelected: ['a_base'],
+      sections: {
+        p2: [],
+        p3: ['a_base', 'a_ios'],
+        p4: ['b_db', 'b_admin'],
+        p5: [],
+      },
+    },
+  };
+
+  const scrollCalls = [];
+  const { dom } = await mountPitchDom({ url: 'http://localhost/pitch/?mode=preview', payload });
+  const win = dom.window;
+  const doc = win.document;
+
+  win.HTMLElement.prototype.scrollIntoView = function (opts) {
+    scrollCalls.push({ id: this.id, opts });
+  };
+
+  // p2 and p5 sections and nav buttons are hidden
+  for (const hid of ['p2', 'p5']) {
+    const sec = doc.getElementById(hid);
+    const btn = doc.querySelector(`#main-nav button[data-go="${hid}"]`);
+    assert.equal(sec.hidden, true);
+    assert.equal(sec.style.display, 'none');
+    assert.equal(btn.hidden, true);
+    assert.equal(btn.style.display, 'none');
+  }
+
+  // Visible nav buttons are p1, p3, p4 numbered 1..3, and nav grid is repeat(3, 1fr)
+  const navWrap = doc.querySelector('#main-nav .wrap');
+  assert.equal(navWrap.style.gridTemplateColumns, 'repeat(3, 1fr)');
+  const visibleBtns = Array.from(doc.querySelectorAll('#main-nav button[data-go]')).filter((b) => !b.hidden);
+  assert.deepEqual(
+    visibleBtns.map((b) => ({ go: b.getAttribute('data-go'), num: b.querySelector('i').textContent })),
+    [
+      { go: 'p1', num: '1' },
+      { go: 'p3', num: '2' },
+      { go: 'p4', num: '3' },
+    ],
+  );
+
+  // Page labels say Page 1 of 3, Page 2 of 3, Page 3 of 3
+  assert.equal(doc.querySelector('#p1 .pageno span:first-child').textContent, 'Page 1 of 3');
+  assert.equal(doc.querySelector('#p3 .pageno span:first-child').textContent, 'Page 2 of 3');
+  assert.equal(doc.querySelector('#p4 .pageno span:first-child').textContent, 'Page 3 of 3');
+
+  // Summary stays visible on the last visible sheet (#p4 when p5 is hidden)
+  assert.equal(doc.getElementById('summary').parentNode.id, 'p4');
+
+  // go() ignores hidden sections and scrolls visible sections
+  win.go('p2');
+  win.go('p5');
+  assert.equal(scrollCalls.length, 0);
+  win.go('p3');
+  assert.equal(scrollCalls.length, 1);
+  assert.equal(scrollCalls[0].id, 'p3');
+
+  // spy() only considers visible sections
+  assert.deepEqual(Array.from(win.secs), ['p1', 'p3', 'p4']);
+  Object.defineProperty(doc.getElementById('p1'), 'offsetTop', { value: 0, configurable: true });
+  Object.defineProperty(doc.getElementById('p2'), 'offsetTop', { value: 100, configurable: true });
+  Object.defineProperty(doc.getElementById('p3'), 'offsetTop', { value: 200, configurable: true });
+  Object.defineProperty(doc.getElementById('p4'), 'offsetTop', { value: 600, configurable: true });
+  win.scrollY = 120; // 120 + 140 = 260 >= p3.offsetTop (200)
+  win.spy();
+  assert.equal(doc.querySelector('#main-nav button[data-go="p3"]').getAttribute('aria-current'), 'true');
+  assert.equal(doc.querySelector('#main-nav button[data-go="p2"]').getAttribute('aria-current'), 'false');
+
+  // "Included services" appears on p3 (sheet_shown_on) once with working selection
+  assert.deepEqual(readSheetStructure(doc, 'p3'), [
+    { heading: 'Mobile Apps & Platforms', items: ['a_base', 'a_ios'] },
+    { heading: 'Included services', items: ['ops_cloud'] },
+  ]);
+  const incBtns = doc.querySelectorAll('button.item[data-id="ops_cloud"]');
+  assert.equal(incBtns.length, 1);
+  assert.equal(incBtns[0].getAttribute('aria-checked'), 'false');
+  incBtns[0].click();
+  assert.equal(incBtns[0].getAttribute('aria-checked'), 'true');
+  assert.equal(win.sel.ops_cloud, true);
+});
+
+test('hidden About keys hide the right blocks, hide dl.who when all 3 rows are hidden, keep wordmark/title, and final PDF skips hidden timeline/payment', async () => {
+  // Partial hide: lead, what_we_do, architecture, timeline
+  const payload1 = buildFinalPayload({
+    hidden_about: ['lead', 'what_we_do', 'architecture', 'timeline'],
+    preset: {
+      ...buildFinalPayload().preset,
+      architectureBlock: {
+        heading: 'Arch Heading',
+        sub: 'Arch Sub',
+        roles: [{ label: 'Role 1', points: ['Point 1'] }],
+      },
+    },
+  });
+  const res1 = await mountPitchDom({ url: 'http://localhost/pitch/?mode=form', payload: payload1 });
+  const doc1 = res1.dom.window.document;
+
+  // Wordmark and title are never removed or hidden
+  const mark = doc1.querySelector('#p1 h1.mark');
+  assert.ok(mark);
+  assert.equal(mark.hidden, false);
+  assert.equal(mark.textContent, 'magnm');
+
+  assert.equal(doc1.querySelector('#p1 .lead').hidden, true);
+  assert.equal(doc1.getElementById('architecture-block-container').hidden, true);
+  assert.equal(doc1.querySelector('#p1 ol.steps').closest('.block').hidden, true);
+  assert.equal(doc1.querySelector('#p1 .pay').closest('.block').hidden, false);
+
+  const whoRows1 = Array.from(doc1.querySelectorAll('#p1 dl.who > div'));
+  assert.equal(whoRows1[0].hidden, true); // what_we_do
+  assert.equal(whoRows1[1].hidden, false); // portfolio
+  assert.equal(whoRows1[2].hidden, false); // this_plan
+  assert.equal(doc1.querySelector('#p1 dl.who').hidden, false);
+
+  // Final PDF skips timeline when timeline is hidden, but keeps payment terms
+  res1.dom.window.downloadPdf();
+  const texts1 = res1.pdfTextCalls.map((c) => c.text);
+  assert.ok(!texts1.includes('TIMELINE'));
+  assert.ok(!texts1.some((t) => t.includes('Kickoff')));
+  assert.ok(texts1.some((t) => t.includes('50% to start')));
+
+  // Hide all 3 who rows and payment too
+  const payload2 = buildFinalPayload({
+    hidden_about: ['what_we_do', 'portfolio', 'this_plan', 'payment', 'timeline'],
+  });
+  const res2 = await mountPitchDom({ url: 'http://localhost/pitch/?mode=form', payload: payload2 });
+  const doc2 = res2.dom.window.document;
+  assert.equal(doc2.querySelector('#p1 dl.who').hidden, true);
+  assert.equal(doc2.querySelector('#p1 dl.who').style.display, 'none');
+  assert.equal(doc2.querySelector('#p1 .pay').closest('.block').hidden, true);
+
+  res2.dom.window.downloadPdf();
+  const texts2 = res2.pdfTextCalls.map((c) => c.text);
+  assert.ok(!texts2.includes('TIMELINE'));
+  assert.ok(!texts2.some((t) => t.includes('50% to start')));
+  assert.ok(!texts2.some((t) => t.includes('Custom payment note')));
+});
+
+test('custom categories on p3 and new_sheet render groups, nav button, numbering, go(), summary, PDF, and strip < and >', async () => {
+  const payload = {
+    mode: 'preview',
+    kind: 'proposal',
+    proposal_id: 'prop-cats',
+    prices: {},
+    hidden_sheets: ['p2', 'p5'],
+    hidden_about: [],
+    custom_categories: [
+      {
+        id: 'cat_wearables',
+        name: 'Wearables <XSS>',
+        placement: 'p3',
+        sheet_title: '',
+        sheet_lead: '',
+        item_ids: ['custom_watch'],
+      },
+      {
+        id: 'cat_drone',
+        name: 'Drone software',
+        placement: 'new_sheet',
+        sheet_title: 'Drone <Sheet> Title',
+        sheet_lead: 'Autonomous <Lead> text',
+        item_ids: ['custom_flight', 'custom_gimbal'],
+      },
+    ],
+    custom_items: [
+      {
+        id: 'custom_watch',
+        g: 'Wearables <XSS>',
+        n: 'Watch Companion',
+        d: 'WearOS and watchOS sync.',
+        p: 3200,
+        r: ['a_base'],
+      },
+      {
+        id: 'custom_flight',
+        g: 'Drone software',
+        n: 'Flight Controller',
+        d: 'Waypoint autopilot.',
+        p: 8500,
+        r: ['b_db'],
+      },
+      {
+        id: 'custom_gimbal',
+        g: 'Drone software',
+        n: 'Gimbal Telemetry',
+        d: 'Camera stabilization feed.',
+        p: 4100,
+        r: ['custom_flight'],
+      },
+    ],
+    included_from_hidden: [],
+    preset: {
+      slug: 'drone-co',
+      name: 'Drone Co',
+      badge: 'Proposal for Drone Co',
+      initialSelected: ['a_base', 'b_db', 'custom_watch', 'custom_flight', 'custom_gimbal'],
+      sections: {
+        p2: [],
+        p3: ['a_base'],
+        p4: ['b_db'],
+        p5: [],
+      },
+    },
+  };
+
+  const { dom, pdfTextCalls } = await mountPitchDom({ url: 'http://localhost/pitch/?mode=preview', payload });
+  const win = dom.window;
+  const doc = win.document;
+
+  // < and > stripped from category name, sheet_title, and sheet_lead
+  assert.ok(win.GROUPS.includes('Wearables XSS'));
+  assert.ok(win.GROUPS.includes('Drone software'));
+  assert.ok(!doc.body.textContent.includes('<XSS>'));
+  assert.ok(!doc.body.textContent.includes('<Sheet>'));
+  assert.ok(!doc.body.textContent.includes('<Lead>'));
+
+  // Category on p3 renders after filtered built-in groups
+  assert.deepEqual(readSheetStructure(doc, 'p3'), [
+    { heading: 'Mobile Apps & Platforms', items: ['a_base'] },
+    { heading: 'Wearables XSS', items: ['custom_watch'] },
+  ]);
+
+  // new_sheet category creates section #pc1 and nav button [data-go="pc1"], total visible = 4 (p1, p3, p4, pc1)
+  const pc1 = doc.getElementById('pc1');
+  assert.ok(pc1);
+  assert.equal(pc1.querySelector('.pageno span:first-child').textContent, 'Page 4 of 4');
+  assert.equal(pc1.querySelector('.pageno span:last-child').textContent, 'Drone Sheet Title');
+  assert.equal(pc1.querySelector('h2.big').textContent, 'Drone Sheet Title');
+  assert.equal(pc1.querySelector('p.lead').textContent, 'Autonomous Lead text');
+  assert.deepEqual(readSheetStructure(doc, 'pc1'), [
+    { heading: 'Drone software', items: ['custom_flight', 'custom_gimbal'] },
+  ]);
+
+  const visibleBtns = Array.from(doc.querySelectorAll('#main-nav button[data-go]')).filter((b) => !b.hidden);
+  assert.deepEqual(
+    visibleBtns.map((b) => ({ go: b.getAttribute('data-go'), num: b.querySelector('i').textContent })),
+    [
+      { go: 'p1', num: '1' },
+      { go: 'p3', num: '2' },
+      { go: 'p4', num: '3' },
+      { go: 'pc1', num: '4' },
+    ],
+  );
+
+  // go('pc1') and go('cat_drone') scroll pc1 into view
+  const goTargets = [];
+  win.HTMLElement.prototype.scrollIntoView = function () {
+    goTargets.push(this.id);
+  };
+  win.go('pc1');
+  win.go('cat_drone');
+  assert.deepEqual(goTargets, ['pc1', 'pc1']);
+
+  // Summary and PDF show items grouped under the custom category names
+  const sumText = doc.getElementById('sumlines').textContent;
+  assert.ok(sumText.includes('Wearables XSS'));
+  assert.ok(sumText.includes('Watch Companion'));
+  assert.ok(sumText.includes('Drone software'));
+  assert.ok(sumText.includes('Flight Controller'));
+  assert.ok(sumText.includes('Gimbal Telemetry'));
+
+  win.downloadPdf();
+  const pdfTexts = pdfTextCalls.map((c) => c.text);
+  assert.ok(pdfTexts.includes('WEARABLES XSS'));
+  assert.ok(pdfTexts.includes('DRONE SOFTWARE'));
+  assert.ok(pdfTexts.some((t) => t.includes('Flight Controller')));
+  assert.ok(pdfTexts.some((t) => t.includes('Gimbal Telemetry')));
+});
+
+test('scroll-to message scrolls matching visible targets, respects prefers-reduced-motion, and ignores unknown/hidden targets and foreign origins', async () => {
+  const payload = {
+    mode: 'preview',
+    kind: 'proposal',
+    proposal_id: 'prop-scroll',
+    prices: {},
+    hidden_sheets: ['p2'],
+    hidden_about: ['portfolio'],
+    custom_categories: [
+      {
+        id: 'cat_drone',
+        name: 'Drone software',
+        placement: 'new_sheet',
+        sheet_title: 'Drone software',
+        sheet_lead: 'Drone lead',
+        item_ids: ['custom_drone_1'],
+      },
+    ],
+    custom_items: [
+      {
+        id: 'custom_drone_1',
+        g: 'Drone software',
+        n: 'Drone Item',
+        d: 'Desc',
+        p: 5000,
+        r: [],
+      },
+    ],
+    preset: {
+      slug: 'scroll-test',
+      name: 'Scroll Test',
+      badge: 'Scroll Test',
+      architectureBlock: {
+        heading: 'Arch',
+        sub: 'Sub',
+        roles: [{ label: 'R1', points: ['P1'] }],
+      },
+      initialSelected: ['a_base', 'custom_drone_1'],
+      sections: { p2: [], p3: ['a_base'], p4: ['b_db'], p5: ['ops_cloud'] },
+    },
+  };
+
+  const { dom } = await mountPitchDom({ url: 'http://localhost/pitch/?mode=preview', payload });
+  const win = dom.window;
+
+  const scrollCalls = [];
+  win.scrollTo = (arg1, arg2) => {
+    scrollCalls.push({ arg1, arg2 });
+  };
+  let reducedMotion = false;
+  win.matchMedia = (q) => ({
+    matches: q.includes('prefers-reduced-motion') ? reducedMotion : false,
+  });
+
+  function postScroll(target, origin = win.location.origin) {
+    win.dispatchEvent(
+      new win.MessageEvent('message', {
+        origin,
+        data: { type: 'magnm:pitch-scroll-to', target },
+      }),
+    );
+  }
+
+  // Foreign origin is ignored
+  postScroll('about', 'https://attacker.example');
+  assert.equal(scrollCalls.length, 0);
+
+  // Unknown and hidden targets are ignored
+  postScroll('unknown_target');
+  postScroll('about:portfolio'); // hidden in hidden_about
+  postScroll('p2'); // hidden in hidden_sheets
+  postScroll('item:w_front'); // on hidden sheet p2
+  assert.equal(scrollCalls.length, 0);
+
+  // Visible targets trigger smooth scrollTo
+  const validTargets = [
+    'about',
+    'about:lead',
+    'about:what_we_do',
+    'about:this_plan',
+    'about:architecture',
+    'about:timeline',
+    'about:payment',
+    'p3',
+    'p4',
+    'p5',
+    'pc1',
+    'cat_drone',
+    'item:a_base',
+    'item:custom_drone_1',
+    'summary',
+  ];
+  for (const t of validTargets) {
+    const before = scrollCalls.length;
+    postScroll(t);
+    assert.equal(scrollCalls.length, before + 1, `Expected scrollTo for target "${t}"`);
+    assert.equal(scrollCalls[scrollCalls.length - 1].arg1.behavior, 'smooth');
+  }
+
+  // Under prefers-reduced-motion, behavior is instant
+  reducedMotion = true;
+  postScroll('summary');
+  assert.equal(scrollCalls[scrollCalls.length - 1].arg1.behavior, 'instant');
+});
+
+test('live preview update applies price overrides, custom categories, hidden sheets and hidden About without reload while preserving scroll position', async () => {
+  const payload = {
+    mode: 'preview',
+    kind: 'proposal',
+    proposal_id: 'prop-live',
+    prices: { w_front: 6000, b_db: 2000 },
+    custom_items: [],
+    hidden_sheets: [],
+    hidden_about: [],
+    custom_categories: [],
+    preset: {
+      slug: 'live-client',
+      name: 'Live Client',
+      badge: 'Live Client',
+      initialSelected: ['w_front', 'b_db'],
+      sections: { p2: ['w_front'], p3: ['a_base'], p4: ['b_db'], p5: ['ops_cloud'] },
+    },
+  };
+
+  const { dom } = await mountPitchDom({ url: 'http://localhost/pitch/?mode=preview', payload });
+  const win = dom.window;
+  const doc = win.document;
+
+  assert.equal(win.total(), 8000);
+  win.scrollX = 0;
+  win.scrollY = 420;
+  const restoredScrolls = [];
+  win.scrollTo = (x, y) => {
+    restoredScrolls.push({ x, y });
+  };
+
+  // Send live preview update: change w_front price to 9500, hide p3 and p5, hide lead, add custom category & item
+  win.dispatchEvent(
+    new win.MessageEvent('message', {
+      origin: win.location.origin,
+      data: {
+        type: 'magnm:pitch-preview-update',
+        payload: {
+          prices: { w_front: 9500, b_db: 2000 },
+          hidden_sheets: ['p3', 'p5'],
+          hidden_about: ['lead'],
+          custom_categories: [
+            {
+              id: 'cat_edge',
+              name: 'Edge Compute',
+              placement: 'p4',
+              sheet_title: '',
+              sheet_lead: '',
+              item_ids: ['custom_edge_node'],
+            },
+          ],
+          custom_items: [
+            {
+              id: 'custom_edge_node',
+              g: 'Edge Compute',
+              n: 'Edge Node Agent',
+              d: 'On-premise sync agent.',
+              p: 3000,
+              r: ['b_db'],
+            },
+          ],
+          preset: {
+            slug: 'live-client',
+            name: 'Live Client',
+            badge: 'Live Client',
+            initialSelected: ['w_front', 'b_db', 'custom_edge_node'],
+            sections: { p2: ['w_front'], p3: [], p4: ['b_db'], p5: [] },
+          },
+        },
+      },
+    }),
+  );
+
+  // Total updated to 9500 + 2000 + 3000 = 14500 without reload
+  assert.equal(win.total(), 14500);
+  assert.equal(doc.getElementById('total').textContent, '\u20b914,500');
+  assert.equal(doc.getElementById('p3').hidden, true);
+  assert.equal(doc.getElementById('p5').hidden, true);
+  assert.equal(doc.querySelector('#p1 .lead').hidden, true);
+  assert.equal(doc.querySelector('#p4 .pageno span:first-child').textContent, 'Page 3 of 3');
+  assert.deepEqual(readSheetStructure(doc, 'p4'), [
+    { heading: 'Database, API & Authentication', items: ['b_db'] },
+    { heading: 'Edge Compute', items: ['custom_edge_node'] },
+  ]);
+  assert.deepEqual(restoredScrolls[restoredScrolls.length - 1], { x: 0, y: 420 });
+
+  // Resetting price override back to base works on subsequent preview update
+  win.dispatchEvent(
+    new win.MessageEvent('message', {
+      origin: win.location.origin,
+      data: {
+        type: 'magnm:pitch-preview-update',
+        payload: {
+          prices: {},
+        },
+      },
+    }),
+  );
+  assert.equal(win.ITEMS.w_front.p, 6000);
+  assert.equal(win.total(), 6000 + 2000 + 3000);
+});
+

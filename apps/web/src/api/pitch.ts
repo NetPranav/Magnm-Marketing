@@ -3,8 +3,43 @@ import { api } from '../api';
 export type PitchProposalKind = 'proposal' | 'quote_form' | 'final' | 'default';
 export type PitchProposalStatus = 'draft' | 'ready' | 'sent' | 'archived';
 export type PitchSectionKey = 'p2' | 'p3' | 'p4' | 'p5';
+export type PitchAboutSectionKey =
+  | 'lead'
+  | 'what_we_do'
+  | 'portfolio'
+  | 'this_plan'
+  | 'architecture'
+  | 'timeline'
+  | 'payment';
+export type PitchCategoryPlacement = PitchSectionKey | 'new_sheet';
 export type PitchPriceSource = 'base' | 'admin' | 'proposal' | 'custom';
 export type PitchServicePlanPeriod = 'one_time' | 'monthly' | 'quarterly' | 'yearly';
+
+export interface PitchCustomCategory {
+  id: string;
+  name: string;
+  placement: PitchCategoryPlacement;
+  sheet_title?: string;
+  sheet_lead?: string;
+  item_ids?: string[];
+}
+
+export interface PitchIncludedFromHidden {
+  item_id: string;
+  name: string;
+  sheet_shown_on: string;
+  needed_for: string[];
+  also_needed_on?: string[];
+}
+
+export interface PitchDroppedItemChange {
+  item_id: string;
+  name: string;
+  sheet: string;
+  dropped_from: string;
+  reason: string;
+  message: string;
+}
 
 export interface PitchPaymentPlanRow {
   percent: number;
@@ -181,6 +216,11 @@ export interface PitchProposal {
   preset: PitchPreset;
   price_overrides: Record<string, number>;
   custom_items: PitchCustomItem[];
+  hidden_sheets?: PitchSectionKey[];
+  hidden_about?: PitchAboutSectionKey[];
+  custom_categories?: PitchCustomCategory[];
+  included_from_hidden?: PitchIncludedFromHidden[];
+  changes?: PitchDroppedItemChange[];
   payment_plan?: PitchPaymentPlanRow[];
   payment_note?: string;
   timeline?: PitchTimelineStep[];
@@ -230,6 +270,9 @@ export interface CreateProposalInput {
   preset?: Partial<PitchPreset>;
   price_overrides?: Record<string, number>;
   custom_items?: PitchCustomItem[];
+  hidden_sheets?: PitchSectionKey[];
+  hidden_about?: PitchAboutSectionKey[];
+  custom_categories?: PitchCustomCategory[];
   payment_plan?: PitchPaymentPlanRow[];
   payment_note?: string;
   timeline?: PitchTimelineStep[];
@@ -247,11 +290,45 @@ export interface UpdateProposalInput {
   preset?: Partial<PitchPreset>;
   price_overrides?: Record<string, number>;
   custom_items?: PitchCustomItem[];
+  hidden_sheets?: PitchSectionKey[];
+  hidden_about?: PitchAboutSectionKey[];
+  custom_categories?: PitchCustomCategory[];
   payment_plan?: PitchPaymentPlanRow[];
   payment_note?: string;
   timeline?: PitchTimelineStep[];
   service_plans?: PitchServicePlan[];
   notes?: string;
+}
+
+export interface PitchPreviewPayloadInput extends UpdateProposalInput {
+  id?: string;
+  proposal_id?: string;
+  mode?: 'preview' | 'present' | 'form';
+}
+
+export interface PitchPreviewPayloadResponse {
+  mode: string;
+  kind: PitchProposalKind | null;
+  locked: boolean;
+  prices: Record<string, number>;
+  custom_items: PitchCustomItem[];
+  preset: PitchPreset | null;
+  proposal_id?: string | null;
+  contact: PitchContact & { business?: string };
+  payment_plan: PitchPaymentPlanRow[];
+  payment_note: string;
+  timeline: PitchTimelineStep[];
+  service_plans: PitchServicePlan[];
+  hidden_sheets: PitchSectionKey[];
+  hidden_about: PitchAboutSectionKey[];
+  custom_categories: PitchCustomCategory[];
+  included_from_hidden: PitchIncludedFromHidden[];
+  violations?: PitchRuleViolation[];
+  valid?: boolean;
+  changes?: PitchDroppedItemChange[];
+  added_dependencies?: string[];
+  pricing_summary?: PitchPricingSummary;
+  warnings?: PitchProductWarning[];
 }
 
 export interface FinalizeProposalInput {
@@ -383,4 +460,11 @@ export function getPitchOutbox(pendingOnly = true): Promise<PitchOutboxResponse>
   return api.get<PitchOutboxResponse>(
     `/api/pitch/outbox?pending=${pendingOnly ? '1' : '0'}`,
   );
+}
+
+/** Validate a draft proposal payload without saving and return derived preview fields. */
+export function getPitchPreviewPayload(
+  payload: PitchPreviewPayloadInput,
+): Promise<PitchPreviewPayloadResponse> {
+  return api.post<PitchPreviewPayloadResponse>('/api/pitch/preview_payload', payload);
 }
