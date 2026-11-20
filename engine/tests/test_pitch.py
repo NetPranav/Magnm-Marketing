@@ -1138,6 +1138,428 @@ class PitchTests(unittest.TestCase):
         self.assertEqual(_dispatch("/api/pitch/default").status_code, 401)
         self.assertEqual(_dispatch(f"/api/pitch/proposals/{src['id']}/finalize", method="POST", body_dict={}).status_code, 401)
 
+    def test_21_hidden_sheets_one_three_all_four_and_new_sheet_category(self):
+        """Hide 1 or 3 sheets succeeds; hiding all 4 fails unless a new_sheet category has >= 1 item."""
+        p_one = pitch.create_proposal({
+            "slug": "hide-one-sheet",
+            "hidden_sheets": ["p3"],
+            "preset": {"initialSelected": ["w_front"]},
+        })
+        self.assertEqual(p_one["hidden_sheets"], ["p3"])
+
+        p_three = pitch.create_proposal({
+            "slug": "hide-three-sheets",
+            "hidden_sheets": ["p3", "p4", "p5"],
+            "preset": {"initialSelected": ["w_front"]},
+        })
+        self.assertEqual(p_three["hidden_sheets"], ["p3", "p4", "p5"])
+
+        # Hiding all four built-in sheets with no custom new_sheet category is a violation.
+        with self.assertRaises(pitch.ValidationError) as ctx_all:
+            pitch.create_proposal({
+                "slug": "hide-all-four",
+                "hidden_sheets": ["p2", "p3", "p4", "p5"],
+            })
+        self.assertTrue(
+            any(
+                e["field"] == "hidden_sheets"
+                and e["message"] == "Keep at least one software option in the pitch"
+                for e in ctx_all.exception.errors
+            )
+        )
+
+        # A new_sheet category with 0 items does not satisfy the visible software sheet rule.
+        with self.assertRaises(pitch.ValidationError) as ctx_empty_cat:
+            pitch.create_proposal({
+                "slug": "hide-all-empty-cat",
+                "hidden_sheets": ["p2", "p3", "p4", "p5"],
+                "custom_categories": [
+                    {
+                        "id": "cat_drone",
+                        "name": "Drone Systems",
+                        "placement": "new_sheet",
+                        "sheet_title": "Autonomous Drone Systems",
+                        "sheet_lead": "Flight control and telemetry.",
+                    }
+                ],
+                "custom_items": [],
+            })
+        self.assertTrue(
+            any(
+                e["message"] == "Keep at least one software option in the pitch"
+                for e in ctx_empty_cat.exception.errors
+            )
+        )
+
+        # A new_sheet category with >= 1 item counts as a visible software option even when p2..p5 are all hidden.
+        p_custom_sheet = pitch.create_proposal({
+            "slug": "hide-all-with-custom-sheet",
+            "hidden_sheets": ["p2", "p3", "p4", "p5"],
+            "custom_categories": [
+                {
+                    "id": "cat_drone",
+                    "name": "Drone Systems",
+                    "placement": "new_sheet",
+                    "sheet_title": "Autonomous Drone Systems",
+                    "sheet_lead": "Flight control and telemetry.",
+                }
+            ],
+            "custom_items": [
+                {
+                    "id": "custom_flight_ctrl",
+                    "g": "Drone Systems",
+                    "n": "Flight Controller Firmware",
+                    "d": "Telemetry and waypoint navigation",
+                    "p": 8000,
+                    "r": [],
+                }
+            ],
+            "preset": {"initialSelected": ["custom_flight_ctrl"]},
+        })
+        self.assertEqual(p_custom_sheet["hidden_sheets"], ["p2", "p3", "p4", "p5"])
+        self.assertEqual(p_custom_sheet["preset"]["initialSelected"], ["custom_flight_ctrl"])
+
+    def test_22_category_on_hidden_sheet_and_category_validations(self):
+        """Category on a hidden sheet, duplicate/reserved names, >6 categories, and < in category fields fail."""
+        # Category placed on a hidden sheet is a violation.
+        with self.assertRaises(pitch.ValidationError) as ctx_hidden_cat:
+            pitch.create_proposal({
+                "slug": "cat-on-hidden",
+                "hidden_sheets": ["p3"],
+                "custom_categories": [
+                    {"id": "cat_wearables", "name": "Wearables", "placement": "p3"},
+                ],
+            })
+        self.assertTrue(
+            any(
+                e["field"] == "custom_categories[0].placement"
+                and e["rule"] == "category_on_hidden_sheet"
+                for e in ctx_hidden_cat.exception.errors
+            )
+        )
+
+        # Duplicate category names, reserved Pitch group names, missing sheet_title on new_sheet, and < / > rejected.
+        with self.assertRaises(pitch.ValidationError) as ctx_cats:
+            pitch.create_proposal({
+                "slug": "cat-rules-bad",
+                "custom_categories": [
+                    {
+                        "id": "cat_reserved",
+                        "name": "Web & SaaS",
+                        "placement": "p2",
+                    },
+                    {
+                        "id": "cat_dup_1",
+                        "name": "Hardware & IoT",
+                        "placement": "p4",
+                    },
+                    {
+                        "id": "cat_dup_2",
+                        "name": "hardware & iot",
+                        "placement": "new_sheet",
+                        "sheet_title": "",
+                        "sheet_lead": "Lead with <script>alert(1)</script>",
+                    },
+                    {
+                        "id": "cat_xss",
+                        "name": "Bad <Category>",
+                        "placement": "new_sheet",
+                        "sheet_title": "Title > Bad",
+                        "sheet_lead": "Clean lead",
+                    },
+                ],
+            })
+        errs = ctx_cats.exception.errors
+        rules_by_field = {}
+        for e in errs:
+            rules_by_field.setdefault(e["field"], []).append(e["rule"])
+        self.assertIn("reserved_category_name", rules_by_field.get("custom_categories[0].name", []))
+        self.assertIn("duplicate_category_name", rules_by_field.get("custom_categories[2].name", []))
+        self.assertIn("required", rules_by_field.get("custom_categories[2].sheet_title", []))
+        self.assertIn("unsafe_characters", rules_by_field.get("custom_categories[2].sheet_lead", []))
+        self.assertIn("unsafe_characters", rules_by_field.get("custom_categories[3].name", []))
+        self.assertIn("unsafe_characters", rules_by_field.get("custom_categories[3].sheet_title", []))
+
+        # Max 6 custom categories enforced.
+        with self.assertRaises(pitch.ValidationError) as ctx_many:
+            pitch.create_proposal({
+                "slug": "cat-too-many",
+                "custom_categories": [
+                    {"id": f"cat_c{i}", "name": f"Category {i}", "placement": "p2"}
+                    for i in range(7)
+                ],
+            })
+        self.assertTrue(any(e["rule"] == "custom_categories_count" for e in ctx_many.exception.errors))
+
+    def test_23_dropped_items_on_hidden_sheets_and_included_from_hidden(self):
+        """Non-required items on hidden sheets are dropped and reported in changes; required items stay and populate included_from_hidden."""
+        # Hide p3 (Mobile app) and p4 (Backend).
+        # On visible p2: w_portal requires w_front and b_db; w_book requires w_front, b_db, b_admin.
+        # In initialSelected: a_ios (on hidden p3, not required) and b_otp (on hidden p4, not required) are dropped;
+        # b_db (on hidden p4, required by w_portal/w_book) is kept!
+        prop = pitch.create_proposal({
+            "slug": "hidden-deps-test",
+            "hidden_sheets": ["p3", "p4"],
+            "preset": {
+                "initialSelected": ["w_portal", "a_ios", "b_otp", "b_db"],
+                "sections": {
+                    "p2": ["w_front", "w_portal", "w_book"],
+                    "p3": ["a_base", "a_ios"],
+                    "p4": ["b_db", "b_admin", "b_otp"],
+                    "p5": ["ops_cloud"],
+                },
+            },
+        })
+
+        # Non-required items from hidden sheets p3 and p4 are dropped and reported in changes.
+        dropped_ids = [c["item_id"] for c in prop["changes"]]
+        self.assertIn("a_ios", dropped_ids)
+        self.assertIn("a_base", dropped_ids)
+        self.assertIn("b_otp", dropped_ids)
+        self.assertNotIn("b_db", dropped_ids)
+        self.assertNotIn("b_admin", dropped_ids)
+
+        # Hidden sheet sections are cleared; required b_db stays in initialSelected while a_ios and b_otp are dropped.
+        self.assertEqual(prop["preset"]["sections"]["p3"], [])
+        self.assertEqual(prop["preset"]["sections"]["p4"], [])
+        self.assertEqual(set(prop["preset"]["initialSelected"]), {"w_portal", "w_front", "b_db"})
+
+        # included_from_hidden lists b_db and b_admin on p2 with exact needed_for names.
+        inc_by_id = {entry["item_id"]: entry for entry in prop["included_from_hidden"]}
+        self.assertEqual(set(inc_by_id.keys()), {"b_db", "b_admin"})
+        self.assertEqual(inc_by_id["b_db"]["name"], "Core Database & API Server")
+        self.assertEqual(inc_by_id["b_db"]["sheet_shown_on"], "p2")
+        self.assertEqual(
+            inc_by_id["b_db"]["needed_for"],
+            ["Client Portal & User Dashboard", "Service Booking & Slot Picker"],
+        )
+        self.assertEqual(inc_by_id["b_admin"]["name"], "Administrative Dashboard")
+        self.assertEqual(inc_by_id["b_admin"]["sheet_shown_on"], "p2")
+        self.assertEqual(
+            inc_by_id["b_admin"]["needed_for"],
+            ["Service Booking & Slot Picker"],
+        )
+
+    def test_24_final_auto_hides_empty_sheets_and_keeps_included_from_hidden(self):
+        """Final quotation auto-hides empty sheets in payload without storing them, and computes included_from_hidden."""
+        fin = pitch.create_proposal({
+            "slug": "final-auto-hide",
+            "kind": "final",
+            "hidden_sheets": ["p4"],
+            "preset": {
+                "initialSelected": ["w_portal"],  # on p2; requires w_front (p2) and b_db (hidden p4)
+            },
+        })
+        # Stored hidden_sheets on the proposal has only ["p4"], not the auto-hidden empty sheets p3 and p5.
+        self.assertEqual(fin["hidden_sheets"], ["p4"])
+        saved = pitch.get_proposal(fin["id"])
+        self.assertEqual(saved["hidden_sheets"], ["p4"])
+
+        # included_from_hidden still applies to agreed items on final quotations.
+        self.assertEqual(
+            fin["included_from_hidden"],
+            [
+                {
+                    "item_id": "b_db",
+                    "name": "Core Database & API Server",
+                    "sheet_shown_on": "p2",
+                    "needed_for": ["Client Portal & User Dashboard"],
+                }
+            ],
+        )
+
+        # In the host payload (/pitch/?proposal=<id>), p3 and p5 have no agreed items and are auto-added to hidden_sheets.
+        h = _dispatch(f"/pitch/?proposal={fin['id']}")
+        self.assertEqual(h.status_code, 200)
+        m = re.search(
+            r'<script type="application/json" id="magnm-pitch-data">(.*?)</script>',
+            h.wfile.getvalue().decode("utf-8"),
+            re.DOTALL,
+        )
+        payload = json.loads(m.group(1))
+        self.assertEqual(payload["hidden_sheets"], ["p3", "p4", "p5"])
+        self.assertEqual(payload["included_from_hidden"], fin["included_from_hidden"])
+
+    def test_25_hidden_about_validation_and_default_quotation_rejection(self):
+        """hidden_about validates allowed keys, rejects title/wordmark and unknown keys; default quotation rejects all three new fields."""
+        valid_about = ["lead", "what_we_do", "portfolio", "this_plan", "architecture", "timeline", "payment"]
+        prop = pitch.create_proposal({
+            "slug": "about-hide-ok",
+            "hidden_about": valid_about,
+            "preset": {"initialSelected": ["w_front"]},
+        })
+        self.assertEqual(prop["hidden_about"], valid_about)
+
+        # Title / wordmark is not hideable, and unknown keys are rejected.
+        with self.assertRaises(pitch.ValidationError) as ctx_about:
+            pitch.create_proposal({
+                "slug": "about-hide-bad",
+                "hidden_about": ["title", "unknown_block"],
+            })
+        rules = {e["rule"] for e in ctx_about.exception.errors}
+        self.assertIn("title_not_hideable", rules)
+        self.assertIn("invalid_about_section", rules)
+
+        # Default quotation rejects hidden_sheets, hidden_about, and custom_categories on update, create, and preview.
+        def_prop = pitch.get_default_proposal()
+        for field_payload, field_name in (
+            ({"hidden_sheets": ["p2"]}, "hidden_sheets"),
+            ({"hidden_about": ["lead"]}, "hidden_about"),
+            ({"custom_categories": [{"id": "cat_x", "name": "Extra", "placement": "p2"}]}, "custom_categories"),
+        ):
+            with self.assertRaises(pitch.ValidationError) as ctx_def_upd:
+                pitch.update_proposal(def_prop["id"], field_payload)
+            self.assertTrue(any(e["field"] == field_name for e in ctx_def_upd.exception.errors))
+
+        with self.assertRaises(pitch.ValidationError) as ctx_def_create:
+            pitch.create_proposal({
+                "slug": "default-attempt",
+                "kind": "default",
+                "hidden_sheets": ["p2"],
+                "hidden_about": ["lead"],
+                "custom_categories": [{"id": "cat_x", "name": "Extra", "placement": "p2"}],
+            })
+        def_err_fields = {e["field"] for e in ctx_def_create.exception.errors}
+        self.assertTrue({"kind", "hidden_sheets", "hidden_about", "custom_categories"}.issubset(def_err_fields))
+
+        prev_def = pitch.preview_payload({
+            "kind": "default",
+            "hidden_sheets": ["p2"],
+            "hidden_about": ["lead"],
+            "custom_categories": [{"id": "cat_x", "name": "Extra", "placement": "p2"}],
+        })
+        self.assertFalse(prev_def["valid"])
+        self.assertEqual(
+            {v["field"] for v in prev_def["violations"]},
+            {"hidden_sheets", "hidden_about", "custom_categories"},
+        )
+
+    def test_26_custom_categories_custom_items_pricing_and_preview_payload(self):
+        """Custom items use custom category groups, pricing groups them under category name, and preview_payload works without saving."""
+        before_count = len(pitch.list_proposals())
+        before_outbox = pitch.list_outbox(pending_only=True)["pending_count"]
+
+        draft_input = {
+            "slug": "robotics-pitch",
+            "kind": "proposal",
+            "hidden_sheets": ["p3"],
+            "hidden_about": ["portfolio", "timeline"],
+            "custom_categories": [
+                {
+                    "id": "cat_iot",
+                    "name": "IoT Edge",
+                    "placement": "p4",
+                },
+                {
+                    "id": "cat_robotics",
+                    "name": "Robotics Fleet",
+                    "placement": "new_sheet",
+                    "sheet_title": "Robotics & Telemetry",
+                    "sheet_lead": "Custom fleet orchestration and ROS bridges.",
+                },
+            ],
+            "custom_items": [
+                {
+                    "id": "custom_mqtt",
+                    "g": "IoT Edge",
+                    "n": "MQTT Broker Setup",
+                    "d": "High-throughput telemetry ingestion",
+                    "p": 1500,
+                    "r": ["b_db"],
+                },
+                {
+                    "id": "custom_ros_bridge",
+                    "g": "Robotics Fleet",
+                    "n": "ROS 2 Web Bridge",
+                    "d": "Real-time robot control over WebSockets",
+                    "p": 4500,
+                    "r": ["b_db"],
+                },
+                {
+                    "id": "custom_fleet_map",
+                    "g": "Robotics Fleet",
+                    "n": "Live Fleet Map",
+                    "d": "2D SLAM map visualization",
+                    "p": 3200,
+                    "r": ["custom_ros_bridge"],
+                },
+            ],
+            "preset": {
+                "initialSelected": ["custom_mqtt", "custom_fleet_map", "a_base"],
+            },
+        }
+
+        # 1. Pure preview_payload and POST /api/pitch/preview_payload return derived fields without saving.
+        prev = pitch.preview_payload(draft_input)
+        self.assertTrue(prev["valid"])
+        self.assertEqual(prev["violations"], [])
+        self.assertEqual(prev["hidden_sheets"], ["p3"])
+        self.assertEqual(prev["hidden_about"], ["portfolio", "timeline"])
+        self.assertEqual([c["item_id"] for c in prev["changes"]], ["a_base"])
+        self.assertEqual(
+            prev["custom_categories"],
+            [
+                {
+                    "id": "cat_iot",
+                    "name": "IoT Edge",
+                    "placement": "p4",
+                    "sheet_title": "",
+                    "sheet_lead": "",
+                    "item_ids": ["custom_mqtt"],
+                },
+                {
+                    "id": "cat_robotics",
+                    "name": "Robotics Fleet",
+                    "placement": "new_sheet",
+                    "sheet_title": "Robotics & Telemetry",
+                    "sheet_lead": "Custom fleet orchestration and ROS bridges.",
+                    "item_ids": ["custom_ros_bridge", "custom_fleet_map"],
+                },
+            ],
+        )
+        # Verify nothing was saved to DB or outbox.
+        self.assertEqual(len(pitch.list_proposals()), before_count)
+        self.assertEqual(pitch.list_outbox(pending_only=True)["pending_count"], before_outbox)
+
+        http_prev = _dispatch("/api/pitch/preview_payload", method="POST", body_dict=draft_input)
+        self.assertEqual(http_prev.status_code, 200)
+        http_prev_json = http_prev.response_json()
+        self.assertEqual(http_prev_json["custom_categories"], prev["custom_categories"])
+        self.assertEqual(http_prev_json["pricing_summary"]["total"], 2000 + 1500 + 4500 + 3200)
+        self.assertEqual(len(pitch.list_proposals()), before_count)
+
+        # Invalid preview_payload returns violations without saving.
+        bad_prev = _dispatch(
+            "/api/pitch/preview_payload",
+            method="POST",
+            body_dict={"hidden_sheets": ["p2", "p3", "p4", "p5"]},
+        )
+        self.assertEqual(bad_prev.status_code, 200)
+        self.assertFalse(bad_prev.response_json()["valid"])
+        self.assertTrue(
+            any(
+                v["message"] == "Keep at least one software option in the pitch"
+                for v in bad_prev.response_json()["violations"]
+            )
+        )
+
+        # 2. Save the proposal and verify pricing_summary groups custom category items under category name
+        # and standalone fee is 0 (custom categories do not trigger Mobile app standalone fee).
+        saved = pitch.create_proposal(draft_input)
+        ps = saved["pricing_summary"]
+        self.assertEqual(ps["standalone_fee"], 0)
+        self.assertEqual(ps["total"], 2000 + 1500 + 4500 + 3200)
+        self.assertIn("IoT Edge", ps["by_group"])
+        self.assertIn("Robotics Fleet", ps["by_group"])
+        self.assertEqual([ln["item_id"] for ln in ps["by_group"]["IoT Edge"]], ["custom_mqtt"])
+        self.assertEqual(
+            [ln["item_id"] for ln in ps["by_group"]["Robotics Fleet"]],
+            ["custom_fleet_map", "custom_ros_bridge"],
+        )
+        grp_map = {g["group"]: g for g in ps["groups"]}
+        self.assertEqual(grp_map["IoT Edge"]["subtotal"], 1500)
+        self.assertEqual(grp_map["Robotics Fleet"]["subtotal"], 7700)
+
 
 if __name__ == "__main__":
     unittest.main()

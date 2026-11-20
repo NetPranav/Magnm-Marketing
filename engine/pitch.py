@@ -23,6 +23,9 @@ import product_rules
 VALID_KINDS = ("proposal", "quote_form", "final", "default")
 VALID_STATUSES = ("draft", "ready", "sent", "archived")
 VALID_SECTION_KEYS = ("p2", "p3", "p4", "p5")
+VALID_ABOUT_KEYS = ("lead", "what_we_do", "portfolio", "this_plan", "architecture", "timeline", "payment")
+UNHIDEABLE_ABOUT_KEYS = frozenset({"title", "wordmark", "mark"})
+VALID_CATEGORY_PLACEMENTS = ("p2", "p3", "p4", "p5", "new_sheet")
 VALID_SERVICE_PLAN_PERIODS = ("one_time", "monthly", "quarterly", "yearly")
 RECURRING_PERIODS = ("monthly", "quarterly", "yearly")
 
@@ -34,6 +37,7 @@ RESERVED_STATIC_SLUGS = frozenset({"general", "admin", "clients", DEFAULT_QUOTAT
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}$")
 CUSTOM_ID_RE = re.compile(r"^custom_[a-zA-Z0-9_-]{1,56}$")
 PLAN_ID_RE = re.compile(r"^plan_[a-z0-9][a-z0-9-]{1,57}$")
+CAT_ID_RE = re.compile(r"^cat_[a-z0-9][a-z0-9_-]{0,58}$")
 
 MIN_PRICE = 0
 MAX_PRICE = 10_000_000
@@ -49,6 +53,10 @@ MAX_TIMELINE_WHEN = 30
 MAX_TIMELINE_DETAIL = 240
 MAX_PLAN_NAME = 80
 MAX_PLAN_DESC = 240
+MAX_CUSTOM_CATEGORIES = 6
+MAX_CATEGORY_NAME = 40
+MAX_SHEET_TITLE = 60
+MAX_SHEET_LEAD = 240
 
 _GROUP_TO_SECTION = {
     "Web & SaaS": "p2",
@@ -291,12 +299,19 @@ def _hydrate_proposal(row):
         hydrated["preset"] = _general_preset()
         hydrated["price_overrides"] = {}
         hydrated["custom_items"] = []
+        hydrated["hidden_sheets"] = []
+        hydrated["hidden_about"] = []
+        hydrated["custom_categories"] = []
         hydrated["payment_plan"] = []
         hydrated["payment_note"] = ""
         hydrated["timeline"] = []
         hydrated["service_plans"] = []
         return hydrated
-    return row
+    hydrated = dict(row)
+    hydrated.setdefault("hidden_sheets", [])
+    hydrated.setdefault("hidden_about", [])
+    hydrated.setdefault("custom_categories", [])
+    return hydrated
 
 
 def ensure_default_proposal():
@@ -386,17 +401,247 @@ def _expand_initial_selected(initial_ids, all_items):
     return pitch_host.expand_selected_ids(initial_ids, all_items)
 
 
-def _derive_final_sections(selected_ids, all_items):
+def _derive_final_sections(selected_ids, all_items, custom_categories=None, hidden_sheets=None):
     """Derive sections p2..p5 strictly from agreed items in initialSelected."""
     sections = {k: [] for k in VALID_SECTION_KEYS}
+    hidden_set = set(hidden_sheets or [])
     seen = set()
     for iid in selected_ids:
         if iid in seen or iid not in all_items:
             continue
         seen.add(iid)
-        sec_key = section_for_group(all_items[iid].get("g", ""))
-        sections[sec_key].append(iid)
+        sheet_key = pitch_host.item_sheet(iid, all_items, custom_categories)
+        if sheet_key in VALID_SECTION_KEYS and sheet_key not in hidden_set:
+            sections[sheet_key].append(iid)
     return sections
+
+
+def _validate_hidden_sheets(raw_hidden, is_default, violations):
+    if raw_hidden is None:
+        return []
+    if is_default:
+        if raw_hidden:
+            _add_violation(
+                violations,
+                "hidden_sheets",
+                "immutable_default",
+                "The default quotation does not allow hidden_sheets",
+            )
+        return []
+    if not isinstance(raw_hidden, list):
+        _add_violation(violations, "hidden_sheets", "invalid_type", "hidden_sheets must be an array")
+        return []
+    cleaned = []
+    seen = set()
+    for idx, val in enumerate(raw_hidden):
+        if not isinstance(val, str) or val.strip() not in VALID_SECTION_KEYS:
+            _add_violation(
+                violations,
+                "hidden_sheets",
+                "invalid_sheet",
+                f"hidden_sheets[{idx}] must be one of: {', '.join(VALID_SECTION_KEYS)}",
+            )
+            continue
+        skey = val.strip()
+        if skey not in seen:
+            seen.add(skey)
+            cleaned.append(skey)
+    return cleaned
+
+
+def _validate_hidden_about(raw_about, is_default, violations):
+    if raw_about is None:
+        return []
+    if is_default:
+        if raw_about:
+            _add_violation(
+                violations,
+                "hidden_about",
+                "immutable_default",
+                "The default quotation does not allow hidden_about",
+            )
+        return []
+    if not isinstance(raw_about, list):
+        _add_violation(violations, "hidden_about", "invalid_type", "hidden_about must be an array")
+        return []
+    cleaned = []
+    seen = set()
+    for idx, val in enumerate(raw_about):
+        if not isinstance(val, str):
+            _add_violation(
+                violations,
+                "hidden_about",
+                "invalid_about_section",
+                f"hidden_about[{idx}] must be one of: {', '.join(VALID_ABOUT_KEYS)}",
+            )
+            continue
+        akey = val.strip()
+        if akey.lower() in UNHIDEABLE_ABOUT_KEYS:
+            _add_violation(
+                violations,
+                "hidden_about",
+                "title_not_hideable",
+                "The title/wordmark cannot be hidden",
+            )
+            continue
+        if akey not in VALID_ABOUT_KEYS:
+            _add_violation(
+                violations,
+                "hidden_about",
+                "invalid_about_section",
+                f"Unknown hidden_about section '{akey}'; must be one of: {', '.join(VALID_ABOUT_KEYS)}",
+            )
+            continue
+        if akey not in seen:
+            seen.add(akey)
+            cleaned.append(akey)
+    return cleaned
+
+
+def _validate_custom_categories(raw_cats, groups, hidden_sheets, is_default, violations):
+    if raw_cats is None:
+        return []
+    if is_default:
+        if raw_cats:
+            _add_violation(
+                violations,
+                "custom_categories",
+                "immutable_default",
+                "The default quotation does not allow custom_categories",
+            )
+        return []
+    if not isinstance(raw_cats, list):
+        _add_violation(violations, "custom_categories", "invalid_type", "custom_categories must be an array")
+        return []
+    if len(raw_cats) > MAX_CUSTOM_CATEGORIES:
+        _add_violation(
+            violations,
+            "custom_categories",
+            "custom_categories_count",
+            f"custom_categories must have at most {MAX_CUSTOM_CATEGORIES} entries",
+        )
+
+    hidden_set = set(hidden_sheets or [])
+    reserved_groups_lower = {g.lower() for g in (groups or [])}
+    seen_ids = set()
+    seen_names_lower = set()
+    cleaned = []
+
+    for idx, cat in enumerate(raw_cats):
+        prefix = f"custom_categories[{idx}]"
+        if not isinstance(cat, dict):
+            _add_violation(violations, prefix, "invalid_type", f"{prefix} must be an object")
+            continue
+
+        raw_id = cat.get("id")
+        if not isinstance(raw_id, str):
+            _add_violation(
+                violations,
+                f"{prefix}.id",
+                "custom_category_id",
+                f"{prefix}.id must match cat_<slug>",
+            )
+            cid_clean = ""
+        else:
+            cid_str = raw_id.strip()
+            if "<" in cid_str or ">" in cid_str:
+                _add_violation(violations, f"{prefix}.id", "unsafe_characters", "Text cannot contain < or >")
+            if not CAT_ID_RE.match(cid_str):
+                _add_violation(
+                    violations,
+                    f"{prefix}.id",
+                    "custom_category_id",
+                    f"{prefix}.id must match cat_<slug> (lowercase letters, digits, hyphens, underscores)",
+                )
+                cid_clean = ""
+            elif cid_str in seen_ids:
+                _add_violation(
+                    violations,
+                    f"{prefix}.id",
+                    "custom_category_id",
+                    f"Duplicate custom category id '{cid_str}'",
+                )
+                cid_clean = cid_str
+            else:
+                seen_ids.add(cid_str)
+                cid_clean = cid_str
+
+        name_clean = _trim_and_check_len(
+            cat.get("name"),
+            f"{prefix}.name",
+            MAX_CATEGORY_NAME,
+            violations,
+            required=True,
+            forbid_angle_brackets=True,
+        )
+        if name_clean:
+            name_lower = name_clean.lower()
+            if name_lower in reserved_groups_lower:
+                _add_violation(
+                    violations,
+                    f"{prefix}.name",
+                    "reserved_category_name",
+                    f"Category name '{name_clean}' cannot equal a Pitch group name",
+                )
+            elif name_lower in seen_names_lower:
+                _add_violation(
+                    violations,
+                    f"{prefix}.name",
+                    "duplicate_category_name",
+                    f"Duplicate custom category name '{name_clean}'",
+                )
+            else:
+                seen_names_lower.add(name_lower)
+
+        raw_placement = cat.get("placement")
+        if not isinstance(raw_placement, str) or raw_placement.strip() not in VALID_CATEGORY_PLACEMENTS:
+            _add_violation(
+                violations,
+                f"{prefix}.placement",
+                "custom_category_placement",
+                f"{prefix}.placement must be one of: {', '.join(VALID_CATEGORY_PLACEMENTS)}",
+            )
+            placement_clean = ""
+        else:
+            placement_clean = raw_placement.strip()
+            if placement_clean in VALID_SECTION_KEYS and placement_clean in hidden_set:
+                _add_violation(
+                    violations,
+                    f"{prefix}.placement",
+                    "category_on_hidden_sheet",
+                    f"Category '{name_clean or cid_clean}' is placed on hidden sheet '{placement_clean}'; move it or show the sheet",
+                )
+
+        is_new_sheet = placement_clean == "new_sheet"
+        sheet_title = _trim_and_check_len(
+            cat.get("sheet_title"),
+            f"{prefix}.sheet_title",
+            MAX_SHEET_TITLE,
+            violations,
+            required=is_new_sheet,
+            forbid_angle_brackets=True,
+        )
+        sheet_lead = _trim_and_check_len(
+            cat.get("sheet_lead"),
+            f"{prefix}.sheet_lead",
+            MAX_SHEET_LEAD,
+            violations,
+            required=False,
+            forbid_angle_brackets=True,
+        )
+        if not is_new_sheet:
+            sheet_title = ""
+            sheet_lead = ""
+
+        cleaned.append({
+            "id": cid_clean,
+            "name": name_clean,
+            "placement": placement_clean,
+            "sheet_title": sheet_title,
+            "sheet_lead": sheet_lead,
+        })
+
+    return cleaned
 
 
 def _validate_payment_plan(raw_plan, is_final, violations):
@@ -614,7 +859,7 @@ def _validate_service_plans(raw_plans, cat_items, custom_by_id, violations):
     return cleaned
 
 
-def _validate_and_normalize(candidate, existing_id=None):
+def _validate_and_normalize(candidate, existing_id=None, raise_on_error=True, allow_missing_slug=False):
     """Validate proposal fields against ported Pitch rules; collect all violations at once."""
     violations = []
     raw_cat = _raw_catalog()
@@ -624,9 +869,10 @@ def _validate_and_normalize(candidate, existing_id=None):
 
     # Rule: kind and status validation.
     kind = str(candidate.get("kind") or "proposal").strip()
+    is_default = kind == "default"
     if kind not in VALID_KINDS:
         _add_violation(violations, "kind", "invalid_kind", f"kind must be one of: {', '.join(VALID_KINDS)}")
-    elif kind == "default":
+    elif is_default and not allow_missing_slug:
         _add_violation(violations, "kind", "reserved_kind", "The 'default' quotation is system-managed and cannot be created or edited")
 
     status = str(candidate.get("status") or "draft").strip()
@@ -636,7 +882,9 @@ def _validate_and_normalize(candidate, existing_id=None):
     # Rule (RULES.md #1 & #2, check-rules.js #1 & #2): Slug format, reserved slugs, and uniqueness.
     # General planner ('general') and '/admin', '/clients', 'default-quotation', and built-in presets are never modified.
     raw_slug = candidate.get("slug")
-    if not isinstance(raw_slug, str):
+    if allow_missing_slug and (raw_slug is None or (isinstance(raw_slug, str) and not raw_slug.strip())):
+        slug = DEFAULT_QUOTATION_SLUG if is_default else "preview-draft"
+    elif not isinstance(raw_slug, str):
         _add_violation(violations, "slug", "slug_format", "slug must be a string")
         slug = ""
     else:
@@ -648,14 +896,14 @@ def _validate_and_normalize(candidate, existing_id=None):
                 "slug_format",
                 "slug must match ^[a-z0-9][a-z0-9-]{1,62}$ (lowercase letters, digits, hyphens, 2-63 chars)",
             )
-        if slug in reserved:
+        if slug in reserved and not (allow_missing_slug and is_default and slug == DEFAULT_QUOTATION_SLUG):
             _add_violation(
                 violations,
                 "slug",
                 "reserved_slug",
                 f"slug '{slug}' is reserved; general planner and built-in routes cannot be overwritten",
             )
-        if slug:
+        if slug and not (allow_missing_slug and is_default and slug == DEFAULT_QUOTATION_SLUG):
             dup = db.get_pitch_proposal_by_slug(slug)
             if dup is not None and dup["id"] != existing_id:
                 _add_violation(violations, "slug", "slug_unique", f"slug '{slug}' is already in use")
@@ -687,7 +935,20 @@ def _validate_and_normalize(candidate, existing_id=None):
                         raw_contact[cfield], f"contact.{cfield}", climit, violations, forbid_angle_brackets=True
                     )
 
-    # Rule (check-rules.js #3): Validate custom items (id prefix custom_, 5 groups, integer price, non-empty n/d).
+    # Validate hidden_sheets, hidden_about, and custom_categories before custom_items.
+    hidden_sheets = _validate_hidden_sheets(candidate.get("hidden_sheets"), is_default, violations)
+    hidden_about = _validate_hidden_about(candidate.get("hidden_about"), is_default, violations)
+    custom_categories = _validate_custom_categories(
+        candidate.get("custom_categories"),
+        groups,
+        hidden_sheets,
+        is_default,
+        violations,
+    )
+    custom_category_names = [cat["name"] for cat in custom_categories if cat.get("name")]
+    allowed_groups = list(groups) + [n for n in custom_category_names if n not in groups]
+
+    # Rule (check-rules.js #3): Validate custom items (id prefix custom_, Pitch groups or custom categories, integer price, non-empty n/d).
     raw_custom = candidate.get("custom_items")
     custom_items = []
     custom_by_id = {}
@@ -719,12 +980,12 @@ def _validate_and_normalize(candidate, existing_id=None):
                 _add_violation(violations, f"{prefix}.id", "custom_item_id", f"Duplicate custom item id '{cid_clean}'")
 
         grp = item.get("g")
-        if not isinstance(grp, str) or grp.strip() not in groups:
+        if not isinstance(grp, str) or grp.strip() not in allowed_groups:
             _add_violation(
                 violations,
                 f"{prefix}.g",
                 "custom_item_group",
-                f"{prefix}.g must be one of: {', '.join(groups)}",
+                f"{prefix}.g must be one of: {', '.join(allowed_groups)}",
             )
             grp_clean = grp.strip() if isinstance(grp, str) else ""
         else:
@@ -771,6 +1032,25 @@ def _validate_and_normalize(candidate, existing_id=None):
         custom_items.append(normalized_custom)
         if cid_clean and cid_clean not in custom_by_id:
             custom_by_id[cid_clean] = normalized_custom
+
+    # Rule: At least one visible software sheet (built-in sheets not hidden + new_sheet categories with >= 1 item).
+    if not is_default:
+        hidden_set = set(hidden_sheets)
+        visible_builtin = sum(1 for k in VALID_SECTION_KEYS if k not in hidden_set)
+        new_sheet_with_items = sum(
+            1
+            for cat in custom_categories
+            if cat.get("placement") == "new_sheet"
+            and cat.get("name")
+            and any(ci.get("g") == cat["name"] for ci in custom_items)
+        )
+        if visible_builtin + new_sheet_with_items == 0:
+            _add_violation(
+                violations,
+                "hidden_sheets",
+                "no_visible_sheets",
+                "Keep at least one software option in the pitch",
+            )
 
     all_items = dict(cat_items)
     all_items.update(custom_by_id)
@@ -904,7 +1184,7 @@ def _validate_and_normalize(candidate, existing_id=None):
 
     # Sections check: for 'final', sections are derived from agreed services and client-sent sections are ignored.
     is_final = kind == "final"
-    sections_clean = {"p2": [], "p3": [], "p4": [], "p5": []}
+    raw_sections_validated = {"p2": [], "p3": [], "p4": [], "p5": []}
     if not is_final:
         raw_sections = raw_preset.get("sections")
         if raw_sections is None:
@@ -949,10 +1229,9 @@ def _validate_and_normalize(candidate, existing_id=None):
                         )
                     elif sid_clean not in seen_sec:
                         seen_sec.add(sid_clean)
-                        sections_clean[skey].append(sid_clean)
-    preset["sections"] = sections_clean
+                        raw_sections_validated[skey].append(sid_clean)
 
-    # initialSelected check: every id must exist, then expand required dependencies (addWithDeps).
+    # initialSelected check: every id must exist.
     raw_initial = raw_preset.get("initialSelected")
     if raw_initial is None:
         raw_initial = []
@@ -1000,14 +1279,106 @@ def _validate_and_normalize(candidate, existing_id=None):
     timeline = _validate_timeline(candidate.get("timeline"), is_final, violations)
     service_plans = _validate_service_plans(candidate.get("service_plans"), cat_items, custom_by_id, violations)
 
-    if violations:
+    # Drop items on hidden sheets (except required items in included_from_hidden) and record in changes.
+    hidden_set = set(hidden_sheets)
+    changes = []
+    seen_dropped = set()
+
+    def _record_drop(iid, sheet_key, dropped_from):
+        if iid in seen_dropped or iid not in all_items:
+            return
+        seen_dropped.add(iid)
+        item_name = str(all_items[iid].get("n") or iid)
+        changes.append({
+            "item_id": iid,
+            "name": item_name,
+            "sheet": sheet_key,
+            "dropped_from": dropped_from,
+            "reason": "hidden_sheet",
+            "message": f"Dropped '{item_name}' ({iid}) because sheet {sheet_key} is hidden",
+        })
+
+    sections_clean = {"p2": [], "p3": [], "p4": [], "p5": []}
+    if not is_final:
+        for skey in VALID_SECTION_KEYS:
+            if skey in hidden_set:
+                sections_clean[skey] = []
+            else:
+                sections_clean[skey] = [
+                    sid
+                    for sid in raw_sections_validated[skey]
+                    if pitch_host.item_sheet(sid, all_items, custom_categories) not in hidden_set
+                ]
+    preset["sections"] = sections_clean
+
+    # Compute included_from_hidden for visible sheets so required hidden items stay selectable.
+    visible_initial_seeds = [
+        iid
+        for iid in initial_valid
+        if pitch_host.item_sheet(iid, all_items, custom_categories) not in hidden_set
+    ]
+    pre_proposal = {
+        "kind": kind,
+        "hidden_sheets": hidden_sheets,
+        "custom_items": custom_items,
+        "custom_categories": custom_categories,
+        "preset": {
+            "sections": sections_clean,
+            "initialSelected": visible_initial_seeds,
+        },
+    }
+    included_from_hidden = pitch_host.compute_included_from_hidden(
+        pre_proposal,
+        all_items=all_items,
+    )
+    required_hidden_ids = {entry["item_id"] for entry in included_from_hidden}
+    if is_final:
+        expanded_vis, _ = _expand_initial_selected(visible_initial_seeds, all_items)
+        for eid in expanded_vis:
+            if pitch_host.item_sheet(eid, all_items, custom_categories) in hidden_set:
+                required_hidden_ids.add(eid)
+
+    kept_initial = []
+    for iid in initial_valid:
+        isheet = pitch_host.item_sheet(iid, all_items, custom_categories)
+        if isheet in hidden_set and iid not in required_hidden_ids:
+            _record_drop(iid, isheet, "initialSelected")
+        else:
+            kept_initial.append(iid)
+
+    if not is_final:
+        for skey in VALID_SECTION_KEYS:
+            if skey in hidden_set:
+                for sid in raw_sections_validated[skey]:
+                    if sid not in required_hidden_ids:
+                        _record_drop(sid, skey, "sections")
+            else:
+                for sid in raw_sections_validated[skey]:
+                    isheet = pitch_host.item_sheet(sid, all_items, custom_categories)
+                    if isheet in hidden_set and sid not in required_hidden_ids:
+                        _record_drop(sid, isheet, "sections")
+
+    if is_final and len(initial_valid) > 0 and len(kept_initial) == 0:
+        _add_violation(
+            violations,
+            "preset.initialSelected",
+            "required",
+            "Final quotations require at least one agreed item on a visible sheet",
+        )
+
+    if violations and raise_on_error:
         summary = "; ".join(v["message"] for v in violations)
         raise ValidationError(summary, errors=violations)
 
-    expanded_selected, added_deps = _expand_initial_selected(initial_valid, all_items)
+    expanded_selected, added_deps = _expand_initial_selected(kept_initial, all_items)
     preset["initialSelected"] = expanded_selected
     if is_final:
-        preset["sections"] = _derive_final_sections(expanded_selected, all_items)
+        preset["sections"] = _derive_final_sections(
+            expanded_selected,
+            all_items,
+            custom_categories=custom_categories,
+            hidden_sheets=hidden_sheets,
+        )
 
     normalized = {
         "slug": slug,
@@ -1019,13 +1390,20 @@ def _validate_and_normalize(candidate, existing_id=None):
         "preset": preset,
         "price_overrides": price_overrides,
         "custom_items": custom_items,
+        "hidden_sheets": hidden_sheets,
+        "hidden_about": hidden_about,
+        "custom_categories": custom_categories,
         "payment_plan": payment_plan,
         "payment_note": payment_note,
         "timeline": timeline,
         "service_plans": service_plans,
         "notes": notes,
     }
-    return normalized, added_deps
+    included_from_hidden = pitch_host.compute_included_from_hidden(
+        normalized,
+        all_items=all_items,
+    )
+    return normalized, added_deps, changes, included_from_hidden, violations
 
 
 def check_proposal_product_rules(proposal):
@@ -1071,6 +1449,12 @@ def check_proposal_product_rules(proposal):
                 parts.append(citem["n"])
             if isinstance(citem.get("d"), str) and citem["d"].strip():
                 parts.append(citem["d"])
+
+    for ccat in proposal.get("custom_categories") or []:
+        if isinstance(ccat, dict):
+            for cfield in ("name", "sheet_title", "sheet_lead"):
+                if isinstance(ccat.get(cfield), str) and ccat[cfield].strip():
+                    parts.append(ccat[cfield])
 
     if isinstance(proposal.get("payment_note"), str) and proposal["payment_note"].strip():
         parts.append(proposal["payment_note"])
@@ -1297,9 +1681,43 @@ def pricing_summary(proposal):
                 "selected": True,
             })
 
+    # Group selected lines (built-in groups followed by custom categories) under their group / category name.
+    custom_cat_names = [
+        str(c.get("name") or "")
+        for c in (proposal.get("custom_categories") or [])
+        if isinstance(c, dict) and c.get("name")
+    ]
+    ordered_group_names = list(cat["groups"])
+    for cname in custom_cat_names:
+        if cname not in ordered_group_names:
+            ordered_group_names.append(cname)
+    for gname in selected_groups:
+        if gname and gname not in ordered_group_names:
+            ordered_group_names.append(gname)
+
+    all_selected_lines = list(lines) + list(custom_lines)
+    by_group = {}
+    groups_summary = []
+    for gname in ordered_group_names:
+        grp_lines = [ln for ln in all_selected_lines if ln.get("group") == gname]
+        if not grp_lines:
+            continue
+        by_group[gname] = grp_lines
+        grp_fee = standalone_fee if gname == "Mobile app" else 0
+        grp_subtotal = sum(int(ln["effective"]) for ln in grp_lines) + grp_fee
+        groups_summary.append({
+            "group": gname,
+            "name": gname,
+            "items": grp_lines,
+            "lines": grp_lines,
+            "subtotal": grp_subtotal,
+        })
+
     return {
         "lines": lines,
         "custom_items": custom_lines,
+        "by_group": by_group,
+        "groups": groups_summary,
         "one_time_plans": one_time_plans,
         "recurring": recurring,
         "recurring_totals": recurring_totals,
@@ -1312,13 +1730,20 @@ def pricing_summary(proposal):
     }
 
 
-def _enrich_proposal(proposal, added_dependencies=None):
+def _enrich_proposal(proposal, added_dependencies=None, changes=None, included_from_hidden=None):
     hydrated = _hydrate_proposal(proposal)
     pricing = pricing_summary(hydrated)
     warnings = check_proposal_product_rules(hydrated)
+    inc_hidden = (
+        list(included_from_hidden)
+        if included_from_hidden is not None
+        else pitch_host.compute_included_from_hidden(hydrated)
+    )
     out = {
         **hydrated,
         "pricing_summary": pricing,
+        "included_from_hidden": inc_hidden,
+        "changes": list(changes or []),
         "warnings": warnings,
         "pitch_version": pitch_version(),
     }
@@ -1367,6 +1792,9 @@ def _build_create_candidate(data, strip_prices=False):
             "preset": base_preset,
             "price_overrides": {} if strip_prices else (data.get("price_overrides") or {}),
             "custom_items": [] if strip_prices else (data.get("custom_items") or []),
+            "hidden_sheets": data.get("hidden_sheets"),
+            "hidden_about": data.get("hidden_about"),
+            "custom_categories": [] if strip_prices else data.get("custom_categories"),
             "payment_plan": data.get("payment_plan") or [],
             "payment_note": data.get("payment_note") or "",
             "timeline": data.get("timeline") or [],
@@ -1391,6 +1819,9 @@ def _build_create_candidate(data, strip_prices=False):
             "preset": deepcopy(src["preset"]),
             "price_overrides": {} if strip_prices else deepcopy(data.get("price_overrides", src["price_overrides"])),
             "custom_items": [] if strip_prices else deepcopy(data.get("custom_items", src["custom_items"])),
+            "hidden_sheets": deepcopy(data["hidden_sheets"]) if "hidden_sheets" in data else deepcopy(src.get("hidden_sheets") or []),
+            "hidden_about": deepcopy(data["hidden_about"]) if "hidden_about" in data else deepcopy(src.get("hidden_about") or []),
+            "custom_categories": [] if strip_prices else (deepcopy(data["custom_categories"]) if "custom_categories" in data else deepcopy(src.get("custom_categories") or [])),
             "payment_plan": deepcopy(data["payment_plan"]) if "payment_plan" in data else (deepcopy(src["payment_plan"]) if keep_final_fields else []),
             "payment_note": data["payment_note"] if "payment_note" in data else (src["payment_note"] if keep_final_fields else ""),
             "timeline": deepcopy(data["timeline"]) if "timeline" in data else (deepcopy(src["timeline"]) if keep_final_fields else []),
@@ -1409,12 +1840,31 @@ def _build_create_candidate(data, strip_prices=False):
             "preset": base_preset,
             "price_overrides": {} if strip_prices else (data.get("price_overrides") or {}),
             "custom_items": [] if strip_prices else (data.get("custom_items") or []),
+            "hidden_sheets": data.get("hidden_sheets"),
+            "hidden_about": data.get("hidden_about"),
+            "custom_categories": [] if strip_prices else data.get("custom_categories"),
             "payment_plan": data.get("payment_plan") or [],
             "payment_note": data.get("payment_note") or "",
             "timeline": data.get("timeline") or [],
             "service_plans": [] if strip_prices else (data.get("service_plans") or []),
             "notes": data.get("notes", ""),
         }
+
+    # If preset.sections was not explicitly passed, clear template sections on hidden sheets
+    # so template defaults do not report spurious drops in changes.
+    explicit_preset = data.get("preset") if isinstance(data.get("preset"), dict) else {}
+    raw_hidden = candidate.get("hidden_sheets")
+    if (
+        not duplicate_of
+        and not from_preset
+        and "sections" not in explicit_preset
+        and isinstance(raw_hidden, list)
+        and isinstance(candidate.get("preset"), dict)
+        and isinstance(candidate["preset"].get("sections"), dict)
+    ):
+        for hkey in raw_hidden:
+            if isinstance(hkey, str) and hkey.strip() in candidate["preset"]["sections"]:
+                candidate["preset"]["sections"][hkey.strip()] = []
 
     # Merge explicit preset fields over template if provided.
     if "preset" in data:
@@ -1440,6 +1890,7 @@ def _build_create_candidate(data, strip_prices=False):
     if strip_prices:
         candidate["price_overrides"] = {}
         candidate["custom_items"] = []
+        candidate["custom_categories"] = []
         candidate["service_plans"] = []
 
     return candidate
@@ -1472,7 +1923,7 @@ def create_proposal(data, created_by="user", strip_prices=False):
         raise ValidationError("Proposal payload must be an object")
 
     candidate = _build_create_candidate(data, strip_prices=strip_prices)
-    normalized, added_deps = _validate_and_normalize(candidate)
+    normalized, added_deps, changes, included_from_hidden, _ = _validate_and_normalize(candidate)
 
     proposal_id = f"prop_{uuid.uuid4().hex[:12]}"
     share_id = _generate_unique_share_id()
@@ -1489,6 +1940,9 @@ def create_proposal(data, created_by="user", strip_prices=False):
         preset=normalized["preset"],
         price_overrides=normalized["price_overrides"],
         custom_items=normalized["custom_items"],
+        hidden_sheets=normalized["hidden_sheets"],
+        hidden_about=normalized["hidden_about"],
+        custom_categories=normalized["custom_categories"],
         notes=normalized["notes"],
         created_by=str(created_by or "user"),
         share_id=share_id,
@@ -1502,7 +1956,12 @@ def create_proposal(data, created_by="user", strip_prices=False):
     pricing = pricing_summary(created)
     db.append_sync_outbox("proposal.created", _outbox_base_payload(created, pricing))
     _publish(created["id"], "created")
-    return _enrich_proposal(created, added_dependencies=added_deps)
+    return _enrich_proposal(
+        created,
+        added_dependencies=added_deps,
+        changes=changes,
+        included_from_hidden=included_from_hidden,
+    )
 
 
 def get_proposal(proposal_id):
@@ -1542,6 +2001,8 @@ def list_proposals(status=None, kind=None, limit=100):
         out.append({
             **hydrated,
             "pricing_summary": pricing_summary(hydrated),
+            "included_from_hidden": pitch_host.compute_included_from_hidden(hydrated),
+            "changes": [],
         })
     return out
 
@@ -1558,9 +2019,17 @@ def update_proposal(proposal_id, updates):
     if existing is None:
         raise NotFoundError(f"Proposal '{pid}' not found")
     if existing["kind"] == "default":
+        errs = [{"field": "kind", "rule": "immutable_default", "message": "The default quotation cannot be edited."}]
+        for field_name in ("hidden_sheets", "hidden_about", "custom_categories"):
+            if field_name in updates:
+                errs.append({
+                    "field": field_name,
+                    "rule": "immutable_default",
+                    "message": f"The default quotation does not allow {field_name}.",
+                })
         raise ValidationError(
             "The default quotation cannot be edited.",
-            errors=[{"field": "kind", "rule": "immutable_default", "message": "The default quotation cannot be edited."}],
+            errors=errs,
         )
 
     target_kind = updates.get("kind", existing["kind"])
@@ -1574,6 +2043,9 @@ def update_proposal(proposal_id, updates):
         "preset": deepcopy(existing["preset"]),
         "price_overrides": updates.get("price_overrides", existing["price_overrides"]),
         "custom_items": updates.get("custom_items", existing["custom_items"]),
+        "hidden_sheets": updates["hidden_sheets"] if "hidden_sheets" in updates else existing.get("hidden_sheets", []),
+        "hidden_about": updates["hidden_about"] if "hidden_about" in updates else existing.get("hidden_about", []),
+        "custom_categories": updates["custom_categories"] if "custom_categories" in updates else existing.get("custom_categories", []),
         "payment_plan": updates.get("payment_plan", existing.get("payment_plan") or []),
         "payment_note": updates.get("payment_note", existing.get("payment_note") or ""),
         "timeline": updates.get("timeline", existing.get("timeline") or []),
@@ -1598,7 +2070,7 @@ def update_proposal(proposal_id, updates):
             merged_preset.update(updates["preset"])
             candidate["preset"] = merged_preset
 
-    normalized, added_deps = _validate_and_normalize(candidate, existing_id=pid)
+    normalized, added_deps, changes, included_from_hidden, _ = _validate_and_normalize(candidate, existing_id=pid)
 
     changed_fields = []
     for field in (
@@ -1611,6 +2083,9 @@ def update_proposal(proposal_id, updates):
         "preset",
         "price_overrides",
         "custom_items",
+        "hidden_sheets",
+        "hidden_about",
+        "custom_categories",
         "payment_plan",
         "payment_note",
         "timeline",
@@ -1626,7 +2101,12 @@ def update_proposal(proposal_id, updates):
     outbox_payload["changed_fields"] = changed_fields
     db.append_sync_outbox("proposal.updated", outbox_payload)
     _publish(updated["id"], "updated")
-    return _enrich_proposal(updated, added_dependencies=added_deps)
+    return _enrich_proposal(
+        updated,
+        added_dependencies=added_deps,
+        changes=changes,
+        included_from_hidden=included_from_hidden,
+    )
 
 
 def delete_proposal(proposal_id, hard=False):
@@ -1724,6 +2204,9 @@ def finalize_proposal(proposal_id, overrides=None, created_by="user"):
         "preset": preset_copy,
         "price_overrides": opts["price_overrides"] if "price_overrides" in opts else deepcopy(src["price_overrides"]),
         "custom_items": opts["custom_items"] if "custom_items" in opts else deepcopy(src["custom_items"]),
+        "hidden_sheets": opts["hidden_sheets"] if "hidden_sheets" in opts else deepcopy(src.get("hidden_sheets") or []),
+        "hidden_about": opts["hidden_about"] if "hidden_about" in opts else deepcopy(src.get("hidden_about") or []),
+        "custom_categories": opts["custom_categories"] if "custom_categories" in opts else deepcopy(src.get("custom_categories") or []),
         "payment_plan": opts["payment_plan"] if "payment_plan" in opts else deepcopy(defaults["payment_plan"]),
         "payment_note": opts["payment_note"] if "payment_note" in opts else defaults["payment_note"],
         "timeline": opts["timeline"] if "timeline" in opts else deepcopy(defaults["timeline"]),
@@ -1731,6 +2214,79 @@ def finalize_proposal(proposal_id, overrides=None, created_by="user"):
         "notes": opts.get("notes", src["notes"]),
     }
     return create_proposal(create_payload, created_by=created_by)
+
+
+def preview_payload(proposal_like):
+    """Validate proposal_like without saving and return the Pitch payload with violations and derived fields."""
+    if not isinstance(proposal_like, dict):
+        raise ValidationError("Proposal payload must be an object")
+
+    kind = str(proposal_like.get("kind") or "proposal").strip()
+    existing_id = proposal_like.get("id") or proposal_like.get("proposal_id")
+    mode = str(
+        proposal_like.get("mode")
+        or ("form" if kind in ("quote_form", "default") else "preview")
+    ).strip().lower()
+
+    if kind == "default":
+        violations = []
+        _validate_hidden_sheets(proposal_like.get("hidden_sheets"), True, violations)
+        _validate_hidden_about(proposal_like.get("hidden_about"), True, violations)
+        _validate_custom_categories(
+            proposal_like.get("custom_categories"),
+            _raw_catalog().get("groups") or [],
+            [],
+            True,
+            violations,
+        )
+        default_prop = _hydrate_proposal({
+            "id": existing_id or "prop_default",
+            "slug": DEFAULT_QUOTATION_SLUG,
+            "kind": "default",
+            "status": "ready",
+        })
+        payload = pitch_host.build_payload(
+            mode="form",
+            proposal=default_prop,
+            price_overrides=get_base_price_overrides(),
+        )
+        payload["violations"] = violations
+        payload["valid"] = len(violations) == 0
+        payload["changes"] = []
+        payload["added_dependencies"] = []
+        payload["pricing_summary"] = pricing_summary(default_prop)
+        payload["warnings"] = []
+        return payload
+
+    data = deepcopy(proposal_like)
+    data.pop("from_preset", None)
+    data.pop("duplicate_of", None)
+    candidate = _build_create_candidate(data, strip_prices=False)
+    if "slug" not in proposal_like or proposal_like.get("slug") is None:
+        candidate["slug"] = None
+
+    normalized, added_deps, changes, included_from_hidden, violations = _validate_and_normalize(
+        candidate,
+        existing_id=existing_id,
+        raise_on_error=False,
+        allow_missing_slug=("slug" not in proposal_like or proposal_like.get("slug") is None),
+    )
+    if existing_id:
+        normalized["id"] = existing_id
+
+    payload = pitch_host.build_payload(
+        mode=mode,
+        proposal=normalized,
+        price_overrides=get_base_price_overrides(),
+    )
+    payload["included_from_hidden"] = included_from_hidden
+    payload["violations"] = violations
+    payload["valid"] = len(violations) == 0
+    payload["changes"] = changes
+    payload["added_dependencies"] = added_deps
+    payload["pricing_summary"] = pricing_summary(normalized)
+    payload["warnings"] = check_proposal_product_rules(normalized)
+    return payload
 
 
 def save_proposal_pdf(proposal_id, raw_bytes, content_type=""):

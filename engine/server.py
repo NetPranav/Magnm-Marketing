@@ -379,6 +379,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                         actor=params.get("actor") or "admin",
                     )
                 )
+            elif parts == ["preview_payload"]:
+                self.send_json(pitch.preview_payload(params))
             elif parts == ["proposals"]:
                 self.send_json(
                     pitch.create_proposal(
