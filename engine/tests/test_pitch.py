@@ -1324,20 +1324,54 @@ class PitchTests(unittest.TestCase):
         self.assertEqual(prop["preset"]["sections"]["p4"], [])
         self.assertEqual(set(prop["preset"]["initialSelected"]), {"w_portal", "w_front", "b_db"})
 
-        # included_from_hidden lists b_db and b_admin on p2 with exact needed_for names.
+        # included_from_hidden lists b_db and b_admin on p2 with exact needed_for names and also_needed_on.
         inc_by_id = {entry["item_id"]: entry for entry in prop["included_from_hidden"]}
         self.assertEqual(set(inc_by_id.keys()), {"b_db", "b_admin"})
         self.assertEqual(inc_by_id["b_db"]["name"], "Core Database & API Server")
         self.assertEqual(inc_by_id["b_db"]["sheet_shown_on"], "p2")
+        self.assertEqual(inc_by_id["b_db"]["also_needed_on"], [])
         self.assertEqual(
             inc_by_id["b_db"]["needed_for"],
             ["Client Portal & User Dashboard", "Service Booking & Slot Picker"],
         )
         self.assertEqual(inc_by_id["b_admin"]["name"], "Administrative Dashboard")
         self.assertEqual(inc_by_id["b_admin"]["sheet_shown_on"], "p2")
+        self.assertEqual(inc_by_id["b_admin"]["also_needed_on"], [])
         self.assertEqual(
             inc_by_id["b_admin"]["needed_for"],
             ["Service Booking & Slot Picker"],
+        )
+
+        # Deduplication across multiple visible sheets: b_db needed on p2, p3, and p5 appears ONCE on p2
+        # with needed_for = union of all names and also_needed_on = ["p3", "p5"].
+        dedup_prop = pitch.create_proposal({
+            "slug": "hidden-dedup-test",
+            "hidden_sheets": ["p4"],
+            "preset": {
+                "initialSelected": ["w_portal", "a_base", "ai_bot"],
+                "sections": {
+                    "p2": ["w_front", "w_portal"],
+                    "p3": ["a_base"],
+                    "p4": ["b_db"],
+                    "p5": ["ai_bot"],
+                },
+            },
+        })
+        self.assertEqual(
+            dedup_prop["included_from_hidden"],
+            [
+                {
+                    "item_id": "b_db",
+                    "name": "Core Database & API Server",
+                    "sheet_shown_on": "p2",
+                    "needed_for": [
+                        "Client Portal & User Dashboard",
+                        "Cross-Platform Mobile App (Android)",
+                        "Custom AI Assistant / Support Bot",
+                    ],
+                    "also_needed_on": ["p3", "p5"],
+                }
+            ],
         )
 
     def test_24_final_auto_hides_empty_sheets_and_keeps_included_from_hidden(self):
@@ -1364,6 +1398,7 @@ class PitchTests(unittest.TestCase):
                     "name": "Core Database & API Server",
                     "sheet_shown_on": "p2",
                     "needed_for": ["Client Portal & User Dashboard"],
+                    "also_needed_on": [],
                 }
             ],
         )

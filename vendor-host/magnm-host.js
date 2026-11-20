@@ -35,14 +35,24 @@
     "payment_plan",
     "payment_note",
     "timeline",
-    "service_plans"
+    "service_plans",
+    "hidden_sheets",
+    "hidden_about",
+    "custom_categories",
+    "included_from_hidden"
   ];
-  for (var sk = 0; sk < SANITIZE_KEYS.length; sk++) {
-    var sKey = SANITIZE_KEYS[sk];
-    if (data[sKey] !== undefined) {
-      data[sKey] = stripAngleBrackets(data[sKey]);
+
+  function sanitizePayloadFields(obj) {
+    if (!obj || typeof obj !== "object") return;
+    for (var sk = 0; sk < SANITIZE_KEYS.length; sk++) {
+      var sKey = SANITIZE_KEYS[sk];
+      if (obj[sKey] !== undefined) {
+        obj[sKey] = stripAngleBrackets(obj[sKey]);
+      }
     }
   }
+
+  sanitizePayloadFields(data);
 
   function isLocked() {
     return data.locked === true;
@@ -59,17 +69,40 @@
     return Object.prototype.hasOwnProperty.call(PERIOD_SUFFIXES, period) ? PERIOD_SUFFIXES[period] : "";
   }
 
-  var INITIAL_PRICES = {};
+  var BASE_PRICES = {};
   if (typeof ITEMS !== "undefined") {
     Object.keys(ITEMS).forEach(function (id) {
-      INITIAL_PRICES[id] = ITEMS[id].p;
+      BASE_PRICES[id] = ITEMS[id].p;
     });
+  }
+
+  var INITIAL_GROUPS = typeof GROUPS !== "undefined" && Array.isArray(GROUPS) ? GROUPS.slice() : [];
+
+  function applyCustomCategoriesToGroups(categories) {
+    if (typeof GROUPS === "undefined" || !Array.isArray(GROUPS)) return;
+    GROUPS.length = 0;
+    for (var i = 0; i < INITIAL_GROUPS.length; i++) {
+      GROUPS.push(INITIAL_GROUPS[i]);
+    }
+    if (!Array.isArray(categories)) return;
+    for (var j = 0; j < categories.length; j++) {
+      var cat = categories[j];
+      if (
+        cat &&
+        typeof cat === "object" &&
+        typeof cat.name === "string" &&
+        cat.name.trim() &&
+        GROUPS.indexOf(cat.name) === -1
+      ) {
+        GROUPS.push(cat.name);
+      }
+    }
   }
 
   function applyPrices(priceMap) {
     if (typeof ITEMS === "undefined") return;
-    Object.keys(INITIAL_PRICES).forEach(function (id) {
-      if (ITEMS[id]) ITEMS[id].p = INITIAL_PRICES[id];
+    Object.keys(BASE_PRICES).forEach(function (id) {
+      if (ITEMS[id]) ITEMS[id].p = BASE_PRICES[id];
     });
     if (!priceMap || typeof priceMap !== "object") return;
     var priceKeys = Object.keys(priceMap);
@@ -166,19 +199,13 @@
     }
   }
 
-  // 1. Override base item prices for existing items only (non-negative integers).
+  // 1. Register custom categories on GROUPS, override base item prices, and register custom items.
+  applyCustomCategoriesToGroups(data.custom_categories);
   applyPrices(data.prices);
-  if (typeof ITEMS !== "undefined") {
-    Object.keys(ITEMS).forEach(function (id) {
-      INITIAL_PRICES[id] = ITEMS[id].p;
-    });
-  }
-
-  // 2. Register custom items (ids must start with custom_, group must exist in GROUPS).
   applyCustomItems(data.custom_items);
   applyServicePlans(data.service_plans);
 
-  // 3. Disable Pitch's built-in /admin route inside the Studio host.
+  // 2. Disable Pitch's built-in /admin route inside the Studio host.
   var origParseRoute = typeof window.parseRoute === "function" ? window.parseRoute : null;
   if (origParseRoute) {
     var currentRoute = origParseRoute();
@@ -205,11 +232,35 @@
     };
   }
 
-  // 4. Override buildPlannerSections so preset.sections filters Pitch's themed groups and appends Additional services.
+  // 3. Sheet structure, custom categories, hidden sheets, hidden About sections, and navigation.
   var origBuildPlannerSections =
     typeof window.buildPlannerSections === "function" ? window.buildPlannerSections : null;
   var TICK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg>';
   var SHEET_KEYS = ["p2", "p3", "p4", "p5"];
+  var ALL_BUILTIN_SHEETS = ["p1", "p2", "p3", "p4", "p5"];
+  var customSheetIds = [];
+  var catIdToSheetId = {};
+
+  function setHidden(el, shouldHide) {
+    if (!el) return;
+    if (shouldHide) {
+      el.hidden = true;
+      el.style.display = "none";
+    } else {
+      el.hidden = false;
+      el.style.display = "";
+    }
+  }
+
+  function isElementHidden(el) {
+    if (!el) return true;
+    var cur = el;
+    while (cur && cur.nodeType === 1) {
+      if (cur.hidden || cur.style.display === "none") return true;
+      cur = cur.parentNode;
+    }
+    return false;
+  }
 
   function createItemButton(id, it) {
     if (!it) return null;
@@ -232,10 +283,64 @@
     return b;
   }
 
+  function buildGroupElement(labelText, itemIds) {
+    if (typeof ITEMS === "undefined" || !Array.isArray(itemIds) || !itemIds.length) return null;
+    var groupEl = document.createElement("div");
+    groupEl.className = "group";
+
+    var labelEl = document.createElement("div");
+    labelEl.className = "label";
+    var labelSpan = document.createElement("span");
+    labelSpan.textContent = labelText;
+    labelEl.appendChild(labelSpan);
+    groupEl.appendChild(labelEl);
+
+    var itemsEl = document.createElement("div");
+    itemsEl.className = "items";
+    for (var i = 0; i < itemIds.length; i++) {
+      var id = itemIds[i];
+      if (!ITEMS[id]) continue;
+      var btn = createItemButton(id, ITEMS[id]);
+      if (btn) itemsEl.appendChild(btn);
+    }
+    if (!itemsEl.childNodes.length) return null;
+    groupEl.appendChild(itemsEl);
+    return groupEl;
+  }
+
+  function categoryItemIdsForSheet(sheetKey) {
+    var map = {};
+    if (!Array.isArray(data.custom_categories)) return map;
+    for (var i = 0; i < data.custom_categories.length; i++) {
+      var cat = data.custom_categories[i];
+      if (cat && typeof cat === "object" && cat.placement === sheetKey) {
+        var ids = resolveCategoryItems(cat);
+        for (var j = 0; j < ids.length; j++) {
+          map[ids[j]] = true;
+        }
+      }
+    }
+    return map;
+  }
+
+  function includedItemIdsForSheet(sheetKey) {
+    var map = {};
+    if (!Array.isArray(data.included_from_hidden)) return map;
+    for (var i = 0; i < data.included_from_hidden.length; i++) {
+      var entry = data.included_from_hidden[i];
+      if (entry && typeof entry === "object" && entry.sheet_shown_on === sheetKey && entry.item_id) {
+        map[entry.item_id] = true;
+      }
+    }
+    return map;
+  }
+
   function filterSheetSections(sheetKey, sectionIds) {
     var container = document.getElementById(sheetKey + "-groups");
     if (!container) return;
 
+    var catItemSet = categoryItemIdsForSheet(sheetKey);
+    var incItemSet = includedItemIdsForSheet(sheetKey);
     var wantedIds = [];
     var allowedSet = {};
     for (var i = 0; i < sectionIds.length; i++) {
@@ -266,29 +371,319 @@
 
     if (typeof ITEMS === "undefined") return;
     var extraIds = wantedIds.filter(function (id) {
-      return !Object.prototype.hasOwnProperty.call(renderedIds, id) && ITEMS[id];
+      return (
+        !Object.prototype.hasOwnProperty.call(renderedIds, id) &&
+        !Object.prototype.hasOwnProperty.call(catItemSet, id) &&
+        !Object.prototype.hasOwnProperty.call(incItemSet, id) &&
+        ITEMS[id]
+      );
     });
 
     if (extraIds.length > 0) {
-      var groupEl = document.createElement("div");
-      groupEl.className = "group";
-
-      var labelEl = document.createElement("div");
-      labelEl.className = "label";
-      var labelSpan = document.createElement("span");
-      labelSpan.textContent = "Additional services";
-      labelEl.appendChild(labelSpan);
-      groupEl.appendChild(labelEl);
-
-      var itemsEl = document.createElement("div");
-      itemsEl.className = "items";
-      extraIds.forEach(function (id) {
-        var b = createItemButton(id, ITEMS[id]);
-        if (b) itemsEl.appendChild(b);
-      });
-      groupEl.appendChild(itemsEl);
-      container.appendChild(groupEl);
+      var extraGroup = buildGroupElement("Additional services", extraIds);
+      if (extraGroup) container.appendChild(extraGroup);
     }
+  }
+
+  function resolveCategoryItems(cat) {
+    if (!cat || typeof cat !== "object") return [];
+    if (Array.isArray(cat.item_ids)) {
+      return cat.item_ids.filter(function (id) {
+        return typeof id === "string" && typeof ITEMS !== "undefined" && !!ITEMS[id];
+      });
+    }
+    if (typeof ITEMS === "undefined" || typeof cat.name !== "string" || !cat.name) return [];
+    var out = [];
+    Object.keys(ITEMS).forEach(function (id) {
+      if (ITEMS[id] && ITEMS[id].g === cat.name) {
+        if (isLocked() && typeof sel !== "undefined" && !sel[id]) return;
+        out.push(id);
+      }
+    });
+    return out;
+  }
+
+  function clearCustomSheets() {
+    for (var i = 0; i < customSheetIds.length; i++) {
+      var sid = customSheetIds[i];
+      var secEl = document.getElementById(sid);
+      if (secEl && secEl.parentNode) secEl.parentNode.removeChild(secEl);
+      var navBtn = document.querySelector('#main-nav button[data-go="' + sid + '"]');
+      if (navBtn && navBtn.parentNode) navBtn.parentNode.removeChild(navBtn);
+    }
+    customSheetIds = [];
+    catIdToSheetId = {};
+  }
+
+  function ensureSummaryPlaced(lastVisibleSheetId) {
+    var summaryEl = document.getElementById("summary");
+    if (!summaryEl || !lastVisibleSheetId) return;
+    var targetSheet = document.getElementById(lastVisibleSheetId);
+    if (targetSheet && summaryEl.parentNode !== targetSheet) {
+      targetSheet.appendChild(summaryEl);
+    }
+  }
+
+  function renderPlacedCategoriesOnSheet(sheetKey) {
+    if (!Array.isArray(data.custom_categories)) return;
+    var container = document.getElementById(sheetKey + "-groups");
+    if (!container) return;
+    for (var i = 0; i < data.custom_categories.length; i++) {
+      var cat = data.custom_categories[i];
+      if (!cat || typeof cat !== "object" || cat.placement !== sheetKey) continue;
+      var itemIds = resolveCategoryItems(cat);
+      var groupEl = buildGroupElement(cat.name || "", itemIds);
+      if (groupEl) container.appendChild(groupEl);
+    }
+  }
+
+  function resolveSheetTargetId(rawId) {
+    if (!rawId || typeof rawId !== "string") return "";
+    if (document.getElementById(rawId)) return rawId;
+    if (Object.prototype.hasOwnProperty.call(catIdToSheetId, rawId)) {
+      return catIdToSheetId[rawId];
+    }
+    return rawId;
+  }
+
+  function renderIncludedServicesForSheet(sheetId, rawCatId) {
+    if (!Array.isArray(data.included_from_hidden) || !data.included_from_hidden.length) return;
+    var container = document.getElementById(sheetId + "-groups");
+    if (!container) return;
+    var incIds = [];
+    var seen = {};
+    for (var i = 0; i < data.included_from_hidden.length; i++) {
+      var entry = data.included_from_hidden[i];
+      if (!entry || typeof entry !== "object" || typeof entry.item_id !== "string") continue;
+      var target = entry.sheet_shown_on;
+      if (target === sheetId || (rawCatId && target === rawCatId)) {
+        if (!Object.prototype.hasOwnProperty.call(seen, entry.item_id)) {
+          seen[entry.item_id] = true;
+          incIds.push(entry.item_id);
+        }
+      }
+    }
+    if (!incIds.length) return;
+    var groupEl = buildGroupElement("Included services", incIds);
+    if (groupEl) container.appendChild(groupEl);
+  }
+
+  function buildNewSheetSection(sheetId, cat) {
+    var sec = document.createElement("section");
+    sec.className = "sheet";
+    sec.id = sheetId;
+
+    var pageno = document.createElement("div");
+    pageno.className = "pageno";
+    var pageSpan = document.createElement("span");
+    pageSpan.textContent = "Page 1 of 1";
+    var titleSpan = document.createElement("span");
+    titleSpan.textContent = cat.sheet_title || cat.name || "";
+    pageno.appendChild(pageSpan);
+    pageno.appendChild(titleSpan);
+    sec.appendChild(pageno);
+
+    var h2 = document.createElement("h2");
+    h2.className = "big";
+    h2.textContent = cat.sheet_title || cat.name || "";
+    sec.appendChild(h2);
+
+    if (typeof cat.sheet_lead === "string" && cat.sheet_lead.trim()) {
+      var leadP = document.createElement("p");
+      leadP.className = "lead";
+      leadP.textContent = cat.sheet_lead;
+      sec.appendChild(leadP);
+    }
+
+    var groupsDiv = document.createElement("div");
+    groupsDiv.id = sheetId + "-groups";
+    var itemIds = resolveCategoryItems(cat);
+    var groupEl = buildGroupElement(cat.name || "", itemIds);
+    if (groupEl) groupsDiv.appendChild(groupEl);
+    sec.appendChild(groupsDiv);
+
+    return sec;
+  }
+
+  function buildNewSheetNavButton(sheetId, labelText) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.setAttribute("data-go", sheetId);
+    var numI = document.createElement("i");
+    numI.textContent = "1";
+    btn.appendChild(numI);
+    btn.appendChild(document.createTextNode(" " + (labelText || "")));
+    btn.addEventListener("click", function () {
+      if (typeof window.go === "function") window.go(sheetId);
+    });
+    return btn;
+  }
+
+  function applySheetsAndNavigation() {
+    clearCustomSheets();
+
+    var hiddenSet = {};
+    if (Array.isArray(data.hidden_sheets)) {
+      for (var i = 0; i < data.hidden_sheets.length; i++) {
+        var hs = String(data.hidden_sheets[i] || "").trim();
+        if (SHEET_KEYS.indexOf(hs) !== -1) {
+          hiddenSet[hs] = true;
+        }
+      }
+    }
+
+    // Show/hide built-in sheets p2..p5 and their nav buttons.
+    for (var s = 0; s < SHEET_KEYS.length; s++) {
+      var skey = SHEET_KEYS[s];
+      var isHid = Object.prototype.hasOwnProperty.call(hiddenSet, skey);
+      var secEl = document.getElementById(skey);
+      var navBtn = document.querySelector('#main-nav button[data-go="' + skey + '"]');
+      setHidden(secEl, isHid);
+      setHidden(navBtn, isHid);
+    }
+
+    // Determine the last visible built-in software sheet (or p1 if p2..p5 are all hidden).
+    var insertAfterEl = document.getElementById("p1");
+    for (var b = 0; b < SHEET_KEYS.length; b++) {
+      var bKey = SHEET_KEYS[b];
+      if (!Object.prototype.hasOwnProperty.call(hiddenSet, bKey)) {
+        var bEl = document.getElementById(bKey);
+        if (bEl) insertAfterEl = bEl;
+      }
+    }
+
+    // Build new_sheet categories after the last visible built-in software sheet.
+    var navWrap = document.querySelector("#main-nav .wrap");
+    var pcCounter = 0;
+    if (Array.isArray(data.custom_categories)) {
+      for (var c = 0; c < data.custom_categories.length; c++) {
+        var cat = data.custom_categories[c];
+        if (!cat || typeof cat !== "object" || cat.placement !== "new_sheet") continue;
+        var itemIds = resolveCategoryItems(cat);
+        if (isLocked() && !itemIds.length) continue;
+        pcCounter += 1;
+        var pcId = "pc" + pcCounter;
+        customSheetIds.push(pcId);
+        if (cat.id) {
+          catIdToSheetId[cat.id] = pcId;
+        }
+        var newSec = buildNewSheetSection(pcId, cat);
+        if (insertAfterEl && insertAfterEl.parentNode) {
+          insertAfterEl.parentNode.insertBefore(newSec, insertAfterEl.nextSibling);
+          insertAfterEl = newSec;
+        }
+        if (navWrap) {
+          var newBtn = buildNewSheetNavButton(pcId, cat.sheet_title || cat.name || "");
+          navWrap.appendChild(newBtn);
+        }
+        renderIncludedServicesForSheet(pcId, cat.id);
+      }
+    }
+
+    // Build ordered list of visible sheets: p1 + visible p2..p5 + custom sheets.
+    var visibleSheets = ["p1"];
+    for (var v = 0; v < SHEET_KEYS.length; v++) {
+      if (!Object.prototype.hasOwnProperty.call(hiddenSet, SHEET_KEYS[v])) {
+        visibleSheets.push(SHEET_KEYS[v]);
+      }
+    }
+    for (var k = 0; k < customSheetIds.length; k++) {
+      visibleSheets.push(customSheetIds[k]);
+    }
+
+    // Keep #summary at the end of the last visible sheet so it stays visible even when p5 is hidden.
+    var lastSheetId = visibleSheets[visibleSheets.length - 1] || "p5";
+    ensureSummaryPlaced(lastSheetId);
+
+    // Update Pitch's global secs array for spy().
+    if (typeof window.secs !== "undefined" && Array.isArray(window.secs)) {
+      window.secs.length = 0;
+      for (var sc = 0; sc < visibleSheets.length; sc++) {
+        window.secs.push(visibleSheets[sc]);
+      }
+    }
+
+    // Renumber nav buttons and .pageno "Page N of M", and update nav grid-template-columns.
+    var totalVisible = visibleSheets.length;
+    if (navWrap) {
+      navWrap.style.gridTemplateColumns =
+        totalVisible !== 5 ? "repeat(" + totalVisible + ", 1fr)" : "";
+    }
+    for (var idx = 0; idx < totalVisible; idx++) {
+      var sid = visibleSheets[idx];
+      var pageNum = idx + 1;
+      var btn = document.querySelector('#main-nav button[data-go="' + sid + '"]');
+      if (btn) {
+        var iEl = btn.querySelector("i");
+        if (iEl) iEl.textContent = String(pageNum);
+      }
+      var sheetEl = document.getElementById(sid);
+      if (sheetEl) {
+        var pagenoSpan = sheetEl.querySelector(".pageno span:first-child");
+        if (pagenoSpan) {
+          pagenoSpan.textContent = "Page " + pageNum + " of " + totalVisible;
+        }
+      }
+    }
+  }
+
+  function findAboutElements() {
+    var p1 = document.getElementById("p1");
+    if (!p1) return {};
+    var leadEl = p1.querySelector("p.lead");
+    var whoDl = p1.querySelector("dl.who");
+    var whoRows = { what_we_do: null, portfolio: null, this_plan: null };
+    if (whoDl) {
+      var divs = whoDl.querySelectorAll(":scope > div");
+      for (var i = 0; i < divs.length; i++) {
+        var div = divs[i];
+        var dt = div.querySelector("dt");
+        var dtText = dt ? (dt.textContent || "").trim().toLowerCase() : "";
+        if (dtText === "what we do" || div.querySelector("#hero-what")) {
+          whoRows.what_we_do = div;
+        } else if (dtText === "portfolio") {
+          whoRows.portfolio = div;
+        } else if (dtText === "this plan" || div.querySelector("#hero-plan")) {
+          whoRows.this_plan = div;
+        }
+      }
+    }
+    var archEl = document.getElementById("architecture-block-container");
+    var stepsOl = p1.querySelector("ol.steps");
+    var timelineBlock = stepsOl ? stepsOl.closest(".block") || stepsOl.parentNode : null;
+    var payDiv = p1.querySelector(".pay");
+    var paymentBlock = payDiv ? payDiv.closest(".block") || payDiv.parentNode : null;
+    return {
+      lead: leadEl,
+      whoDl: whoDl,
+      what_we_do: whoRows.what_we_do,
+      portfolio: whoRows.portfolio,
+      this_plan: whoRows.this_plan,
+      architecture: archEl,
+      timeline: timelineBlock,
+      payment: paymentBlock
+    };
+  }
+
+  function isAboutHidden(key) {
+    if (!Array.isArray(data.hidden_about)) return false;
+    return data.hidden_about.indexOf(key) !== -1;
+  }
+
+  function applyHiddenAbout() {
+    var els = findAboutElements();
+    var hideWhat = isAboutHidden("what_we_do");
+    var hidePort = isAboutHidden("portfolio");
+    var hidePlan = isAboutHidden("this_plan");
+
+    setHidden(els.lead, isAboutHidden("lead"));
+    setHidden(els.what_we_do, hideWhat);
+    setHidden(els.portfolio, hidePort);
+    setHidden(els.this_plan, hidePlan);
+    setHidden(els.whoDl, hideWhat && hidePort && hidePlan);
+    setHidden(els.architecture, isAboutHidden("architecture"));
+    setHidden(els.timeline, isAboutHidden("timeline"));
+    setHidden(els.payment, isAboutHidden("payment"));
   }
 
   function updatePortfolioAndBanner(preset) {
@@ -493,6 +888,47 @@
     }
   }
 
+  // Override go() and spy() so hidden sections are ignored and only visible sections are navigated.
+  var origGo = typeof window.go === "function" ? window.go : null;
+  window.go = function (id) {
+    var targetId = resolveSheetTargetId(id);
+    var el = document.getElementById(targetId);
+    if (!el || isElementHidden(el)) return;
+    if (origGo) {
+      return origGo.call(this, targetId);
+    }
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  var origSpy = typeof window.spy === "function" ? window.spy : null;
+  window.spy = function () {
+    if (data.kind === "default" && origSpy) {
+      return origSpy.apply(this, arguments);
+    }
+    if (typeof window === "undefined" || (typeof activeRoute !== "undefined" && activeRoute && activeRoute.view === "admin")) {
+      return;
+    }
+    var list = typeof window.secs !== "undefined" && Array.isArray(window.secs) ? window.secs : ALL_BUILTIN_SHEETS;
+    var y = (window.scrollY || 0) + 140;
+    var cur = "p1";
+    for (var i = 0; i < list.length; i++) {
+      var s = list[i];
+      var el = document.getElementById(s);
+      if (el && !isElementHidden(el) && el.offsetTop <= y) {
+        cur = s;
+      }
+    }
+    var navBtns = document.querySelectorAll("[data-go]");
+    for (var j = 0; j < navBtns.length; j++) {
+      var b = navBtns[j];
+      if (isElementHidden(b)) {
+        b.setAttribute("aria-current", "false");
+      } else {
+        b.setAttribute("aria-current", b.getAttribute("data-go") === cur ? "true" : "false");
+      }
+    }
+  };
+
   var origToggle = typeof window.toggle === "function" ? window.toggle : null;
   window.toggle = function (id) {
     if (isLocked()) return;
@@ -531,14 +967,25 @@
         filterSheetSections(key, ids);
       });
     }
+    SHEET_KEYS.forEach(function (key) {
+      renderPlacedCategoriesOnSheet(key);
+    });
     if (isLocked()) {
       renderServicePlansGroup();
       renderPaymentPlan(data.payment_plan, data.payment_note);
       renderTimeline(data.timeline);
     }
+    applySheetsAndNavigation();
+    SHEET_KEYS.forEach(function (key) {
+      var secEl = document.getElementById(key);
+      if (secEl && !isElementHidden(secEl)) {
+        renderIncludedServicesForSheet(key, null);
+      }
+    });
+    applyHiddenAbout();
   };
 
-  // 5. Inject proposal preset and activate its slug via ?client=<slug>.
+  // 4. Inject proposal preset and activate its slug via ?client=<slug>.
   if (data.preset && typeof data.preset === "object" && typeof data.preset.slug === "string" && data.preset.slug) {
     var slug = data.preset.slug.toLowerCase();
     var origGetAllPresets = typeof window.getAllPresets === "function" ? window.getAllPresets : null;
@@ -756,19 +1203,21 @@
       y += 4;
     }
 
-    var terms = buildPaymentTermsText(data.payment_plan, data.payment_note, grandTotal);
-    if (terms) {
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(9);
-      doc.setTextColor(60);
-      doc.splitTextToSize(terms, W - 2 * M).forEach(function (ln) {
-        need(5);
-        doc.text(ln, M, y);
-        y += 4.6;
-      });
+    if (!isAboutHidden("payment")) {
+      var terms = buildPaymentTermsText(data.payment_plan, data.payment_note, grandTotal);
+      if (terms) {
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(9);
+        doc.setTextColor(60);
+        doc.splitTextToSize(terms, W - 2 * M).forEach(function (ln) {
+          need(5);
+          doc.text(ln, M, y);
+          y += 4.6;
+        });
+      }
     }
 
-    var timelineSteps = Array.isArray(data.timeline) ? data.timeline : [];
+    var timelineSteps = !isAboutHidden("timeline") && Array.isArray(data.timeline) ? data.timeline : [];
     if (timelineSteps.length) {
       y += 5;
       need(14);
@@ -862,7 +1311,7 @@
     prefillContact(data.contact);
   }
 
-  // 6. Mirror PDF exports to the engine when a proposal_id is active.
+  // 5. Mirror PDF exports to the engine when a proposal_id is active.
   function uploadPdfBlob(doc) {
     if (!data.proposal_id || typeof fetch !== "function" || !doc || typeof doc.output !== "function") {
       return;
@@ -934,12 +1383,92 @@
     window.jspdf.jsPDF = WrappedJsPdf;
   }
 
-  // 7. Live preview updates from Studio editor + Escape exit forwarding in present mode.
+  // 6. Scroll sync helper for {type: "magnm:pitch-scroll-to", target}.
+  function resolveScrollTarget(target) {
+    if (typeof target !== "string" || !target) return null;
+    if (target === "about") {
+      return document.getElementById("p1");
+    }
+    if (target.indexOf("about:") === 0) {
+      var aboutKey = target.slice("about:".length);
+      var aboutEls = findAboutElements();
+      if (
+        aboutKey === "lead" ||
+        aboutKey === "what_we_do" ||
+        aboutKey === "portfolio" ||
+        aboutKey === "this_plan" ||
+        aboutKey === "architecture" ||
+        aboutKey === "timeline" ||
+        aboutKey === "payment"
+      ) {
+        return aboutEls[aboutKey] || null;
+      }
+      return null;
+    }
+    if (target === "summary") {
+      return document.getElementById("summary");
+    }
+    if (target.indexOf("item:") === 0) {
+      var itemId = target.slice("item:".length);
+      if (!itemId) return null;
+      var btns = document.querySelectorAll("button.item[data-id]");
+      for (var i = 0; i < btns.length; i++) {
+        if (btns[i].getAttribute("data-id") === itemId) {
+          return btns[i];
+        }
+      }
+      return null;
+    }
+    var sheetId = resolveSheetTargetId(target);
+    if (SHEET_KEYS.indexOf(sheetId) !== -1 || customSheetIds.indexOf(sheetId) !== -1 || sheetId === "p1") {
+      return document.getElementById(sheetId);
+    }
+    return null;
+  }
+
+  function prefersReducedMotion() {
+    if (typeof window.matchMedia === "function") {
+      var mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+      return !!(mq && mq.matches);
+    }
+    return false;
+  }
+
+  function handleScrollTo(target) {
+    var el = resolveScrollTarget(target);
+    if (!el || isElementHidden(el)) return;
+    var behavior = prefersReducedMotion() ? "instant" : "smooth";
+    var navEl = document.getElementById("main-nav");
+    var navHeight = 0;
+    if (navEl && !isElementHidden(navEl)) {
+      var navRect = typeof navEl.getBoundingClientRect === "function" ? navEl.getBoundingClientRect() : null;
+      navHeight = (navRect && navRect.height) || navEl.offsetHeight || 56;
+    }
+    if (typeof window.scrollTo === "function" && typeof el.getBoundingClientRect === "function") {
+      var rect = el.getBoundingClientRect();
+      var top = Math.max(0, (window.scrollY || window.pageYOffset || 0) + rect.top - navHeight - 12);
+      window.scrollTo({ top: top, behavior: behavior });
+    } else if (typeof el.scrollIntoView === "function") {
+      el.scrollIntoView({ behavior: behavior, block: "start" });
+    }
+  }
+
+  // 7. Live preview updates and scroll sync from Studio editor + Escape exit forwarding.
   window.addEventListener("message", function (event) {
     if (event.origin !== window.location.origin) return;
     var msg = event.data;
-    if (!msg || typeof msg !== "object" || msg.type !== "magnm:pitch-preview-update") return;
+    if (!msg || typeof msg !== "object") return;
+
+    if (msg.type === "magnm:pitch-scroll-to") {
+      handleScrollTo(msg.target);
+      return;
+    }
+
+    if (msg.type !== "magnm:pitch-preview-update") return;
     var payload = msg.payload || {};
+    var savedScrollX = window.scrollX || window.pageXOffset || 0;
+    var savedScrollY = window.scrollY || window.pageYOffset || 0;
+
     if (typeof payload.locked === "boolean") {
       data.locked = payload.locked;
       if (isLocked()) {
@@ -948,33 +1477,41 @@
         window.downloadPdf = origDownloadPdf;
       }
     }
+    if (typeof payload.kind === "string" && payload.kind) {
+      data.kind = payload.kind;
+    }
     for (var pk = 0; pk < SANITIZE_KEYS.length; pk++) {
       var pKey = SANITIZE_KEYS[pk];
-      if (pKey !== "custom_items" && pKey !== "preset" && payload[pKey] !== undefined) {
+      if (payload[pKey] !== undefined) {
         data[pKey] = stripAngleBrackets(payload[pKey]);
       }
     }
-    var cleanCustomItems = Array.isArray(payload.custom_items)
-      ? stripAngleBrackets(payload.custom_items)
-      : null;
-    var cleanPreset =
-      payload.preset && typeof payload.preset === "object"
-        ? stripAngleBrackets(payload.preset)
-        : null;
-    if (payload.prices && typeof payload.prices === "object") {
+
+    applyCustomCategoriesToGroups(data.custom_categories);
+    if (payload.prices !== undefined) {
       applyPrices(payload.prices);
+      data.prices = payload.prices;
     } else {
-      applyPrices(null);
+      applyPrices(data.prices);
     }
-    if (cleanCustomItems) {
-      applyCustomItems(cleanCustomItems);
+    if (payload.custom_items !== undefined) {
+      applyCustomItems(data.custom_items);
+    } else {
+      applyCustomItems(data.custom_items);
     }
     applyServicePlans(data.service_plans);
     if (payload.contact && typeof payload.contact === "object") {
       prefillContact(data.contact);
     }
-    if (cleanPreset) {
-      var nextPreset = cleanPreset;
+
+    var nextPreset =
+      data.preset && typeof data.preset === "object"
+        ? data.preset
+        : typeof activePreset !== "undefined" && activePreset
+        ? activePreset
+        : null;
+
+    if (nextPreset) {
       if (typeof activePreset !== "undefined") activePreset = nextPreset;
       var heroLead = document.getElementById("hero-lead");
       if (heroLead) heroLead.textContent = nextPreset.lead || "";
@@ -985,9 +1522,9 @@
       var subTitle = document.getElementById("p1-subtitle");
       if (subTitle) subTitle.textContent = nextPreset.slug === "general" ? "Software Planner" : "Client Proposal";
       var fName = document.getElementById("f-name");
-      if (fName) fName.value = nextPreset.clientName || "";
+      if (fName && nextPreset.clientName !== undefined) fName.value = nextPreset.clientName || "";
       var fBiz = document.getElementById("f-biz");
-      if (fBiz) fBiz.value = nextPreset.businessName || "";
+      if (fBiz && nextPreset.businessName !== undefined) fBiz.value = nextPreset.businessName || "";
 
       var banner = document.getElementById("client-banner");
       var bannerText = document.getElementById("banner-text");
@@ -1009,7 +1546,7 @@
       }
 
       renderArchitectureSafe(nextPreset);
-      if (typeof sel !== "undefined") {
+      if (typeof sel !== "undefined" && payload.preset && Array.isArray(payload.preset.initialSelected)) {
         sel = {};
         var defaults = Array.isArray(nextPreset.initialSelected) ? nextPreset.initialSelected : [];
         defaults.forEach(function (id) {
@@ -1019,7 +1556,15 @@
         });
       }
       window.buildPlannerSections(nextPreset);
-      if (typeof window.update === "function") window.update();
+    } else {
+      applySheetsAndNavigation();
+      applyHiddenAbout();
+    }
+
+    if (typeof window.update === "function") window.update();
+    if (typeof window.spy === "function") window.spy();
+    if (typeof window.scrollTo === "function") {
+      window.scrollTo(savedScrollX, savedScrollY);
     }
   });
 

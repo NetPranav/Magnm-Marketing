@@ -82,6 +82,10 @@ class ValidationError(ValueError):
             self.errors = [{"field": "", "rule": "validation", "message": str(message)}]
 
 
+compute_effective_hidden_sheets = pitch_host.compute_effective_hidden_sheets
+compute_included_from_hidden = pitch_host.compute_included_from_hidden
+
+
 def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 

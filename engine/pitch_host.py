@@ -508,7 +508,8 @@ def compute_included_from_hidden(proposal, all_items=None, effective_hidden_shee
                 if sheet_items:
                     visible_sheets.append((cat["id"], sheet_items))
 
-    out = []
+    out_by_id = {}
+    out_order = []
     for sheet_key, sheet_items in visible_sheets:
         entries_by_id = {}
         ordered_ids = []
@@ -540,19 +541,40 @@ def compute_included_from_hidden(proposal, all_items=None, effective_hidden_shee
             for trans_id in (all_items.get(hid) or {}).get("r") or []:
                 if trans_id not in all_items:
                     continue
-                if item_sheet(trans_id, all_items, custom_categories) in hidden_set and trans_id not in entries_by_id:
-                    entries_by_id[trans_id] = {
-                        "item_id": trans_id,
-                        "name": str(all_items[trans_id].get("n") or trans_id),
-                        "sheet_shown_on": sheet_key,
-                        "needed_for": list(parent_needed),
-                    }
-                    ordered_ids.append(trans_id)
+                if item_sheet(trans_id, all_items, custom_categories) in hidden_set:
+                    if trans_id not in entries_by_id:
+                        entries_by_id[trans_id] = {
+                            "item_id": trans_id,
+                            "name": str(all_items[trans_id].get("n") or trans_id),
+                            "sheet_shown_on": sheet_key,
+                            "needed_for": list(parent_needed),
+                        }
+                        ordered_ids.append(trans_id)
+                    else:
+                        for pname in parent_needed:
+                            if pname not in entries_by_id[trans_id]["needed_for"]:
+                                entries_by_id[trans_id]["needed_for"].append(pname)
 
         for did in ordered_ids:
-            out.append(entries_by_id[did])
+            entry = entries_by_id[did]
+            if did not in out_by_id:
+                out_by_id[did] = {
+                    "item_id": entry["item_id"],
+                    "name": entry["name"],
+                    "sheet_shown_on": entry["sheet_shown_on"],
+                    "needed_for": list(entry["needed_for"]),
+                    "also_needed_on": [],
+                }
+                out_order.append(did)
+            else:
+                existing = out_by_id[did]
+                if sheet_key != existing["sheet_shown_on"] and sheet_key not in existing["also_needed_on"]:
+                    existing["also_needed_on"].append(sheet_key)
+                for nname in entry["needed_for"]:
+                    if nname not in existing["needed_for"]:
+                        existing["needed_for"].append(nname)
 
-    return out
+    return [out_by_id[did] for did in out_order]
 
 
 def build_payload_custom_categories(custom_categories, custom_items, kind=None, agreed_ids=None):
