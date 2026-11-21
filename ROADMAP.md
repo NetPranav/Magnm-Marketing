@@ -95,6 +95,19 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
     tasks, posted links), activity and a device heartbeat. Confidential chats, and anything naming a confidential
     product, upload only as text-free stubs; sync pauses if the product rules can't be read. agy now runs on Gemini 4
     Hydrogen (High for auth, privacy and sync work).
+  - **2026-11-21: magnm-dev now holds the team's real data** (team decision; no client data yet). It is never reset
+    (`supabase/dev.sh` refuses); test data is labelled and deleted right after each test.
+  - **T4.4 done:** thumbnails and WebP/480p previews made on the laptop with ffmpeg (local files and safe formats only),
+    stored privately in Supabase Storage (owner and admin rules, signed links), video previews deleted after 60 days,
+    storage meter.
+  - **T4.5 + T4.6 done, live on https://magnm-pitch.vercel.app:** `/p/` proposal, `/q/` quote form ("Send my plan to
+    magnm"), `/f/` final quotation. "Copy link" publishes (only the client's name and business plus prices and layout),
+    saving keeps links current, "Withdraw link" turns them off, and quote requests arrive in the sender's Pitch section.
+    The Pitch adapter now lives in Magnm-Pitch (`host/magnm-host.js`) and the Studio vendors it. Tested end to end by
+    the user.
+  - **T4.7 done:** Admin section (admins only): team presence, roles and deactivation, activity timeline and chart,
+    read-only member workspaces with previews, members' links and quote requests, storage, audit log. Tested with a
+    second Google account as a member (cleaned up afterwards).
 
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.
