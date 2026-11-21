@@ -30,6 +30,7 @@ _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
 
+import admin_dashboard
 import agent_chat
 import agent_runtime
 import agents
@@ -357,6 +358,106 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         except team_auth.TeamAuthError as exc:
             status = exc.status if isinstance(exc.status, int) and 400 <= exc.status < 600 else 400
             self.send_json({"error": exc.message}, status=status)
+
+    def _handle_admin_get(self, url):
+        qs = urllib.parse.parse_qs(url.query, keep_blank_values=True)
+        path = url.path.rstrip("/") or "/"
+        try:
+            if path == "/api/admin/team":
+                self.send_json(admin_dashboard.get_team())
+                return
+            if path == "/api/admin/activity":
+                self.send_json(
+                    admin_dashboard.get_activity(
+                        member=(qs.get("member") or [""])[0],
+                        kind=(qs.get("kind") or [""])[0],
+                        before=(qs.get("before") or [""])[0],
+                        limit=(qs.get("limit") or [""])[0],
+                    )
+                )
+                return
+            if path == "/api/admin/activity/daily":
+                self.send_json(
+                    admin_dashboard.get_daily_activity(
+                        days=(qs.get("days") or ["14"])[0],
+                    )
+                )
+                return
+            if path == "/api/admin/storage":
+                self.send_json(admin_dashboard.get_storage())
+                return
+            if path == "/api/admin/audit":
+                self.send_json(
+                    admin_dashboard.get_audit(
+                        before=(qs.get("before") or [""])[0],
+                        limit=(qs.get("limit") or [""])[0],
+                    )
+                )
+                return
+
+            parts = path.split("/")
+            # /api/admin/members/<id>/records
+            if len(parts) == 6 and parts[:4] == ["", "api", "admin", "members"] and parts[5] == "records":
+                member_id = urllib.parse.unquote(parts[4])
+                self.send_json(
+                    admin_dashboard.list_member_records(
+                        member_id,
+                        kind=(qs.get("kind") or [""])[0],
+                        q=(qs.get("q") or [""])[0],
+                        before=(qs.get("before") or [""])[0],
+                        limit=(qs.get("limit") or [""])[0],
+                    )
+                )
+                return
+            # /api/admin/members/<id>/records/<kind>/<local_id>
+            if len(parts) == 8 and parts[:4] == ["", "api", "admin", "members"] and parts[5] == "records":
+                member_id = urllib.parse.unquote(parts[4])
+                kind = urllib.parse.unquote(parts[6])
+                local_id = urllib.parse.unquote(parts[7])
+                self.send_json(admin_dashboard.get_member_record_detail(member_id, kind, local_id))
+                return
+            # /api/admin/members/<id>/previews
+            if len(parts) == 6 and parts[:4] == ["", "api", "admin", "members"] and parts[5] == "previews":
+                member_id = urllib.parse.unquote(parts[4])
+                self.send_json(
+                    admin_dashboard.get_member_previews(
+                        member_id,
+                        parent=(qs.get("parent") or [""])[0],
+                        limit=(qs.get("limit") or [""])[0],
+                    )
+                )
+                return
+            # /api/admin/members/<id>/pitch
+            if len(parts) == 6 and parts[:4] == ["", "api", "admin", "members"] and parts[5] == "pitch":
+                member_id = urllib.parse.unquote(parts[4])
+                self.send_json(admin_dashboard.get_member_pitch(member_id))
+                return
+
+            admin_dashboard.require_admin()
+            if parts[:4] == ["", "api", "admin", "members"] and len(parts) > 6 and parts[5] == "records":
+                self.send_json({"error": "Invalid record path."}, status=400)
+                return
+            self.send_json({"error": "Not found"}, status=404)
+        except admin_dashboard.AdminDashboardError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+
+    def _handle_admin_post(self, url, params):
+        path = url.path.rstrip("/") or "/"
+        parts = path.split("/")
+        try:
+            if len(parts) == 6 and parts[:4] == ["", "api", "admin", "members"]:
+                member_id = urllib.parse.unquote(parts[4])
+                action = parts[5]
+                if action == "role":
+                    self.send_json(admin_dashboard.update_member_role(member_id, params.get("role")))
+                    return
+                if action == "active":
+                    self.send_json(admin_dashboard.update_member_active(member_id, params.get("active")))
+                    return
+            admin_dashboard.require_admin()
+            self.send_json({"error": "Unknown endpoint"}, status=404)
+        except admin_dashboard.AdminDashboardError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
 
     def _serve_sse(self):
         """Stream live Server-Sent Events ('job', 'message', 'ping') to connected clients."""
@@ -1030,6 +1131,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         elif url.path == "/api/account" or url.path.startswith("/api/account/"):
             self._handle_account_get(url)
 
+        elif url.path.startswith("/api/admin/"):
+            self._handle_admin_get(url)
+
         elif url.path.startswith("/api/asset/"):
             parts = url.path.split("/")[3:]
             if len(parts) >= 2:
@@ -1098,6 +1202,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             url.path.startswith("/api/review/")
             or url.path.startswith("/api/pitch/")
             or url.path.startswith("/api/account/")
+            or url.path.startswith("/api/admin/")
         )
         max_len = MAX_REVIEW_BODY_BYTES if url.path.startswith("/api/review/") else MAX_POST_BYTES
         if content_len > max_len:
@@ -1126,6 +1231,10 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         if url.path.startswith("/api/account/"):
             self._handle_account_post(url, params)
+            return
+
+        if url.path.startswith("/api/admin/"):
+            self._handle_admin_post(url, params)
             return
 
         if url.path == "/api/shutdown":

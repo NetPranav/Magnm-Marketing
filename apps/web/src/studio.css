@@ -1798,3 +1798,124 @@
   align-items: flex-end;
   gap: var(--s-1);
 }
+
+/* Admin dashboard */
+
+.studio-admin-team-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+  gap: var(--s-3);
+  min-width: 0;
+}
+
+.studio-admin-avatar-fallback {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  border: 1px solid var(--line-2);
+  background: var(--tint-2);
+  color: var(--fg);
+  font-family: var(--f-mono);
+  font-size: 13px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.studio-admin-member-meta {
+  display: grid;
+  gap: 4px;
+  padding-top: var(--s-2);
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+
+.studio-admin-device-list {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.studio-admin-chart {
+  display: grid;
+  grid-template-columns: repeat(14, minmax(0, 1fr));
+  gap: 4px;
+  align-items: end;
+  padding-top: var(--s-2);
+  min-width: 0;
+}
+
+.studio-admin-chart-col {
+  display: grid;
+  grid-template-rows: auto 96px auto;
+  justify-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.studio-admin-chart-track {
+  width: 100%;
+  max-width: 24px;
+  height: 96px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: var(--tint-2);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+
+.studio-admin-chart-bar {
+  width: 100%;
+  background: var(--fg);
+  border-radius: 2px 2px 0 0;
+  transition: height .2s ease;
+}
+
+.studio-admin-chart-count {
+  font-size: 10px;
+  line-height: 1;
+}
+
+.studio-admin-chart-date {
+  font-size: 9px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.studio-admin-workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: var(--s-4);
+  align-items: start;
+  min-width: 0;
+}
+
+.studio-admin-workspace-list,
+.studio-admin-workspace-detail {
+  min-width: 0;
+}
+
+.studio-admin-text-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+  font-size: 14.5px;
+  line-height: 1.55;
+}
+
+@media (max-width: 899px) {
+  .studio-admin-workspace-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .studio-admin-chart-date {
+    font-size: 8px;
+  }
+}

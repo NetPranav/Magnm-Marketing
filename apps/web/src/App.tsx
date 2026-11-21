@@ -1,11 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { StatusState } from '@magnm/design/react';
 import { ApiError, api, onUnauthorized } from './api';
+import { getAccount, type AccountState } from './api/account';
 import { StudioShell } from './components/StudioShell';
 import { EventsProvider, useRootEventBus } from './events';
-import { SECTIONS, parsePitchParam, useRoute, type SectionId } from './router';
+import {
+  ADMIN_SECTION,
+  SECTIONS,
+  getVisibleSections,
+  parsePitchParam,
+  useRoute,
+  type SectionId,
+} from './router';
 import { PlaceholderScreen } from './screens/PlaceholderScreen';
 import { SessionEndedScreen } from './screens/SessionEndedScreen';
+import { AdminSection } from './sections/admin/AdminSection';
 import { CreateSection } from './sections/create/CreateSection';
 import { LibrarySection } from './sections/library/LibrarySection';
 import { PitchPresent } from './sections/pitch/PitchPresent';
@@ -45,9 +54,25 @@ export function App() {
   const [health, setHealth] = useState<HealthInfo | null>(null);
   const [status, setStatus] = useState<EngineStatusInfo | null>(null);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
+  const [account, setAccount] = useState<AccountState | null>(null);
+  const [accountLoaded, setAccountLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const prevEventsStateRef = useRef<string | null>(null);
+
+  const loadAccountState = useCallback(async () => {
+    try {
+      const acct = await getAccount();
+      setAccount(acct);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        return;
+      }
+      setAccount(null);
+    } finally {
+      setAccountLoaded(true);
+    }
+  }, []);
 
   const loadSummary = useCallback(async () => {
     setError(null);
@@ -55,10 +80,11 @@ export function App() {
       api.get<HealthInfo>('/api/health'),
       api.get<EngineStatusInfo>('/api/status'),
       api.get<JobRecord[]>('/api/jobs?limit=10'),
+      getAccount(),
     ]);
 
     let firstError: string | null = null;
-    const [healthRes, statusRes, jobsRes] = results;
+    const [healthRes, statusRes, jobsRes, accountRes] = results;
 
     if (healthRes.status === 'fulfilled') {
       setHealth(healthRes.value);
@@ -84,6 +110,15 @@ export function App() {
       firstError = firstError ?? jobsRes.reason.message;
     }
 
+    if (accountRes.status === 'fulfilled') {
+      setAccount(accountRes.value);
+    } else if (accountRes.reason instanceof ApiError && accountRes.reason.status === 401) {
+      return;
+    } else {
+      setAccount(null);
+    }
+    setAccountLoaded(true);
+
     setError(firstError);
     setLoading(false);
   }, []);
@@ -100,6 +135,18 @@ export function App() {
       void loadSummary();
     }
   }, [sessionEnded, loadSummary]);
+
+  useEffect(() => {
+    const onAccountChanged = () => {
+      if (!sessionEnded) {
+        void loadAccountState();
+      }
+    };
+    window.addEventListener('magnm:account-changed', onAccountChanged);
+    return () => {
+      window.removeEventListener('magnm:account-changed', onAccountChanged);
+    };
+  }, [sessionEnded, loadAccountState]);
 
   const handleEvent = useCallback((eventName: string, data: unknown) => {
     if (eventName === 'job' && isJobRecord(data)) {
@@ -122,11 +169,20 @@ export function App() {
     return <SessionEndedScreen />;
   }
 
+  const isAdmin = Boolean(
+    account?.configured &&
+      account?.signed_in &&
+      !account?.deactivated &&
+      account?.user?.role === 'admin' &&
+      account?.user?.active,
+  );
+  const visibleSections = getVisibleSections(isAdmin);
+  const allSpecs = [...SECTIONS, ADMIN_SECTION];
   const sectionIndex = Math.max(
     0,
-    SECTIONS.findIndex((item) => item.id === section),
+    allSpecs.findIndex((item) => item.id === section),
   );
-  const currentSpec = SECTIONS[sectionIndex] ?? SECTIONS[0];
+  const currentSpec = allSpecs[sectionIndex] ?? SECTIONS[0];
   const anyJobRunning =
     jobs.some((job) => job.status === 'running') || Boolean(status?.current_job?.running);
 
@@ -140,7 +196,7 @@ export function App() {
     engineLabel = 'Connecting';
   }
 
-  const tabItems = SECTIONS.map((item) => ({ id: item.id, label: item.label }));
+  const tabItems = visibleSections.map((item) => ({ id: item.id, label: item.label }));
 
   const renderSection = () => {
     switch (currentSpec.id) {
@@ -183,6 +239,24 @@ export function App() {
         return <ReposSection />;
       case 'settings':
         return <SettingsSection />;
+      case 'admin':
+        if (!accountLoaded) {
+          return <div className="studio-hint">Checking access...</div>;
+        }
+        if (!isAdmin) {
+          return (
+            <div className="mg-notice" role="alert">
+              Admins only.
+            </div>
+          );
+        }
+        return (
+          <AdminSection
+            param={param}
+            onNavigate={(nextParam) => navigate('admin', nextParam ?? null)}
+            onOpenSettings={() => navigate('settings')}
+          />
+        );
       default:
         return (
           <PlaceholderScreen

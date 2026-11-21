@@ -252,4 +252,88 @@ describe('Studio shell and Today screen', () => {
 
     expect(screen.getByText('Scan finished')).toBeTruthy();
   });
+
+  it('shows Admin nav tab only for active admins, blocks #/admin for non-admins, and refreshes on sign-in/out', async () => {
+    let role: 'none' | 'member' | 'deactivated_admin' | 'admin' = 'member';
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === '/api/health') {
+        return jsonResponse({ ok: true, service: 'magnm-engine', version: '0.1.0' });
+      }
+      if (url === '/api/status') {
+        return jsonResponse({ status: 'ready', env_status: {}, models_matrix: [], current_job: { running: false } });
+      }
+      if (url === '/api/jobs?limit=10') {
+        return jsonResponse([]);
+      }
+      if (url === '/api/account') {
+        if (role === 'none') {
+          return jsonResponse({ configured: true, signed_in: false, user: null });
+        }
+        if (role === 'deactivated_admin') {
+          return jsonResponse({ configured: true, signed_in: true, deactivated: true, user: null });
+        }
+        return jsonResponse({
+          configured: true,
+          signed_in: true,
+          deactivated: false,
+          user: {
+            id: 'u-1',
+            email: 'user@example.com',
+            display_name: 'User',
+            avatar_url: null,
+            role,
+            active: true,
+          },
+        });
+      }
+      if (url === '/api/admin/team') {
+        return jsonResponse({ members: [], current_user_id: 'u-1' });
+      }
+      return jsonResponse({ error: 'Not found' }, 404);
+    });
+
+    // Direct visit to #/admin as a member shows "Admins only." and nothing else
+    window.location.hash = '#/admin';
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Admins only.')).toBeTruthy();
+    });
+    expect(screen.queryByRole('tab', { name: /Admin/ })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Admin' })).toBeNull();
+
+    // Sign in as admin (Settings triggers magnm:account-changed) -> Admin tab appears and #/admin renders
+    role = 'admin';
+    act(() => {
+      window.dispatchEvent(new CustomEvent('magnm:account-changed'));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: /Admin/ })).toBeTruthy();
+      expect(screen.getByRole('heading', { name: 'Admin' })).toBeTruthy();
+    });
+
+    // Sign out -> Admin tab disappears and #/admin shows "Admins only."
+    role = 'none';
+    act(() => {
+      window.dispatchEvent(new CustomEvent('magnm:account-changed'));
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole('tab', { name: /Admin/ })).toBeNull();
+      expect(screen.getByText('Admins only.')).toBeTruthy();
+    });
+
+    // Deactivated admin also does not see Admin tab
+    role = 'deactivated_admin';
+    act(() => {
+      window.dispatchEvent(new CustomEvent('magnm:account-changed'));
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole('tab', { name: /Admin/ })).toBeNull();
+      expect(screen.getByText('Admins only.')).toBeTruthy();
+    });
+  });
 });

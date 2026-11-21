@@ -34,6 +34,12 @@ const SYNC_POLL_INTERVAL_MS = 10000;
 const POLL_TIMEOUT_MS = 10 * 60 * 1000;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+function notifyAccountChanged(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('magnm:account-changed'));
+  }
+}
+
 function formatRelativeTime(iso: string): string {
   const ts = new Date(iso).getTime();
   if (Number.isNaN(ts)) return iso;
@@ -177,6 +183,7 @@ export function AccountPanel() {
             stopPolling();
             setAuthorizeUrl(null);
             setAccount(next);
+            notifyAccountChanged();
             if (!next.deactivated && next.user?.role === 'admin') {
               await loadInvites();
             } else {
@@ -236,6 +243,7 @@ export function AccountPanel() {
       setMediaStatus(null);
       setStorageUsage(null);
       await loadAccount();
+      notifyAccountChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not sign out.');
     } finally {
