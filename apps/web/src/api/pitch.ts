@@ -229,6 +229,8 @@ export interface PitchProposal {
   created_by: string;
   share_id?: string;
   pitch_commit?: string;
+  published_at?: string | null;
+  link_status?: 'live' | 'withdrawn' | null;
   created_at: string;
   updated_at: string;
   pricing_summary: PitchPricingSummary;
@@ -338,6 +340,57 @@ export interface FinalizeProposalInput {
   business_name?: string;
   contact?: PitchContact;
   notes?: string;
+}
+
+export interface PitchPublishResult {
+  url: string;
+  published_at: string;
+}
+
+export interface PitchWithdrawResult {
+  ok: boolean;
+  proposal_id: string;
+  link_status: 'withdrawn';
+}
+
+export interface PitchQuoteRequestItem {
+  id: string;
+  name: string;
+  price: number;
+  group?: string;
+}
+
+export interface PitchQuoteRequestContact {
+  name: string;
+  business: string;
+  phone: string;
+  notes: string;
+}
+
+export interface PitchQuoteRequest {
+  id: string;
+  share_id: string;
+  local_proposal_id: string | null;
+  proposal_title: string;
+  proposal_slug?: string | null;
+  choices: {
+    selected?: string[];
+    custom_selected?: string[];
+    total_shown?: number;
+  };
+  contact: PitchQuoteRequestContact;
+  selected_items: PitchQuoteRequestItem[];
+  computed_total: number;
+  total_shown: number | null;
+  total_mismatch: boolean;
+  created_at: string;
+  received_at: string;
+  read_at: string | null;
+}
+
+export interface PitchQuoteRequestsResponse {
+  requests: PitchQuoteRequest[];
+  unread_count: number;
 }
 
 /** Format an INR amount with Indian digit grouping matching Pitch's money(). */
@@ -467,4 +520,39 @@ export function getPitchPreviewPayload(
   payload: PitchPreviewPayloadInput,
 ): Promise<PitchPreviewPayloadResponse> {
   return api.post<PitchPreviewPayloadResponse>('/api/pitch/preview_payload', payload);
+}
+
+/** Publish a proposal as a public client link on Supabase. */
+export function publishProposal(proposalId: string): Promise<PitchPublishResult> {
+  return api.post<PitchPublishResult>(
+    `/api/pitch/proposals/${encodeURIComponent(proposalId)}/publish`,
+    {},
+  );
+}
+
+/** Withdraw a published proposal client link. */
+export function withdrawProposalLink(proposalId: string): Promise<PitchWithdrawResult> {
+  return api.post<PitchWithdrawResult>(
+    `/api/pitch/proposals/${encodeURIComponent(proposalId)}/withdraw`,
+    {},
+  );
+}
+
+/** List received client quote requests (newest first) and unread count. */
+export async function listQuoteRequests(): Promise<PitchQuoteRequestsResponse> {
+  const res = await api.get<Partial<PitchQuoteRequestsResponse>>('/api/pitch/requests');
+  return {
+    requests: Array.isArray(res?.requests) ? res.requests : [],
+    unread_count: typeof res?.unread_count === 'number' ? res.unread_count : 0,
+  };
+}
+
+/** Mark a received quote request as read. */
+export function markQuoteRequestRead(
+  requestId: string,
+): Promise<{ ok: boolean; request: PitchQuoteRequest; unread_count: number }> {
+  return api.post<{ ok: boolean; request: PitchQuoteRequest; unread_count: number }>(
+    `/api/pitch/requests/${encodeURIComponent(requestId)}/read`,
+    {},
+  );
 }

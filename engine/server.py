@@ -46,6 +46,7 @@ import media_previews
 import paths
 import pitch
 import pitch_host
+import pitch_links
 import platforms
 import product_rules
 import repo_sync
@@ -429,6 +430,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, status=404)
         elif isinstance(exc, pitch.ValidationError):
             self.send_json({"error": str(exc), "errors": exc.errors}, status=400)
+        elif isinstance(exc, pitch_links.PitchLinkError):
+            status = exc.status if isinstance(exc.status, int) and 400 <= exc.status < 600 else 400
+            self.send_json({"error": str(exc)}, status=status)
         else:
             self.send_json({"error": str(exc)}, status=400)
 
@@ -447,6 +451,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 pending_raw = (qs.get("pending", ["0"])[0] or "").strip().lower()
                 pending_only = pending_raw in ("1", "true", "yes")
                 self.send_json(pitch.list_outbox(pending_only=pending_only))
+            elif parts == ["requests"]:
+                self.send_json(pitch_links.list_requests())
             elif parts == ["proposals"]:
                 status_filter = qs.get("status", [None])[0] or None
                 kind_filter = qs.get("kind", [None])[0] or None
@@ -534,6 +540,12 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                         created_by=params.get("created_by") or "user",
                     )
                 )
+            elif len(parts) == 3 and parts[0] == "proposals" and parts[2] == "publish":
+                self.send_json(pitch_links.publish(parts[1]))
+            elif len(parts) == 3 and parts[0] == "proposals" and parts[2] == "withdraw":
+                self.send_json(pitch_links.withdraw(parts[1]))
+            elif len(parts) == 3 and parts[0] == "requests" and parts[2] == "read":
+                self.send_json(pitch_links.mark_request_read(parts[1]))
             else:
                 self.send_json({"error": "Not found"}, status=404)
         except ValueError as exc:

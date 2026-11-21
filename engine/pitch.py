@@ -2105,6 +2105,12 @@ def update_proposal(proposal_id, updates):
     outbox_payload["changed_fields"] = changed_fields
     db.append_sync_outbox("proposal.updated", outbox_payload)
     _publish(updated["id"], "updated")
+    if updated.get("link_status") == "live":
+        try:
+            import cloud_sync
+            cloud_sync.request_sync()
+        except Exception:
+            pass
     return _enrich_proposal(
         updated,
         added_dependencies=added_deps,

@@ -22,7 +22,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -700,6 +700,38 @@ def _apply_migration_v14(conn):
     )
 
 
+def _apply_migration_v15(conn):
+    cols = {
+        r["name"]
+        for r in conn.execute("PRAGMA table_info(pitch_proposals)").fetchall()
+    }
+    if "published_at" not in cols:
+        conn.execute("ALTER TABLE pitch_proposals ADD COLUMN published_at TEXT")
+    if "link_status" not in cols:
+        conn.execute("ALTER TABLE pitch_proposals ADD COLUMN link_status TEXT")
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS pitch_quote_requests (
+            id TEXT PRIMARY KEY,
+            share_id TEXT NOT NULL,
+            local_proposal_id TEXT,
+            choices_json TEXT NOT NULL,
+            contact_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            received_at TEXT NOT NULL,
+            read_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pitch_quote_requests_created
+            ON pitch_quote_requests(created_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_pitch_quote_requests_read
+            ON pitch_quote_requests(read_at, created_at DESC);
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -715,6 +747,7 @@ _MIGRATIONS = (
     (12, _apply_migration_v12),
     (13, _apply_migration_v13),
     (14, _apply_migration_v14),
+    (15, _apply_migration_v15),
 )
 
 
@@ -3728,6 +3761,8 @@ def _deserialize_pitch_proposal(row):
         "created_by": row["created_by"] or "user",
         "share_id": row["share_id"],
         "pitch_commit": row["pitch_commit"] or "",
+        "published_at": row["published_at"] if "published_at" in keys else None,
+        "link_status": row["link_status"] if "link_status" in keys else None,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -3845,6 +3880,168 @@ def pitch_share_id_exists(share_id):
         (str(share_id),),
     ).fetchone()
     return row is not None
+
+
+def get_pitch_proposal_by_share_id(share_id):
+    """Fetch a pitch proposal by share_id, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM pitch_proposals WHERE share_id = ? LIMIT 1",
+        (str(share_id),),
+    ).fetchone()
+    return _deserialize_pitch_proposal(row)
+
+
+def list_live_pitch_proposals():
+    """List pitch proposals whose link_status is 'live'."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT * FROM pitch_proposals WHERE link_status = 'live' ORDER BY updated_at ASC, rowid ASC"
+    ).fetchall()
+    return [_deserialize_pitch_proposal(r) for r in rows]
+
+
+_UNSET = object()
+
+
+def set_pitch_share_id(proposal_id, share_id):
+    """Persist a new share_id on pitch_proposals without altering updated_at."""
+    ensure_init()
+    conn = connect()
+    with conn:
+        conn.execute(
+            "UPDATE pitch_proposals SET share_id = ? WHERE id = ?",
+            (str(share_id), str(proposal_id)),
+        )
+    return get_pitch_proposal(proposal_id)
+
+
+def set_pitch_link_state(proposal_id, link_status, published_at=_UNSET, share_id=_UNSET):
+    """Update link_status (and optionally published_at/share_id) without altering updated_at."""
+    ensure_init()
+    sets = ["link_status = ?"]
+    params = [link_status]
+    if published_at is not _UNSET:
+        sets.append("published_at = ?")
+        params.append(published_at)
+    if share_id is not _UNSET:
+        sets.append("share_id = ?")
+        params.append(str(share_id))
+    params.append(str(proposal_id))
+    conn = connect()
+    with conn:
+        conn.execute(
+            f"UPDATE pitch_proposals SET {', '.join(sets)} WHERE id = ?",
+            params,
+        )
+    return get_pitch_proposal(proposal_id)
+
+
+def _deserialize_pitch_quote_request(row):
+    if row is None:
+        return None
+    choices = json.loads(row["choices_json"]) if row["choices_json"] else {}
+    contact = json.loads(row["contact_json"]) if row["contact_json"] else {}
+    return {
+        "id": row["id"],
+        "share_id": row["share_id"],
+        "local_proposal_id": row["local_proposal_id"],
+        "choices": choices if isinstance(choices, dict) else {},
+        "contact": contact if isinstance(contact, dict) else {},
+        "created_at": row["created_at"],
+        "received_at": row["received_at"],
+        "read_at": row["read_at"],
+    }
+
+
+def insert_pitch_quote_request(
+    *,
+    request_id,
+    share_id,
+    local_proposal_id,
+    choices,
+    contact,
+    created_at,
+    received_at=None,
+):
+    """Insert a quote request if not already present; return True if newly inserted."""
+    ensure_init()
+    rec_ts = str(received_at or datetime.now(timezone.utc).isoformat())
+    conn = connect()
+    with conn:
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO pitch_quote_requests (
+                id, share_id, local_proposal_id, choices_json, contact_json,
+                created_at, received_at, read_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                str(request_id),
+                str(share_id),
+                str(local_proposal_id) if local_proposal_id else None,
+                json.dumps(choices or {}, ensure_ascii=False),
+                json.dumps(contact or {}, ensure_ascii=False),
+                str(created_at),
+                rec_ts,
+            ),
+        )
+        return cur.rowcount > 0
+
+
+def get_pitch_quote_request(request_id):
+    """Fetch a single stored quote request by id, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM pitch_quote_requests WHERE id = ?",
+        (str(request_id),),
+    ).fetchone()
+    return _deserialize_pitch_quote_request(row)
+
+
+def list_pitch_quote_requests(limit=200):
+    """List stored quote requests newest first."""
+    ensure_init()
+    conn = connect()
+    max_rows = max(1, min(int(limit or 200), 1000))
+    rows = conn.execute(
+        """
+        SELECT * FROM pitch_quote_requests
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT ?
+        """,
+        (max_rows,),
+    ).fetchall()
+    return [_deserialize_pitch_quote_request(r) for r in rows]
+
+
+def count_unread_pitch_quote_requests():
+    """Return count of unread stored quote requests."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM pitch_quote_requests WHERE read_at IS NULL"
+    ).fetchone()
+    return int(row["cnt"]) if row is not None else 0
+
+
+def mark_pitch_quote_request_read(request_id, read_at=None):
+    """Stamp read_at on a quote request if not already read, returning the row or None."""
+    ensure_init()
+    existing = get_pitch_quote_request(request_id)
+    if existing is None:
+        return None
+    ts = str(read_at or datetime.now(timezone.utc).isoformat())
+    conn = connect()
+    with conn:
+        conn.execute(
+            "UPDATE pitch_quote_requests SET read_at = COALESCE(read_at, ?) WHERE id = ?",
+            (ts, str(request_id)),
+        )
+    return get_pitch_quote_request(request_id)
 
 
 def list_pitch_proposals(status=None, kind=None, limit=100):

@@ -21,6 +21,7 @@ EXPORTED_FILES = [
     "presets.js",
     "logo.png",
     "vendor/jspdf.umd.min.js",
+    "host/magnm-host.js",
     "RULES.md",
     "scripts/check-rules.js",
 ]

@@ -606,3 +606,52 @@ export function UnsavedChangesDialog({ open, onCancel, onDiscard }: UnsavedChang
     </Dialog>
   );
 }
+
+export interface WithdrawLinkDialogProps {
+  proposal: PitchProposal | null;
+  submitting: boolean;
+  onClose: () => void;
+  onConfirmWithdraw: (proposalId: string) => Promise<void>;
+}
+
+/** Confirmation dialog before withdrawing a live client link. */
+export function WithdrawLinkDialog({
+  proposal,
+  submitting,
+  onClose,
+  onConfirmWithdraw,
+}: WithdrawLinkDialogProps) {
+  return (
+    <Dialog
+      open={Boolean(proposal)}
+      onClose={onClose}
+      title="Withdraw client link"
+      subtitle={proposal?.slug}
+      actions={
+        <>
+          <PillButton variant="quiet" size="sm" onClick={onClose} disabled={submitting}>
+            Cancel
+          </PillButton>
+          <PillButton
+            variant="danger"
+            size="sm"
+            disabled={submitting || !proposal}
+            onClick={() => {
+              if (proposal) void onConfirmWithdraw(proposal.id);
+            }}
+          >
+            {submitting ? 'Withdrawing...' : 'Withdraw link'}
+          </PillButton>
+        </>
+      }
+    >
+      {proposal ? (
+        <p className="mg-sub">
+          Clients opening the link for{' '}
+          <span className="studio-mono">{proposal.slug}</span> will see that the link is no longer available.
+          You can publish it again anytime with Copy link.
+        </p>
+      ) : null}
+    </Dialog>
+  );
+}

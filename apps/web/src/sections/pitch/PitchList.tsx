@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Card,
   PillButton,
   Row,
   RowList,
@@ -17,13 +18,19 @@ import {
   getPitchCatalog,
   getPitchVersion,
   listProposals,
+  listQuoteRequests,
+  markQuoteRequestRead,
+  publishProposal,
+  withdrawProposalLink,
   type CreateProposalInput,
   type FinalizeProposalInput,
   type PitchCatalog,
   type PitchProposal,
   type PitchProposalKind,
+  type PitchQuoteRequest,
   type PitchVersionInfo,
 } from '../../api/pitch';
+import { getAccount, type AccountState } from '../../api/account';
 import { postAgentChat } from '../../api/team';
 import { useStudioEvents } from '../../events';
 import { formatTimestamp } from '../../ui/format';
@@ -32,6 +39,7 @@ import {
   DraftWithWriterDialog,
   DuplicateProposalDialog,
   NewProposalDialog,
+  WithdrawLinkDialog,
 } from './PitchDialogs';
 import {
   formatAgentChip,
@@ -60,11 +68,32 @@ export function PitchList({ onOpenProposal, onPresentProposal }: PitchListProps)
   const [newKind, setNewKind] = useState<PitchProposalKind | null>(null);
   const [dupTarget, setDupTarget] = useState<PitchProposal | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<PitchProposal | null>(null);
+  const [withdrawTarget, setWithdrawTarget] = useState<PitchProposal | null>(null);
   const [writerOpen, setWriterOpen] = useState(false);
+
+  const [account, setAccount] = useState<AccountState | null>(null);
+  const [quoteRequests, setQuoteRequests] = useState<PitchQuoteRequest[]>([]);
+  const [unreadRequests, setUnreadRequests] = useState(0);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [defaultPdfRequested, setDefaultPdfRequested] = useState(false);
   const [defaultPdfExportRev, setDefaultPdfExportRev] = useState(0);
   const defaultPdfFrameRef = useRef<HTMLIFrameElement | null>(null);
+
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+    }, 3000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
 
   const loadList = useCallback(async () => {
     setError(null);
@@ -98,9 +127,35 @@ export function PitchList({ onOpenProposal, onPresentProposal }: PitchListProps)
     }
   }, []);
 
+  const loadRequests = useCallback(async () => {
+    try {
+      const res = await listQuoteRequests();
+      setQuoteRequests(res.requests);
+      setUnreadRequests(res.unread_count);
+    } catch {
+      // Keep previous requests on transient failures.
+    }
+  }, []);
+
   useEffect(() => {
     void loadMeta();
-  }, [loadMeta]);
+    void loadRequests();
+    let cancelled = false;
+    getAccount()
+      .then((res) => {
+        if (!cancelled) setAccount(res);
+      })
+      .catch(() => {
+        if (!cancelled) setAccount(null);
+      });
+    const timer = setInterval(() => {
+      void loadRequests();
+    }, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [loadMeta, loadRequests]);
 
   useEffect(() => {
     void loadList();
@@ -112,9 +167,12 @@ export function PitchList({ onOpenProposal, onPresentProposal }: PitchListProps)
         if (eventName === 'pitch.updated') {
           void loadList();
           void loadMeta();
+          void loadRequests();
+        } else if (eventName === 'pitch.quote_request') {
+          void loadRequests();
         }
       },
-      [loadList, loadMeta],
+      [loadList, loadMeta, loadRequests],
     ),
   );
 
@@ -243,6 +301,79 @@ export function PitchList({ onOpenProposal, onPresentProposal }: PitchListProps)
     }
   };
 
+  const canShareLinks = Boolean(
+    account?.configured && account?.signed_in && !account?.deactivated && account?.user,
+  );
+
+  const handleCopyLink = async (prop: PitchProposal) => {
+    if (!canShareLinks) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const res = await publishProposal(prop.id);
+      if (prop.kind === 'default') {
+        setDefaultProposal((prev) =>
+          prev ? { ...prev, link_status: 'live', published_at: res.published_at } : prev,
+        );
+      } else {
+        setProposals((prev) =>
+          prev.map((item) =>
+            item.id === prop.id
+              ? { ...item, link_status: 'live', published_at: res.published_at }
+              : item,
+          ),
+        );
+      }
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(res.url);
+      }
+      showToast('Link copied');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not publish link.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleConfirmWithdraw = async (proposalId: string) => {
+    setError(null);
+    setBusy(true);
+    try {
+      await withdrawProposalLink(proposalId);
+      setDefaultProposal((prev) =>
+        prev && prev.id === proposalId ? { ...prev, link_status: 'withdrawn' } : prev,
+      );
+      setProposals((prev) =>
+        prev.map((item) =>
+          item.id === proposalId ? { ...item, link_status: 'withdrawn' } : item,
+        ),
+      );
+      setWithdrawTarget(null);
+      setNotice('Link withdrawn.');
+    } catch (err) {
+      setWithdrawTarget(null);
+      setError(err instanceof Error ? err.message : 'Could not withdraw link.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleMarkRequestRead = async (requestId: string) => {
+    setError(null);
+    setBusy(true);
+    try {
+      const res = await markQuoteRequestRead(requestId);
+      setQuoteRequests((prev) =>
+        prev.map((r) => (r.id === requestId ? res.request : r)),
+      );
+      setUnreadRequests(res.unread_count);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not mark request as read.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const triggerDefaultPdf = () => {
     if (!defaultProposal) return;
     setError(null);
@@ -293,6 +424,83 @@ export function PitchList({ onOpenProposal, onPresentProposal }: PitchListProps)
         <div className="mg-notice" role="status">
           {notice}
         </div>
+      ) : null}
+
+      {quoteRequests.length > 0 ? (
+        <Card>
+          <section className="studio-stack-sm" aria-label="Quote requests">
+            <div className="studio-section-bar">
+              <div className="studio-btn-group">
+                <h2 className="studio-section-title">Quote requests</h2>
+                <span className="mg-chip" data-testid="quote-requests-unread">
+                  {unreadRequests} unread
+                </span>
+              </div>
+            </div>
+            <RowList aria-label="Quote requests list">
+              {quoteRequests.map((req) => {
+                const clientTitle =
+                  [req.contact.name, req.contact.business].filter(Boolean).join(' · ') || 'Client';
+                const selectedNames = req.selected_items
+                  .map((it) => it.name)
+                  .filter(Boolean)
+                  .join(', ');
+                const cleanPhone = (req.contact.phone || '').trim();
+                return (
+                  <Row
+                    key={req.id}
+                    title={clientTitle}
+                    description={
+                      <div className="studio-quote-requests-list">
+                        <div className="studio-pitch-row-desc">
+                          <span>{req.proposal_title}</span>
+                          {cleanPhone ? (
+                            <a className="studio-inline-link" href={`tel:${cleanPhone}`}>
+                              {cleanPhone}
+                            </a>
+                          ) : null}
+                          {req.created_at ? (
+                            <span className="studio-mono">{formatTimestamp(req.created_at)}</span>
+                          ) : null}
+                        </div>
+                        {selectedNames ? (
+                          <div className="mg-sub">Selected: {selectedNames}</div>
+                        ) : null}
+                        {req.contact.notes ? (
+                          <div className="mg-sub">{req.contact.notes}</div>
+                        ) : null}
+                      </div>
+                    }
+                    meta={
+                      <div className="studio-quote-request-meta">
+                        <span className="mg-num studio-pitch-total">
+                          {formatRupees(req.computed_total)}
+                        </span>
+                        {req.total_mismatch && req.total_shown !== null ? (
+                          <span className="studio-mono">
+                            Client saw {formatRupees(req.total_shown)}
+                          </span>
+                        ) : null}
+                        {!req.read_at ? (
+                          <PillButton
+                            variant="outline"
+                            size="sm"
+                            disabled={busy}
+                            onClick={() => void handleMarkRequestRead(req.id)}
+                          >
+                            Mark as read
+                          </PillButton>
+                        ) : (
+                          <span className="mg-chip">Read</span>
+                        )}
+                      </div>
+                    }
+                  />
+                );
+              })}
+            </RowList>
+          </section>
+        </Card>
       ) : null}
 
       <div className="studio-section-bar">
@@ -365,6 +573,11 @@ export function PitchList({ onOpenProposal, onPresentProposal }: PitchListProps)
               description={
                 <div className="studio-pitch-row-desc">
                   <span className="mg-chip studio-mono">Default</span>
+                  {defaultProposal.link_status === 'live' ? (
+                    <span className="mg-chip">Link live</span>
+                  ) : defaultProposal.link_status === 'withdrawn' ? (
+                    <span className="mg-chip">Link withdrawn</span>
+                  ) : null}
                   {defaultSha ? (
                     <span className="studio-mono">Pitch version {defaultSha}</span>
                   ) : null}
@@ -409,11 +622,26 @@ export function PitchList({ onOpenProposal, onPresentProposal }: PitchListProps)
                     <PillButton
                       variant="outline"
                       size="sm"
-                      disabled
-                      title="Client links need the team connection (Phase 4)"
+                      disabled={!canShareLinks || busy}
+                      title={
+                        canShareLinks
+                          ? undefined
+                          : 'Sign in under Settings, Account to share links'
+                      }
+                      onClick={() => void handleCopyLink(defaultProposal)}
                     >
                       Copy link
                     </PillButton>
+                    {defaultProposal.link_status === 'live' ? (
+                      <PillButton
+                        variant="quiet"
+                        size="sm"
+                        disabled={!canShareLinks || busy}
+                        onClick={() => setWithdrawTarget(defaultProposal)}
+                      >
+                        Withdraw link
+                      </PillButton>
+                    ) : null}
                     <PillButton
                       variant="quiet"
                       size="sm"
@@ -453,6 +681,11 @@ export function PitchList({ onOpenProposal, onPresentProposal }: PitchListProps)
                   <div className="studio-pitch-row-desc">
                     <span className="studio-mono">{prop.slug}</span>
                     <span className="mg-chip">{formatKindLabel(prop.kind)}</span>
+                    {prop.link_status === 'live' ? (
+                      <span className="mg-chip">Link live</span>
+                    ) : prop.link_status === 'withdrawn' ? (
+                      <span className="mg-chip">Link withdrawn</span>
+                    ) : null}
                     {agentChip ? <span className="mg-chip">{agentChip}</span> : null}
                     {prop.updated_at ? (
                       <span className="studio-mono">{formatTimestamp(prop.updated_at)}</span>
@@ -474,6 +707,29 @@ export function PitchList({ onOpenProposal, onPresentProposal }: PitchListProps)
                       >
                         Open
                       </PillButton>
+                      <PillButton
+                        variant="outline"
+                        size="sm"
+                        disabled={!canShareLinks || busy}
+                        title={
+                          canShareLinks
+                            ? undefined
+                            : 'Sign in under Settings, Account to share links'
+                        }
+                        onClick={() => void handleCopyLink(prop)}
+                      >
+                        Copy link
+                      </PillButton>
+                      {prop.link_status === 'live' ? (
+                        <PillButton
+                          variant="quiet"
+                          size="sm"
+                          disabled={!canShareLinks || busy}
+                          onClick={() => setWithdrawTarget(prop)}
+                        >
+                          Withdraw link
+                        </PillButton>
+                      ) : null}
                       {canFinalize ? (
                         <PillButton
                           variant="outline"
@@ -570,6 +826,19 @@ export function PitchList({ onOpenProposal, onPresentProposal }: PitchListProps)
         onClose={() => setWriterOpen(false)}
         onSendBrief={handleSendWriterBrief}
       />
+
+      <WithdrawLinkDialog
+        proposal={withdrawTarget}
+        submitting={busy}
+        onClose={() => setWithdrawTarget(null)}
+        onConfirmWithdraw={handleConfirmWithdraw}
+      />
+
+      {toast ? (
+        <div className="studio-toast" role="status" aria-live="polite">
+          {toast}
+        </div>
+      ) : null}
     </div>
   );
 }

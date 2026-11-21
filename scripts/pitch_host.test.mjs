@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 const vendorDir = path.join(repoRoot, 'vendor', 'magnm-pitch');
-const hostJsPath = path.join(repoRoot, 'vendor-host', 'magnm-host.js');
+const hostJsPath = path.join(repoRoot, 'vendor', 'magnm-pitch', 'host', 'magnm-host.js');
 
 const requireFromWeb = createRequire(path.join(repoRoot, 'apps', 'web', 'package.json'));
 const { JSDOM } = requireFromWeb('jsdom');
@@ -759,7 +759,7 @@ test('vendored downloadPdf source hash guard matches expected hash', () => {
   assert.equal(
     actualHash,
     EXPECTED_DOWNLOAD_PDF_HASH,
-    'Vendored downloadPdf() changed — review finalQuotationPdf in vendor-host/magnm-host.js and update the hash constant.',
+    'Vendored downloadPdf() changed — review finalQuotationPdf in vendor/magnm-pitch/host/magnm-host.js and update the hash constant.',
   );
 });
 

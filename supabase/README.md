@@ -80,3 +80,8 @@ While a team member is signed in, `engine/cloud_sync.py` performs a one-way back
 - **Confidential work:** Confidential agent sessions (`confidential = 1`) and content items created inside them (plus their versions, posted links, review comments, and metrics) are mirrored only as metadata stubs (`"Confidential chat"` / `"Confidential item"`) with no message text or body.
 - **Activity & device status:** Local `activity` rows and `sync_outbox` events flow to `activity_events`, and `device_status` reports `online` / `working` / `offline` for the local desktop device.
 - **What is never mirrored:** API keys, `.env` values, key pool data, `agent_memory`, `search_cache`, `tool_calls`, `runs`, pitch proposals (handled separately), and file contents from disk.
+
+## Pitch Client Links & Quote Requests (`engine/pitch_links.py`)
+
+- **Publishing links:** When signed in, clicking **Copy link** publishes a sanitized payload (`proposal_id` removed, `contact` limited to `name` and `business`, confidential products blocked by `product_rules.json`) to `published_proposals` (`kind` mapped to `proposal`, `final`, or `default_quote`) and copies `{pitch_site_url}/p|q|f/<share_id>`. Withdrawing sets `status = 'withdrawn'`.
+- **Auto-republish & incoming quote requests:** Saving a live proposal schedules `cloud_sync`, which republishes live links whose `updated_at` is newer than `published_at`. Each sync cycle also fetches unseen `quote_submissions`, stores them locally in `pitch_quote_requests` (computing totals locally and flagging client `total_shown` mismatches), publishes `pitch.quote_request` SSE events, logs activity, and patches `seen_at` only for stored IDs.

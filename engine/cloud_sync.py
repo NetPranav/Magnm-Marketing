@@ -1072,6 +1072,16 @@ def sync_once():
             except Exception as exc:
                 _log_warning(f"media previews sync error: {exc}")
 
+            import pitch_links
+            pitch_links.sync_live_links(
+                user_id,
+                is_signed_out=lambda: _is_signed_out_or_stale(expected_gen),
+            )
+            pitch_links.poll_quote_requests(
+                user_id,
+                is_signed_out=lambda: _is_signed_out_or_stale(expected_gen),
+            )
+
             if _is_signed_out_or_stale(expected_gen):
                 raise _SignedOutAbort()
             try:
@@ -1164,7 +1174,9 @@ def status():
             cursor_raw = state.get((ACTIVITY_CURSOR_KIND, ACTIVITY_CURSOR_ID), {}).get("hash")
             act_pending = db.count_activity_since(int(cursor_raw or 0))
             outbox_pending = db.count_pending_sync_outbox()
-            pending_count = len(pending_mirror) + act_pending + outbox_pending
+            import pitch_links
+            links_pending = pitch_links.count_pending_republishes()
+            pending_count = len(pending_mirror) + act_pending + outbox_pending + links_pending
         except Exception:
             pass
 

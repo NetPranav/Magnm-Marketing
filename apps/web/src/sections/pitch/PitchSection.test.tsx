@@ -407,7 +407,7 @@ describe('PitchSection', () => {
     const copyLinkBtn = screen.getByRole('button', { name: 'Copy link' }) as HTMLButtonElement;
     const phoneBtn = screen.getByRole('button', { name: 'Send to my phone' }) as HTMLButtonElement;
     expect(copyLinkBtn.disabled).toBe(true);
-    expect(copyLinkBtn.title).toBe('Client links need the team connection (Phase 4)');
+    expect(copyLinkBtn.title).toBe('Sign in under Settings, Account to share links');
     expect(phoneBtn.disabled).toBe(true);
     expect(phoneBtn.title).toBe('Available after phone pairing (Phase 4)');
 
@@ -785,7 +785,7 @@ describe('PitchSection', () => {
     expect(within(defRow).getByRole('button', { name: 'Download PDF' })).toBeTruthy();
     const defCopyBtn = within(defRow).getByRole('button', { name: 'Copy link' }) as HTMLButtonElement;
     expect(defCopyBtn.disabled).toBe(true);
-    expect(defCopyBtn.title).toBe('Client links need the team connection (Phase 4)');
+    expect(defCopyBtn.title).toBe('Sign in under Settings, Account to share links');
     expect(within(defRow).getByRole('button', { name: 'Duplicate' })).toBeTruthy();
     expect(within(defRow).queryByRole('button', { name: 'Archive' })).toBeNull();
     expect(within(defRow).queryByRole('button', { name: 'Delete' })).toBeNull();
@@ -904,7 +904,7 @@ describe('PitchSection', () => {
     expect(screen.queryByRole('tab')).toBeNull();
     const roCopyBtn = screen.getByRole('button', { name: 'Copy link' }) as HTMLButtonElement;
     expect(roCopyBtn.disabled).toBe(true);
-    expect(roCopyBtn.title).toBe('Client links need the team connection (Phase 4)');
+    expect(roCopyBtn.title).toBe('Sign in under Settings, Account to share links');
   });
 
   it('edits final quotation: Services without sheet toggle, Prices with recurring, Plans validation/limits/reset/reorder/periods, bottom bar recurring line', async () => {
@@ -1028,7 +1028,7 @@ describe('PitchSection', () => {
     const copyLinkBtn = screen.getByRole('button', { name: 'Copy link' }) as HTMLButtonElement;
     const phoneBtn = screen.getByRole('button', { name: 'Send to my phone' }) as HTMLButtonElement;
     expect(copyLinkBtn.disabled).toBe(true);
-    expect(copyLinkBtn.title).toBe('Client links need the team connection (Phase 4)');
+    expect(copyLinkBtn.title).toBe('Sign in under Settings, Account to share links');
     expect(phoneBtn.disabled).toBe(true);
     expect(phoneBtn.title).toBe('Available after phone pairing (Phase 4)');
 
@@ -2033,6 +2033,258 @@ describe('PitchSection', () => {
       expect(screen.queryByText('Total (unsaved)')).toBeNull();
       expect(screen.getAllByText('Total').length).toBeGreaterThanOrEqual(1);
       expect(screen.getAllByText('₹11,300').length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  it('publishes and withdraws client links with Copy link, clipboard, toast, confirm dialog, and error display', async () => {
+    const catalog = makeCatalog();
+    let prop = makeProposal({
+      id: 'prop_share',
+      slug: 'acme-share',
+      kind: 'quote_form',
+      link_status: null,
+      published_at: null,
+    });
+    let signedIn = false;
+    let failConfidential = false;
+
+    const writeTextMock = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: writeTextMock },
+    });
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/account') {
+        return jsonResponse(
+          signedIn
+            ? {
+                configured: true,
+                signed_in: true,
+                deactivated: false,
+                user: {
+                  id: 'u-1',
+                  email: 'member@example.com',
+                  display_name: 'Member',
+                  avatar_url: null,
+                  role: 'member',
+                  active: true,
+                },
+              }
+            : { configured: true, signed_in: false, user: null },
+        );
+      }
+      if (url === '/api/pitch/version') return jsonResponse({ ref: '1a5f010', commit: '1a5f010' });
+      if (url === '/api/pitch/catalog') return jsonResponse(catalog);
+      if (url === '/api/pitch/requests') return jsonResponse({ requests: [], unread_count: 0 });
+      if (url.startsWith('/api/pitch/proposals?') || url === '/api/pitch/proposals') {
+        return jsonResponse({ proposals: [prop] });
+      }
+      if (url === '/api/pitch/proposals/prop_share' && (!init?.method || init.method === 'GET')) {
+        return jsonResponse(prop);
+      }
+      if (url === '/api/pitch/proposals/prop_share/pdfs') {
+        return jsonResponse({ proposal_id: 'prop_share', slug: prop.slug, pdfs: [] });
+      }
+      if (url === '/api/pitch/proposals/prop_share/publish' && init?.method === 'POST') {
+        if (failConfidential) {
+          return jsonResponse(
+            { error: "This proposal names a confidential product, so it can't be shared." },
+            400,
+          );
+        }
+        prop = { ...prop, link_status: 'live', published_at: '2026-11-21T14:00:00Z' };
+        return jsonResponse({
+          url: 'https://magnm-pitch.vercel.app/q/share_token_123456',
+          published_at: '2026-11-21T14:00:00Z',
+        });
+      }
+      if (url === '/api/pitch/proposals/prop_share/withdraw' && init?.method === 'POST') {
+        prop = { ...prop, link_status: 'withdrawn' };
+        return jsonResponse({ ok: true, proposal_id: 'prop_share', link_status: 'withdrawn' });
+      }
+      return jsonResponse({});
+    });
+
+    // 1. Signed out -> Copy link disabled with exact title in PitchList
+    const { rerender } = render(<PitchSection param={null} onNavigate={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByText('TeleMed India · Dr. Mehta')).toBeTruthy();
+    });
+    const signedOutCopy = screen.getByRole('button', { name: 'Copy link' }) as HTMLButtonElement;
+    expect(signedOutCopy.disabled).toBe(true);
+    expect(signedOutCopy.title).toBe('Sign in under Settings, Account to share links');
+    expect(screen.queryByRole('region', { name: 'Quote requests' })).toBeNull();
+
+    // 2. Signed in -> PitchEditor publishes, copies URL, shows toast + Link live chip + Withdraw link
+    signedIn = true;
+    rerender(<PitchSection param="prop_share" onNavigate={vi.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('acme-share')).toBeTruthy();
+    });
+
+    const editorCopyBtn = screen.getByRole('button', { name: 'Copy link' }) as HTMLButtonElement;
+    await waitFor(() => {
+      expect(editorCopyBtn.disabled).toBe(false);
+    });
+
+    fireEvent.click(editorCopyBtn);
+    await waitFor(() => {
+      expect(writeTextMock).toHaveBeenCalledWith(
+        'https://magnm-pitch.vercel.app/q/share_token_123456',
+      );
+      expect(screen.getByText('Link copied')).toBeTruthy();
+      expect(screen.getByText('Link live')).toBeTruthy();
+    });
+
+    // Withdraw link confirms first via Dialog
+    fireEvent.click(screen.getByRole('button', { name: 'Withdraw link' }));
+    const confirmDialog = screen.getByRole('dialog');
+    expect(within(confirmDialog).getByText('Withdraw client link')).toBeTruthy();
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Withdraw link' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/pitch/proposals/prop_share/withdraw',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      expect(screen.getByText('Link withdrawn')).toBeTruthy();
+    });
+
+    // Copy link publishes again from withdrawn, and confidential error shows plainly
+    failConfidential = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Copy link' }));
+    await waitFor(() => {
+      expect(
+        screen.getByText("This proposal names a confidential product, so it can't be shared."),
+      ).toBeTruthy();
+    });
+  });
+
+  it('renders Quote requests panel with unread badge, tel links, mismatch note, XSS-safe notes, mark as read, and SSE/30s refresh', async () => {
+    const catalog = makeCatalog();
+    let requestsState = [
+      {
+        id: 'qr-1',
+        share_id: 'share_123456789012',
+        local_proposal_id: 'prop_1',
+        proposal_title: 'TeleMed India · Dr. Mehta',
+        proposal_slug: 'telemed-india',
+        choices: { selected: ['w_front', 'b_db'], custom_selected: [], total_shown: 9000 },
+        contact: {
+          name: 'Priya',
+          business: 'Northstar Clinics',
+          phone: '+91 9811122233',
+          notes: 'Need demo <script>alert("xss")</script>',
+        },
+        selected_items: [
+          { id: 'w_front', name: 'Responsive Web Application / Frontend', price: 7200 },
+          { id: 'b_db', name: 'Core Database & API Server', price: 2800 },
+        ],
+        computed_total: 10000,
+        total_shown: 9000,
+        total_mismatch: true,
+        created_at: '2026-11-21T10:00:00Z',
+        received_at: '2026-11-21T10:01:00Z',
+        read_at: null as string | null,
+      },
+    ];
+    let unreadCount = 1;
+
+    class MockEventSource {
+      static instances: MockEventSource[] = [];
+      listeners: Record<string, Array<(e: MessageEvent) => void>> = {};
+      onopen: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(public url: string) {
+        MockEventSource.instances.push(this);
+        queueMicrotask(() => this.onopen?.());
+      }
+      addEventListener(type: string, cb: (e: MessageEvent) => void) {
+        if (!this.listeners[type]) this.listeners[type] = [];
+        this.listeners[type].push(cb);
+      }
+      emit(type: string, data: unknown) {
+        const msg = new MessageEvent(type, { data: JSON.stringify(data) });
+        for (const cb of this.listeners[type] || []) cb(msg);
+      }
+      close() {}
+    }
+    vi.stubGlobal('EventSource', MockEventSource);
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/account') return jsonResponse({ configured: true, signed_in: false, user: null });
+      if (url === '/api/pitch/version') return jsonResponse({ ref: '1a5f010', commit: '1a5f010' });
+      if (url === '/api/pitch/catalog') return jsonResponse(catalog);
+      if (url === '/api/pitch/requests') {
+        return jsonResponse({ requests: requestsState, unread_count: unreadCount });
+      }
+      if (url === '/api/pitch/requests/qr-1/read' && init?.method === 'POST') {
+        requestsState = requestsState.map((r) =>
+          r.id === 'qr-1' ? { ...r, read_at: '2026-11-21T10:05:00Z' } : r,
+        );
+        unreadCount = 0;
+        return jsonResponse({ ok: true, request: requestsState[0], unread_count: 0 });
+      }
+      if (url.startsWith('/api/pitch/proposals')) {
+        return jsonResponse({ proposals: [makeProposal()] });
+      }
+      return jsonResponse({});
+    });
+
+    render(<PitchSection param={null} onNavigate={vi.fn()} />);
+
+    const panel = await screen.findByRole('region', { name: 'Quote requests' });
+    expect(within(panel).getByTestId('quote-requests-unread').textContent).toBe('1 unread');
+    expect(within(panel).getByText('Priya · Northstar Clinics')).toBeTruthy();
+
+    const phoneLink = within(panel).getByRole('link', { name: '+91 9811122233' }) as HTMLAnchorElement;
+    expect(phoneLink.getAttribute('href')).toBe('tel:+91 9811122233');
+
+    // Selected items by name, computed total, mismatch note, and HTML rendered as text
+    expect(
+      within(panel).getByText(
+        'Selected: Responsive Web Application / Frontend, Core Database & API Server',
+      ),
+    ).toBeTruthy();
+    expect(within(panel).getByText('₹10,000')).toBeTruthy();
+    expect(within(panel).getByText('Client saw ₹9,000')).toBeTruthy();
+    expect(within(panel).getByText('Need demo <script>alert("xss")</script>')).toBeTruthy();
+    expect(panel.querySelector('script')).toBeNull();
+
+    // Mark as read updates unread badge to 0 unread
+    fireEvent.click(within(panel).getByRole('button', { name: 'Mark as read' }));
+    await waitFor(() => {
+      expect(within(panel).getByTestId('quote-requests-unread').textContent).toBe('0 unread');
+      expect(within(panel).getByText('Read')).toBeTruthy();
+    });
+
+    // SSE pitch.quote_request event triggers refresh
+    requestsState = [
+      {
+        ...requestsState[0],
+        id: 'qr-2',
+        contact: {
+          name: 'Arjun',
+          business: 'BlueWave',
+          phone: '+91 9800000000',
+          notes: 'Follow up tomorrow',
+        },
+        read_at: null,
+      },
+      ...requestsState,
+    ];
+    unreadCount = 1;
+
+    await act(async () => {
+      MockEventSource.instances[0]?.emit('pitch.quote_request', { id: 'qr-2' });
+    });
+
+    await waitFor(() => {
+      expect(within(panel).getByText('Arjun · BlueWave')).toBeTruthy();
+      expect(within(panel).getByTestId('quote-requests-unread').textContent).toBe('1 unread');
     });
   });
 });
