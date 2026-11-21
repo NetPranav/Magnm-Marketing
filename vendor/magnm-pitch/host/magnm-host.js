@@ -54,6 +54,11 @@
 
   sanitizePayloadFields(data);
 
+  var context = data.context === "public" ? "public" : "studio";
+  function isPublicContext() {
+    return context === "public";
+  }
+
   function isLocked() {
     return data.locked === true;
   }
@@ -995,20 +1000,26 @@
       return all;
     };
 
-    var params = new URLSearchParams(window.location.search || "");
-    params.delete("admin");
-    params.set("client", slug);
-    if (typeof data.mode === "string" && data.mode) {
-      params.set("mode", data.mode);
+    if (isPublicContext()) {
+      window.parseRoute = function () {
+        return { view: "planner", client: slug };
+      };
+    } else {
+      var params = new URLSearchParams(window.location.search || "");
+      params.delete("admin");
+      params.set("client", slug);
+      if (typeof data.mode === "string" && data.mode) {
+        params.set("mode", data.mode);
+      }
+      if (data.proposal_id) {
+        params.set("proposal", String(data.proposal_id));
+      }
+      var targetPath = window.location.pathname || "/pitch/";
+      if (targetPath.indexOf("/clients/") === 0 || targetPath === "/admin" || targetPath.indexOf("/admin/") === 0) {
+        targetPath = "/pitch/";
+      }
+      window.history.replaceState(null, "", targetPath + "?" + params.toString());
     }
-    if (data.proposal_id) {
-      params.set("proposal", String(data.proposal_id));
-    }
-    var targetPath = window.location.pathname || "/pitch/";
-    if (targetPath.indexOf("/clients/") === 0 || targetPath === "/admin" || targetPath.indexOf("/admin/") === 0) {
-      targetPath = "/pitch/";
-    }
-    window.history.replaceState(null, "", targetPath + "?" + params.toString());
   }
 
   function buildPaymentTermsText(planRows, note, grandTotal) {
@@ -1301,19 +1312,119 @@
     window.downloadPdf = finalQuotationPdf;
   }
 
+  function readTrimmedCapped(id, maxLen) {
+    var el = document.getElementById(id);
+    var val = el && typeof el.value === "string" ? el.value.trim() : "";
+    return val.length > maxLen ? val.slice(0, maxLen) : val;
+  }
+
+  function collectPublicQuoteChoices() {
+    var selectedMap = typeof sel !== "undefined" && sel ? sel : {};
+    var totalShown = typeof window.total === "function" ? Number(window.total()) || 0 : 0;
+    if (window.MagnmShare && typeof window.MagnmShare.buildChoices === "function") {
+      return window.MagnmShare.buildChoices(selectedMap, totalShown);
+    }
+    var selected = [];
+    var customSelected = [];
+    Object.keys(selectedMap).forEach(function (id) {
+      if (!selectedMap[id]) return;
+      if (id.indexOf("custom_") === 0) {
+        customSelected.push(id);
+      } else {
+        selected.push(id);
+      }
+    });
+    return {
+      selected: selected,
+      custom_selected: customSelected,
+      total_shown: totalShown
+    };
+  }
+
+  function collectPublicQuoteContact() {
+    var raw = {
+      name: readTrimmedCapped("f-name", 500),
+      business: readTrimmedCapped("f-biz", 500),
+      phone: readTrimmedCapped("f-phone", 500),
+      notes: readTrimmedCapped("f-note", 2000)
+    };
+    if (window.MagnmShare && typeof window.MagnmShare.buildContact === "function") {
+      return window.MagnmShare.buildContact(raw);
+    }
+    return raw;
+  }
+
+  function isRateLimitedError(err) {
+    if (!err) return false;
+    if (err.code === "rate_limited" || err.message === "rate_limited") return true;
+    return /rate\s*limit/i.test(String(err.message || ""));
+  }
+
+  function installPublicQuoteButton() {
+    if (!isPublicContext() || data.mode !== "form") return;
+    var formEl = document.getElementById("form");
+    var pdfBtn = document.getElementById("pdf");
+    if (!formEl || !pdfBtn || document.getElementById("magnm-send-plan")) return;
+
+    var sendBtn = document.createElement("button");
+    sendBtn.type = "button";
+    sendBtn.id = "magnm-send-plan";
+    sendBtn.className = "btn full";
+    sendBtn.textContent = "Send my plan to magnm";
+
+    sendBtn.addEventListener("click", function () {
+      var statusEl = document.getElementById("status");
+      var contact = collectPublicQuoteContact();
+      if (!contact.name || !contact.phone) {
+        if (statusEl) statusEl.textContent = "Please enter your name and phone number.";
+        return;
+      }
+      if (!window.MagnmShare || typeof window.MagnmShare.submitQuote !== "function") {
+        if (statusEl) statusEl.textContent = "Could not send your plan right now. Please try again.";
+        return;
+      }
+
+      var choices = collectPublicQuoteChoices();
+      sendBtn.disabled = true;
+      if (statusEl) statusEl.textContent = "Sending your plan...";
+
+      Promise.resolve(window.MagnmShare.submitQuote(choices, contact)).then(
+        function () {
+          if (statusEl) {
+            statusEl.textContent = "Thanks. magnm has your plan and will contact you soon.";
+          }
+        },
+        function (err) {
+          sendBtn.disabled = false;
+          if (statusEl) {
+            statusEl.textContent = isRateLimitedError(err)
+              ? "We already received several requests from this link today. Please call us instead."
+              : "Could not send your plan right now. Please try again.";
+          }
+        }
+      );
+    });
+
+    formEl.insertBefore(sendBtn, pdfBtn);
+  }
+
   if (document.readyState === "loading") {
     window.addEventListener("DOMContentLoaded", function () {
       if (isLocked() || data.kind !== "default") {
         prefillContact(data.contact);
       }
+      installPublicQuoteButton();
     });
-  } else if (isLocked() || data.kind !== "default") {
-    prefillContact(data.contact);
+  } else {
+    if (isLocked() || data.kind !== "default") {
+      prefillContact(data.contact);
+    }
+    installPublicQuoteButton();
   }
 
   // 5. Mirror PDF exports to the engine when a proposal_id is active.
   function uploadPdfBlob(doc) {
-    if (!data.proposal_id || typeof fetch !== "function" || !doc || typeof doc.output !== "function") {
+    if (isPublicContext() || !data.proposal_id || typeof fetch !== "function" || !doc || typeof doc.output !== "function") {
       return;
     }
     try {
@@ -1348,7 +1459,7 @@
     }
   }
 
-  if (window.jspdf && typeof window.jspdf.jsPDF === "function") {
+  if (!isPublicContext() && window.jspdf && typeof window.jspdf.jsPDF === "function") {
     var OrigJsPdf = window.jspdf.jsPDF;
     if (OrigJsPdf.prototype && typeof OrigJsPdf.prototype.save === "function") {
       var origProtoSave = OrigJsPdf.prototype.save;
@@ -1454,7 +1565,8 @@
   }
 
   // 7. Live preview updates and scroll sync from Studio editor + Escape exit forwarding.
-  window.addEventListener("message", function (event) {
+  if (!isPublicContext()) {
+    window.addEventListener("message", function (event) {
     if (event.origin !== window.location.origin) return;
     var msg = event.data;
     if (!msg || typeof msg !== "object") return;
@@ -1563,12 +1675,13 @@
 
     if (typeof window.update === "function") window.update();
     if (typeof window.spy === "function") window.spy();
-    if (typeof window.scrollTo === "function") {
-      window.scrollTo(savedScrollX, savedScrollY);
-    }
-  });
+      if (typeof window.scrollTo === "function") {
+        window.scrollTo(savedScrollX, savedScrollY);
+      }
+    });
+  }
 
-  if (data.mode === "present" || data.mode === "form") {
+  if (!isPublicContext() && (data.mode === "present" || data.mode === "form")) {
     window.addEventListener("keydown", function (event) {
       if (event.key === "Escape" && window.parent && window.parent !== window) {
         window.parent.postMessage({ type: "magnm:pitch-exit-present" }, window.location.origin);

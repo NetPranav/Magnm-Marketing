@@ -611,7 +611,7 @@ class PitchTests(unittest.TestCase):
             ver = _dispatch("/api/pitch/version")
             self.assertEqual(ver.status_code, 200)
             ver_json = ver.response_json()
-            self.assertEqual(ver_json["ref"], "c44b7e2")
+            self.assertEqual(ver_json["ref"], "1207d19")
             self.assertNotIn("files", ver_json)
 
             # GET /api/pitch/catalog

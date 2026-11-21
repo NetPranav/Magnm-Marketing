@@ -6,8 +6,9 @@ mod secrets;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use tauri::{AppHandle, Manager, RunEvent, State, Url};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, Url};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::UpdaterExt;
 
 use engine::EngineSupervisor;
@@ -181,6 +182,7 @@ async fn check_for_updates(app: AppHandle) {
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
@@ -209,6 +211,21 @@ pub fn run() {
             app.manage(Arc::clone(&supervisor));
 
             let handle = app.handle().clone();
+            let click_handle = handle.clone();
+            let _ = app.notification().on_action(move |performed| {
+                if let Some(window) = click_handle.get_webview_window("main") {
+                    let _ = window.unminimize();
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+                if let Some(route) = performed
+                    .notification()
+                    .and_then(|n| n.extra().get("route"))
+                    .and_then(|v| v.as_str())
+                {
+                    let _ = click_handle.emit("magnm:notification-click", route.to_string());
+                }
+            });
             if is_updater_configured(&handle) {
                 handle.plugin(tauri_plugin_updater::Builder::new().build())?;
                 let update_handle = handle.clone();

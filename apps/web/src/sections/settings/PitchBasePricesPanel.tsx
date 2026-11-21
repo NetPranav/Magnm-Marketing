@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Card, PillButton, TextInput } from '@magnm/design/react';
+import { getAccount, type AccountState } from '../../api/account';
 import {
   formatRupees,
   getPitchCatalog,
@@ -13,12 +14,22 @@ import { PITCH_SHEETS } from '../pitch/pitchUtils';
 
 /** Settings sub-section: Pitch catalog base prices (admin overrides) and pending outbox count. */
 export function PitchBasePricesPanel() {
+  const [account, setAccount] = useState<AccountState | null>(null);
   const [catalog, setCatalog] = useState<PitchCatalog | null>(null);
   const [pendingCount, setPendingCount] = useState<number>(0);
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [busyItem, setBusyItem] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+
+  const loadAccount = useCallback(async () => {
+    try {
+      const acct = await getAccount();
+      setAccount(acct);
+    } catch {
+      setAccount(null);
+    }
+  }, []);
 
   const loadData = useCallback(async () => {
     const [catRes, outboxRes] = await Promise.allSettled([
@@ -45,17 +56,32 @@ export function PitchBasePricesPanel() {
 
   useEffect(() => {
     void loadData();
-  }, [loadData]);
+    void loadAccount();
+    const onAccountChanged = () => {
+      void loadAccount();
+    };
+    window.addEventListener('magnm:account-changed', onAccountChanged);
+    return () => {
+      window.removeEventListener('magnm:account-changed', onAccountChanged);
+    };
+  }, [loadAccount, loadData]);
 
   useStudioEvents(
     useCallback(
       (eventName) => {
-        if (eventName === 'pitch.updated') {
+        if (eventName === 'pitch.updated' || eventName === 'team_knowledge.updated') {
           void loadData();
         }
       },
       [loadData],
     ),
+  );
+
+  const isMember = Boolean(
+    account?.configured &&
+      account?.signed_in &&
+      !account?.deactivated &&
+      account?.user?.role === 'member',
   );
 
   const handleSaveItem = async (itemId: string) => {
@@ -101,7 +127,7 @@ export function PitchBasePricesPanel() {
     <section className="studio-section" aria-labelledby="settings-pitch-prices-heading">
       <div className="studio-section-bar">
         <div className="studio-settings-head">
-          <span className="studio-settings-num">08</span>
+          <span className="studio-settings-num">09</span>
           <h2 id="settings-pitch-prices-heading" className="studio-section-title">
             Pitch base prices (admin)
           </h2>
@@ -111,9 +137,15 @@ export function PitchBasePricesPanel() {
         </span>
       </div>
 
-      <div className="mg-notice" role="note">
-        Only the admin will be able to edit Pitch base prices once team roles arrive in Phase 4. Changes are queued locally until then.
-      </div>
+      {isMember ? (
+        <div className="mg-notice" role="note">
+          Managed by your admin
+        </div>
+      ) : (
+        <div className="mg-notice" role="note">
+          Only the admin will be able to edit Pitch base prices once team roles arrive in Phase 4. Changes are queued locally until then.
+        </div>
+      )}
 
       {error ? (
         <div className="mg-notice" role="alert">
@@ -152,7 +184,7 @@ export function PitchBasePricesPanel() {
                           <th>Item</th>
                           <th>Pitch base</th>
                           <th>Admin override</th>
-                          <th>Actions</th>
+                          {!isMember ? <th>Actions</th> : null}
                         </tr>
                       </thead>
                       <tbody>
@@ -171,6 +203,8 @@ export function PitchBasePricesPanel() {
                                 min={0}
                                 max={10000000}
                                 step={1}
+                                disabled={isMember}
+                                readOnly={isMember}
                                 className="studio-pitch-price-input"
                                 aria-label={`Admin override for ${item.n}`}
                                 placeholder={String(item.base_price)}
@@ -183,27 +217,29 @@ export function PitchBasePricesPanel() {
                                 }
                               />
                             </td>
-                            <td>
-                              <div className="studio-row-actions">
-                                <PillButton
-                                  size="sm"
-                                  disabled={busyItem === itemId}
-                                  aria-label={`Save base price for ${item.n}`}
-                                  onClick={() => void handleSaveItem(itemId)}
-                                >
-                                  Save
-                                </PillButton>
-                                <PillButton
-                                  variant="quiet"
-                                  size="sm"
-                                  disabled={!item.overridden || busyItem === itemId}
-                                  aria-label={`Reset base price for ${item.n}`}
-                                  onClick={() => void handleResetItem(itemId)}
-                                >
-                                  Reset
-                                </PillButton>
-                              </div>
-                            </td>
+                            {!isMember ? (
+                              <td>
+                                <div className="studio-row-actions">
+                                  <PillButton
+                                    size="sm"
+                                    disabled={busyItem === itemId}
+                                    aria-label={`Save base price for ${item.n}`}
+                                    onClick={() => void handleSaveItem(itemId)}
+                                  >
+                                    Save
+                                  </PillButton>
+                                  <PillButton
+                                    variant="quiet"
+                                    size="sm"
+                                    disabled={!item.overridden || busyItem === itemId}
+                                    aria-label={`Reset base price for ${item.n}`}
+                                    onClick={() => void handleResetItem(itemId)}
+                                  >
+                                    Reset
+                                  </PillButton>
+                                </div>
+                              </td>
+                            ) : null}
                           </tr>
                         ))}
                       </tbody>

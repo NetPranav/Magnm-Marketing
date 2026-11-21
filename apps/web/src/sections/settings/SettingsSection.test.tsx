@@ -534,4 +534,86 @@ describe('SettingsSection', () => {
       expect(screen.getByText('Queued admin notifications: 4')).toBeTruthy();
     });
   });
+
+  it('shows Pitch base prices read-only with Managed by your admin note for members', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/health') {
+        return jsonResponse({ ok: true, version: '0.1.0', data_root: '/tmp/magnm-data' });
+      }
+      if (url === '/api/status') {
+        return jsonResponse({ env_status: {}, models_matrix: [] });
+      }
+      if (url === '/api/setup_check') {
+        return jsonResponse({ ok: true, checks: [] });
+      }
+      if (url.startsWith('/api/bakeoff/latest')) {
+        return jsonResponse({ error: 'Not found' }, 404);
+      }
+      if (url === '/api/account') {
+        return jsonResponse({
+          configured: true,
+          signed_in: true,
+          deactivated: false,
+          user: {
+            id: 'm-1',
+            email: 'member@example.com',
+            display_name: 'Maya',
+            avatar_url: null,
+            role: 'member',
+            active: true,
+          },
+        });
+      }
+      if (url === '/api/account/sync') {
+        return jsonResponse({ enabled: true, signed_in: true, last_sync_at: null, last_error: null, pending: 0, synced_count: 0, running: false });
+      }
+      if (url === '/api/account/media') {
+        return jsonResponse({ ffmpeg: true, uploaded: 0, waiting: 0, failed: 0, last_error: null });
+      }
+      if (url === '/api/account/ai') {
+        return jsonResponse({ mode: 'team', today: { requests: 1, prompt_tokens: 0, completion_tokens: 0 }, limit: { daily_requests: 200, daily_tokens: 400000 } });
+      }
+      if (url === '/api/team/knowledge') {
+        return jsonResponse({ signed_in: true, role: 'member', items: [] });
+      }
+      if (url === '/api/pitch/catalog') {
+        return jsonResponse({
+          items: {
+            w_front: {
+              g: 'Web & SaaS',
+              n: 'Responsive Web Application / Frontend',
+              d: 'Frontend',
+              r: [],
+              p: 7500,
+              base_price: 6000,
+              price: 7500,
+              overridden: true,
+            },
+          },
+          groups: ['Web & SaaS'],
+          standalone_fee: 4000,
+          standalone_label: 'App-only setup',
+          presets: {},
+        });
+      }
+      if (url.startsWith('/api/pitch/outbox')) {
+        return jsonResponse({ events: [], pending_count: 0 });
+      }
+      return jsonResponse([]);
+    });
+
+    render(<SettingsSection />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Responsive Web Application / Frontend')).toBeTruthy();
+      expect(screen.getByText('Managed by your admin')).toBeTruthy();
+    });
+    const priceInput = screen.getByLabelText(
+      'Admin override for Responsive Web Application / Frontend',
+    ) as HTMLInputElement;
+    expect(priceInput.disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Save base price for Responsive Web Application / Frontend' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reset base price for Responsive Web Application / Frontend' })).toBeNull();
+  });
 });

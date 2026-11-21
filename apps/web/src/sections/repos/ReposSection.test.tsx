@@ -195,4 +195,50 @@ describe('ReposSection', () => {
     expect(screen.getByText(/No repositories connected yet/i)).toBeTruthy();
     expect(screen.getByText(/No pending product facts/i)).toBeTruthy();
   });
+
+  it('shows product rules read-only with Managed by your admin note when signed in as a member', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/account') {
+        return jsonResponse({
+          configured: true,
+          signed_in: true,
+          deactivated: false,
+          user: {
+            id: 'm-1',
+            email: 'member@example.com',
+            display_name: 'Maya',
+            avatar_url: null,
+            role: 'member',
+            active: true,
+          },
+        });
+      }
+      if (url === '/api/product_rules') {
+        return jsonResponse({
+          version: 1,
+          show_levels: { everything: 'Allowed' },
+          products: [
+            {
+              id: 'cero',
+              name: 'Cero',
+              status: 'released',
+              show: 'everything',
+              blocked_terms: ['ROS'],
+              confidential: false,
+            },
+          ],
+        });
+      }
+      return jsonResponse([]);
+    });
+
+    render(<ReposSection />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Cero')).toBeTruthy();
+      expect(screen.getByText('Managed by your admin')).toBeTruthy();
+    });
+    expect(screen.queryByRole('button', { name: 'Edit rules' })).toBeNull();
+  });
 });

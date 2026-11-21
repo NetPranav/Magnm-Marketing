@@ -22,7 +22,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 17
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -664,6 +664,118 @@ def _apply_migration_v12(conn):
         conn.execute("ALTER TABLE pitch_proposals ADD COLUMN custom_categories_json TEXT NOT NULL DEFAULT '[]'")
 
 
+def _apply_migration_v13(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS cloud_sync_state (
+            user_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            local_id TEXT NOT NULL,
+            hash TEXT NOT NULL,
+            synced_at TEXT NOT NULL,
+            error TEXT,
+            PRIMARY KEY (user_id, kind, local_id)
+        );
+        """
+    )
+
+
+def _apply_migration_v14(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS media_upload_queue (
+            user_id TEXT NOT NULL,
+            local_source_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            source_hash TEXT NOT NULL,
+            storage_path TEXT NOT NULL,
+            state TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at REAL NOT NULL DEFAULT 0,
+            error TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, local_source_id, kind)
+        );
+        """
+    )
+
+
+def _apply_migration_v15(conn):
+    cols = {
+        r["name"]
+        for r in conn.execute("PRAGMA table_info(pitch_proposals)").fetchall()
+    }
+    if "published_at" not in cols:
+        conn.execute("ALTER TABLE pitch_proposals ADD COLUMN published_at TEXT")
+    if "link_status" not in cols:
+        conn.execute("ALTER TABLE pitch_proposals ADD COLUMN link_status TEXT")
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS pitch_quote_requests (
+            id TEXT PRIMARY KEY,
+            share_id TEXT NOT NULL,
+            local_proposal_id TEXT,
+            choices_json TEXT NOT NULL,
+            contact_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            received_at TEXT NOT NULL,
+            read_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pitch_quote_requests_created
+            ON pitch_quote_requests(created_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_pitch_quote_requests_read
+            ON pitch_quote_requests(read_at, created_at DESC);
+        """
+    )
+
+
+def _apply_migration_v16(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS team_knowledge_state (
+            user_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            applied_hash TEXT,
+            applied_remote_updated_at TEXT,
+            published_hash TEXT,
+            published_at TEXT,
+            PRIMARY KEY (user_id, key)
+        );
+        """
+    )
+
+
+def _apply_migration_v17(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS notifications (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            route TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            read_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_notifications_created
+            ON notifications(created_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_notifications_read
+            ON notifications(read_at, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS notification_settings (
+            kind TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -677,6 +789,11 @@ _MIGRATIONS = (
     (10, _apply_migration_v10),
     (11, _apply_migration_v11),
     (12, _apply_migration_v12),
+    (13, _apply_migration_v13),
+    (14, _apply_migration_v14),
+    (15, _apply_migration_v15),
+    (16, _apply_migration_v16),
+    (17, _apply_migration_v17),
 )
 
 
@@ -3690,6 +3807,8 @@ def _deserialize_pitch_proposal(row):
         "created_by": row["created_by"] or "user",
         "share_id": row["share_id"],
         "pitch_commit": row["pitch_commit"] or "",
+        "published_at": row["published_at"] if "published_at" in keys else None,
+        "link_status": row["link_status"] if "link_status" in keys else None,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -3807,6 +3926,168 @@ def pitch_share_id_exists(share_id):
         (str(share_id),),
     ).fetchone()
     return row is not None
+
+
+def get_pitch_proposal_by_share_id(share_id):
+    """Fetch a pitch proposal by share_id, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM pitch_proposals WHERE share_id = ? LIMIT 1",
+        (str(share_id),),
+    ).fetchone()
+    return _deserialize_pitch_proposal(row)
+
+
+def list_live_pitch_proposals():
+    """List pitch proposals whose link_status is 'live'."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT * FROM pitch_proposals WHERE link_status = 'live' ORDER BY updated_at ASC, rowid ASC"
+    ).fetchall()
+    return [_deserialize_pitch_proposal(r) for r in rows]
+
+
+_UNSET = object()
+
+
+def set_pitch_share_id(proposal_id, share_id):
+    """Persist a new share_id on pitch_proposals without altering updated_at."""
+    ensure_init()
+    conn = connect()
+    with conn:
+        conn.execute(
+            "UPDATE pitch_proposals SET share_id = ? WHERE id = ?",
+            (str(share_id), str(proposal_id)),
+        )
+    return get_pitch_proposal(proposal_id)
+
+
+def set_pitch_link_state(proposal_id, link_status, published_at=_UNSET, share_id=_UNSET):
+    """Update link_status (and optionally published_at/share_id) without altering updated_at."""
+    ensure_init()
+    sets = ["link_status = ?"]
+    params = [link_status]
+    if published_at is not _UNSET:
+        sets.append("published_at = ?")
+        params.append(published_at)
+    if share_id is not _UNSET:
+        sets.append("share_id = ?")
+        params.append(str(share_id))
+    params.append(str(proposal_id))
+    conn = connect()
+    with conn:
+        conn.execute(
+            f"UPDATE pitch_proposals SET {', '.join(sets)} WHERE id = ?",
+            params,
+        )
+    return get_pitch_proposal(proposal_id)
+
+
+def _deserialize_pitch_quote_request(row):
+    if row is None:
+        return None
+    choices = json.loads(row["choices_json"]) if row["choices_json"] else {}
+    contact = json.loads(row["contact_json"]) if row["contact_json"] else {}
+    return {
+        "id": row["id"],
+        "share_id": row["share_id"],
+        "local_proposal_id": row["local_proposal_id"],
+        "choices": choices if isinstance(choices, dict) else {},
+        "contact": contact if isinstance(contact, dict) else {},
+        "created_at": row["created_at"],
+        "received_at": row["received_at"],
+        "read_at": row["read_at"],
+    }
+
+
+def insert_pitch_quote_request(
+    *,
+    request_id,
+    share_id,
+    local_proposal_id,
+    choices,
+    contact,
+    created_at,
+    received_at=None,
+):
+    """Insert a quote request if not already present; return True if newly inserted."""
+    ensure_init()
+    rec_ts = str(received_at or datetime.now(timezone.utc).isoformat())
+    conn = connect()
+    with conn:
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO pitch_quote_requests (
+                id, share_id, local_proposal_id, choices_json, contact_json,
+                created_at, received_at, read_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                str(request_id),
+                str(share_id),
+                str(local_proposal_id) if local_proposal_id else None,
+                json.dumps(choices or {}, ensure_ascii=False),
+                json.dumps(contact or {}, ensure_ascii=False),
+                str(created_at),
+                rec_ts,
+            ),
+        )
+        return cur.rowcount > 0
+
+
+def get_pitch_quote_request(request_id):
+    """Fetch a single stored quote request by id, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM pitch_quote_requests WHERE id = ?",
+        (str(request_id),),
+    ).fetchone()
+    return _deserialize_pitch_quote_request(row)
+
+
+def list_pitch_quote_requests(limit=200):
+    """List stored quote requests newest first."""
+    ensure_init()
+    conn = connect()
+    max_rows = max(1, min(int(limit or 200), 1000))
+    rows = conn.execute(
+        """
+        SELECT * FROM pitch_quote_requests
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT ?
+        """,
+        (max_rows,),
+    ).fetchall()
+    return [_deserialize_pitch_quote_request(r) for r in rows]
+
+
+def count_unread_pitch_quote_requests():
+    """Return count of unread stored quote requests."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM pitch_quote_requests WHERE read_at IS NULL"
+    ).fetchone()
+    return int(row["cnt"]) if row is not None else 0
+
+
+def mark_pitch_quote_request_read(request_id, read_at=None):
+    """Stamp read_at on a quote request if not already read, returning the row or None."""
+    ensure_init()
+    existing = get_pitch_quote_request(request_id)
+    if existing is None:
+        return None
+    ts = str(read_at or datetime.now(timezone.utc).isoformat())
+    conn = connect()
+    with conn:
+        conn.execute(
+            "UPDATE pitch_quote_requests SET read_at = COALESCE(read_at, ?) WHERE id = ?",
+            (ts, str(request_id)),
+        )
+    return get_pitch_quote_request(request_id)
 
 
 def list_pitch_proposals(status=None, kind=None, limit=100):
@@ -3968,6 +4249,25 @@ def delete_pitch_base_price(item_id):
         return cur.rowcount > 0
 
 
+def replace_pitch_base_prices(items, updated_by="team", updated_at=None):
+    """Atomically replace all pitch_base_prices rows with items [(item_id, price), ...]."""
+    ensure_init()
+    now = str(updated_at or datetime.now(timezone.utc).isoformat())
+    actor = str(updated_by or "team")
+    conn = connect()
+    with conn:
+        conn.execute("DELETE FROM pitch_base_prices")
+        for item_id, price in items:
+            conn.execute(
+                """
+                INSERT INTO pitch_base_prices (item_id, price, updated_by, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (str(item_id), int(price), actor, now),
+            )
+    return list_pitch_base_prices()
+
+
 def _deserialize_sync_outbox(row):
     if row is None:
         return None
@@ -4014,3 +4314,700 @@ def list_sync_outbox(pending_only=False, limit=100):
         (max_rows,),
     ).fetchall()
     return [_deserialize_sync_outbox(r) for r in rows]
+
+
+def list_pending_sync_outbox(limit=200):
+    """Return unsent sync_outbox rows ordered oldest-first."""
+    ensure_init()
+    conn = connect()
+    max_rows = max(1, min(int(limit or 200), 1000))
+    rows = conn.execute(
+        """
+        SELECT * FROM sync_outbox
+        WHERE sent_at IS NULL
+        ORDER BY created_at ASC, rowid ASC
+        LIMIT ?
+        """,
+        (max_rows,),
+    ).fetchall()
+    return [_deserialize_sync_outbox(r) for r in rows]
+
+
+def count_pending_sync_outbox():
+    """Return the count of unsent rows in sync_outbox."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute("SELECT COUNT(*) AS cnt FROM sync_outbox WHERE sent_at IS NULL").fetchone()
+    return int(row["cnt"] if row else 0)
+
+
+def mark_sync_outbox_sent(event_ids, sent_at=None):
+    """Mark sync_outbox rows as sent by setting sent_at."""
+    ids = [str(eid) for eid in (event_ids or []) if eid]
+    if not ids:
+        return 0
+    ensure_init()
+    ts = str(sent_at or datetime.now(timezone.utc).isoformat())
+    placeholders = ", ".join("?" for _ in ids)
+    conn = connect()
+    with conn:
+        cur = conn.execute(
+            f"UPDATE sync_outbox SET sent_at = ? WHERE id IN ({placeholders}) AND sent_at IS NULL",
+            [ts, *ids],
+        )
+        return cur.rowcount
+
+
+def list_all_agent_sessions():
+    """Return all agent_sessions rows for cloud mirror sync."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        f"SELECT {_SESSION_SELECT_COLS} FROM agent_sessions ORDER BY rowid ASC"
+    ).fetchall()
+    return [_deserialize_session(r) for r in rows]
+
+
+def list_all_chat_turns():
+    """Return all legacy chat_turns rows with rowid for cloud mirror sync."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT rowid, agent_id, sender, name, text, ts FROM chat_turns ORDER BY rowid ASC"
+    ).fetchall()
+    return [
+        {
+            "rowid": int(r["rowid"]),
+            "agent_id": r["agent_id"],
+            "sender": r["sender"],
+            "name": r["name"],
+            "text": r["text"],
+            "ts": r["ts"],
+        }
+        for r in rows
+    ]
+
+
+def list_all_content_items():
+    """Return all content_items rows for cloud mirror sync."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute("SELECT * FROM content_items ORDER BY rowid ASC").fetchall()
+    return [_deserialize_content_item(r) for r in rows]
+
+
+def list_all_content_versions():
+    """Return all content_versions rows ordered by content_id and version."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT * FROM content_versions ORDER BY content_id ASC, version ASC, rowid ASC"
+    ).fetchall()
+    return [_deserialize_content_version(r) for r in rows]
+
+
+def list_all_research_notes():
+    """Return all research_notes rows for cloud mirror sync."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT id, title, body, url, source, agent_id, created_at FROM research_notes ORDER BY rowid ASC"
+    ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "title": r["title"],
+            "body": r["body"],
+            "url": r["url"],
+            "source": r["source"],
+            "agent_id": r["agent_id"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
+def list_all_review_comments():
+    """Return all review_comments rows without anchor geometry for cloud mirror sync."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT id, content_id, version, kind, body, author, status, parent_id, created_at, updated_at
+        FROM review_comments
+        ORDER BY rowid ASC
+        """
+    ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "content_id": r["content_id"],
+            "version": int(r["version"]),
+            "kind": r["kind"],
+            "body": r["body"],
+            "author": r["author"],
+            "status": r["status"],
+            "parent_id": r["parent_id"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        }
+        for r in rows
+    ]
+
+
+def list_all_metrics():
+    """Return all metrics rows for cloud mirror sync."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute("SELECT * FROM metrics ORDER BY rowid ASC").fetchall()
+    return [
+        {
+            "id": r["id"],
+            "content_id": r["content_id"],
+            "platform": r["platform"],
+            "metrics": json.loads(r["metrics_json"]) if r["metrics_json"] else {},
+            "source": r["source"],
+            "captured_at": r["captured_at"],
+            "created_by": r["created_by"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
+def list_all_workflow_runs():
+    """Return workflow_runs rows without full state_json for cloud mirror sync."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT id, kind, status, current_step, inputs_json, error, created_at, updated_at
+        FROM workflow_runs
+        ORDER BY rowid ASC
+        """
+    ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "kind": r["kind"],
+            "status": r["status"],
+            "current_step": int(r["current_step"] or 0),
+            "inputs": json.loads(r["inputs_json"]) if r["inputs_json"] else {},
+            "error": r["error"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        }
+        for r in rows
+    ]
+
+
+def list_all_jobs():
+    """Return all jobs rows for cloud mirror sync."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        f"SELECT {_JOB_SELECT_COLS} FROM jobs ORDER BY rowid ASC"
+    ).fetchall()
+    return [_deserialize_job(r) for r in rows]
+
+
+def has_running_jobs():
+    """Return True if any local job currently has status='running'."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute("SELECT 1 FROM jobs WHERE status = 'running' LIMIT 1").fetchone()
+    return row is not None
+
+
+def list_activity_since(last_rowid=0, limit=500):
+    """Return activity rows with rowid > last_rowid ordered ascending."""
+    ensure_init()
+    conn = connect()
+    max_rows = max(1, min(int(limit or 500), 2000))
+    rows = conn.execute(
+        """
+        SELECT rowid, ts, actor, target, task, file
+        FROM activity
+        WHERE rowid > ?
+        ORDER BY rowid ASC
+        LIMIT ?
+        """,
+        (int(last_rowid or 0), max_rows),
+    ).fetchall()
+    return [
+        {
+            "rowid": int(r["rowid"]),
+            "ts": r["ts"],
+            "actor": r["actor"],
+            "target": r["target"],
+            "task": r["task"],
+            "file": r["file"],
+        }
+        for r in rows
+    ]
+
+
+def count_activity_since(last_rowid=0):
+    """Return count of activity rows with rowid > last_rowid."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM activity WHERE rowid > ?",
+        (int(last_rowid or 0),),
+    ).fetchone()
+    return int(row["cnt"] if row else 0)
+
+
+def get_cloud_sync_state(user_id):
+    """Return {(kind, local_id): {hash, synced_at, error}} for user_id."""
+    if not user_id:
+        return {}
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT kind, local_id, hash, synced_at, error
+        FROM cloud_sync_state
+        WHERE user_id = ?
+        """,
+        (str(user_id),),
+    ).fetchall()
+    return {
+        (r["kind"], r["local_id"]): {
+            "hash": r["hash"],
+            "synced_at": r["synced_at"],
+            "error": r["error"],
+        }
+        for r in rows
+    }
+
+
+def get_cloud_sync_value(user_id, kind, local_id):
+    """Return stored hash/value for (user_id, kind, local_id), or None."""
+    if not user_id:
+        return None
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        """
+        SELECT hash FROM cloud_sync_state
+        WHERE user_id = ? AND kind = ? AND local_id = ?
+        """,
+        (str(user_id), str(kind), str(local_id)),
+    ).fetchone()
+    return row["hash"] if row is not None else None
+
+
+def upsert_cloud_sync_state(user_id, entries):
+    """Upsert (kind, local_id, hash, synced_at, error) rows for user_id."""
+    if not user_id or not entries:
+        return 0
+    ensure_init()
+    conn = connect()
+    uid = str(user_id)
+    params = [
+        (uid, str(kind), str(local_id), str(hash_val), str(synced_at), error)
+        for kind, local_id, hash_val, synced_at, error in entries
+    ]
+    with conn:
+        conn.executemany(
+            """
+            INSERT INTO cloud_sync_state (user_id, kind, local_id, hash, synced_at, error)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, kind, local_id) DO UPDATE SET
+                hash = excluded.hash,
+                synced_at = excluded.synced_at,
+                error = excluded.error
+            """,
+            params,
+        )
+    return len(params)
+
+
+def get_media_upload_queue(user_id):
+    """Return {(local_source_id, kind): row_dict} for user_id."""
+    if not user_id:
+        return {}
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT user_id, local_source_id, kind, source_hash, storage_path,
+               state, attempts, next_attempt_at, error, updated_at
+        FROM media_upload_queue
+        WHERE user_id = ?
+        ORDER BY rowid ASC
+        """,
+        (str(user_id),),
+    ).fetchall()
+    return {
+        (r["local_source_id"], r["kind"]): {
+            "user_id": r["user_id"],
+            "local_source_id": r["local_source_id"],
+            "kind": r["kind"],
+            "source_hash": r["source_hash"],
+            "storage_path": r["storage_path"],
+            "state": r["state"],
+            "attempts": int(r["attempts"] or 0),
+            "next_attempt_at": float(r["next_attempt_at"] or 0.0),
+            "error": r["error"],
+            "updated_at": r["updated_at"],
+        }
+        for r in rows
+    }
+
+
+def upsert_media_upload_queue(user_id, entries):
+    """Upsert media_upload_queue rows for user_id."""
+    if not user_id or not entries:
+        return 0
+    ensure_init()
+    conn = connect()
+    uid = str(user_id)
+    params = []
+    for e in entries:
+        if isinstance(e, dict):
+            params.append((
+                uid,
+                str(e["local_source_id"]),
+                str(e["kind"]),
+                str(e["source_hash"]),
+                str(e.get("storage_path") or ""),
+                str(e["state"]),
+                int(e.get("attempts") or 0),
+                float(e.get("next_attempt_at") or 0.0),
+                e.get("error"),
+                str(e["updated_at"]),
+            ))
+        else:
+            local_source_id, kind, source_hash, storage_path, state, attempts, next_attempt_at, error, updated_at = e
+            params.append((
+                uid,
+                str(local_source_id),
+                str(kind),
+                str(source_hash),
+                str(storage_path or ""),
+                str(state),
+                int(attempts or 0),
+                float(next_attempt_at or 0.0),
+                error,
+                str(updated_at),
+            ))
+    with conn:
+        conn.executemany(
+            """
+            INSERT INTO media_upload_queue (
+                user_id, local_source_id, kind, source_hash, storage_path,
+                state, attempts, next_attempt_at, error, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, local_source_id, kind) DO UPDATE SET
+                source_hash = excluded.source_hash,
+                storage_path = excluded.storage_path,
+                state = excluded.state,
+                attempts = excluded.attempts,
+                next_attempt_at = excluded.next_attempt_at,
+                error = excluded.error,
+                updated_at = excluded.updated_at
+            """,
+            params,
+        )
+    return len(params)
+
+
+def get_media_queue_summary(user_id):
+    """Return {uploaded, waiting, failed, last_error} counts for user_id."""
+    if not user_id:
+        return {"uploaded": 0, "waiting": 0, "failed": 0, "last_error": None}
+    ensure_init()
+    conn = connect()
+    uid = str(user_id)
+    rows = conn.execute(
+        """
+        SELECT state, COUNT(*) AS cnt
+        FROM media_upload_queue
+        WHERE user_id = ?
+        GROUP BY state
+        """,
+        (uid,),
+    ).fetchall()
+    counts = {r["state"]: int(r["cnt"]) for r in rows}
+    err_row = conn.execute(
+        """
+        SELECT error
+        FROM media_upload_queue
+        WHERE user_id = ? AND error IS NOT NULL AND error <> ''
+        ORDER BY updated_at DESC, rowid DESC
+        LIMIT 1
+        """,
+        (uid,),
+    ).fetchone()
+    return {
+        "uploaded": counts.get("uploaded", 0),
+        "waiting": counts.get("pending", 0),
+        "failed": counts.get("failed", 0),
+        "last_error": err_row["error"] if err_row is not None else None,
+    }
+
+
+_TK_UNSET = object()
+
+
+def get_team_knowledge_state(user_id):
+    """Return {key: state_dict} from team_knowledge_state for user_id."""
+    if not user_id:
+        return {}
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT user_id, key, applied_hash, applied_remote_updated_at, published_hash, published_at
+        FROM team_knowledge_state
+        WHERE user_id = ?
+        ORDER BY key ASC
+        """,
+        (str(user_id),),
+    ).fetchall()
+    return {
+        r["key"]: {
+            "user_id": r["user_id"],
+            "key": r["key"],
+            "applied_hash": r["applied_hash"],
+            "applied_remote_updated_at": r["applied_remote_updated_at"],
+            "published_hash": r["published_hash"],
+            "published_at": r["published_at"],
+        }
+        for r in rows
+    }
+
+
+def get_team_knowledge_key_state(user_id, key):
+    """Return a single team_knowledge_state row dict for (user_id, key), or None."""
+    if not user_id or not key:
+        return None
+    ensure_init()
+    conn = connect()
+    r = conn.execute(
+        """
+        SELECT user_id, key, applied_hash, applied_remote_updated_at, published_hash, published_at
+        FROM team_knowledge_state
+        WHERE user_id = ? AND key = ?
+        """,
+        (str(user_id), str(key)),
+    ).fetchone()
+    if r is None:
+        return None
+    return {
+        "user_id": r["user_id"],
+        "key": r["key"],
+        "applied_hash": r["applied_hash"],
+        "applied_remote_updated_at": r["applied_remote_updated_at"],
+        "published_hash": r["published_hash"],
+        "published_at": r["published_at"],
+    }
+
+
+def upsert_team_knowledge_state(
+    user_id,
+    key,
+    *,
+    applied_hash=_TK_UNSET,
+    applied_remote_updated_at=_TK_UNSET,
+    published_hash=_TK_UNSET,
+    published_at=_TK_UNSET,
+):
+    """Upsert team_knowledge_state fields for (user_id, key) without clobbering unset fields."""
+    if not user_id or not key:
+        return None
+    ensure_init()
+    existing = get_team_knowledge_key_state(user_id, key) or {}
+    next_applied_hash = existing.get("applied_hash") if applied_hash is _TK_UNSET else applied_hash
+    next_applied_at = (
+        existing.get("applied_remote_updated_at")
+        if applied_remote_updated_at is _TK_UNSET
+        else applied_remote_updated_at
+    )
+    next_pub_hash = existing.get("published_hash") if published_hash is _TK_UNSET else published_hash
+    next_pub_at = existing.get("published_at") if published_at is _TK_UNSET else published_at
+
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO team_knowledge_state (
+                user_id, key, applied_hash, applied_remote_updated_at, published_hash, published_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, key) DO UPDATE SET
+                applied_hash = excluded.applied_hash,
+                applied_remote_updated_at = excluded.applied_remote_updated_at,
+                published_hash = excluded.published_hash,
+                published_at = excluded.published_at
+            """,
+            (
+                str(user_id),
+                str(key),
+                next_applied_hash,
+                next_applied_at,
+                next_pub_hash,
+                next_pub_at,
+            ),
+        )
+    return get_team_knowledge_key_state(user_id, key)
+
+
+def get_meta(key, default=None):
+    """Return a value from the meta key/value table, or default if missing."""
+    if not key:
+        return default
+    ensure_init()
+    conn = connect()
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (str(key),)).fetchone()
+    if row is None:
+        return default
+    return row["value"]
+
+
+def set_meta(key, value):
+    """Store a string value in the meta key/value table."""
+    if not key:
+        return
+    ensure_init()
+    conn = connect()
+    with conn:
+        if value is None:
+            conn.execute("DELETE FROM meta WHERE key = ?", (str(key),))
+        else:
+            conn.execute(
+                """
+                INSERT INTO meta (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (str(key), str(value)),
+            )
+
+
+def delete_meta(key):
+    """Delete a key from the meta key/value table."""
+    if not key:
+        return
+    ensure_init()
+    conn = connect()
+    with conn:
+        conn.execute("DELETE FROM meta WHERE key = ?", (str(key),))
+
+
+def _row_to_notification(row):
+    return {
+        "id": row["id"],
+        "kind": row["kind"],
+        "title": row["title"],
+        "body": row["body"],
+        "route": row["route"],
+        "created_at": row["created_at"],
+        "read_at": row["read_at"],
+    }
+
+
+def insert_notification(notif_id, kind, title, body, route, created_at, max_keep=200):
+    """Insert a notification row and trim older rows beyond max_keep."""
+    ensure_init()
+    conn = connect()
+    cap = max(1, int(max_keep or 200))
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO notifications (id, kind, title, body, route, created_at, read_at)
+            VALUES (?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (str(notif_id), str(kind), str(title), str(body), str(route), str(created_at)),
+        )
+        conn.execute(
+            """
+            DELETE FROM notifications
+            WHERE rowid NOT IN (
+                SELECT rowid
+                FROM notifications
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ?
+            )
+            """,
+            (cap,),
+        )
+    row = conn.execute(
+        "SELECT id, kind, title, body, route, created_at, read_at FROM notifications WHERE id = ?",
+        (str(notif_id),),
+    ).fetchone()
+    return _row_to_notification(row) if row is not None else None
+
+
+def list_notifications(limit=50):
+    """Return newest-first notification rows up to limit."""
+    ensure_init()
+    conn = connect()
+    cap = max(1, min(int(limit or 50), 200))
+    rows = conn.execute(
+        """
+        SELECT id, kind, title, body, route, created_at, read_at
+        FROM notifications
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT ?
+        """,
+        (cap,),
+    ).fetchall()
+    return [_row_to_notification(r) for r in rows]
+
+
+def count_unread_notifications():
+    """Return total count of unread notifications."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute("SELECT COUNT(*) AS cnt FROM notifications WHERE read_at IS NULL").fetchone()
+    return int(row["cnt"] if row else 0)
+
+
+def mark_notifications_read(ids=None, mark_all=False, read_at=None):
+    """Mark specific notification ids or all unread notifications as read, returning unread count."""
+    ensure_init()
+    conn = connect()
+    ts = str(read_at or datetime.now(timezone.utc).isoformat())
+    with conn:
+        if mark_all:
+            conn.execute(
+                "UPDATE notifications SET read_at = ? WHERE read_at IS NULL",
+                (ts,),
+            )
+        elif ids:
+            clean_ids = [str(i).strip() for i in ids if isinstance(i, str) and str(i).strip()]
+            if clean_ids:
+                placeholders = ",".join("?" for _ in clean_ids)
+                conn.execute(
+                    f"UPDATE notifications SET read_at = ? WHERE read_at IS NULL AND id IN ({placeholders})",
+                    [ts, *clean_ids],
+                )
+    return count_unread_notifications()
+
+
+def get_notification_settings():
+    """Return {kind: enabled_bool} map from notification_settings."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute("SELECT kind, enabled FROM notification_settings").fetchall()
+    return {r["kind"]: bool(r["enabled"]) for r in rows}
+
+
+def set_notification_setting(kind, enabled, updated_at=None):
+    """Upsert a per-kind enabled boolean in notification_settings."""
+    ensure_init()
+    conn = connect()
+    ts = str(updated_at or datetime.now(timezone.utc).isoformat())
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO notification_settings (kind, enabled, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(kind) DO UPDATE SET
+                enabled = excluded.enabled,
+                updated_at = excluded.updated_at
+            """,
+            (str(kind), 1 if enabled else 0, ts),
+        )
+    return {"kind": str(kind), "enabled": bool(enabled), "updated_at": ts}

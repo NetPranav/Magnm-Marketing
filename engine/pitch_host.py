@@ -61,7 +61,7 @@ def vendor_dir():
 
 def host_js_path():
     """Return the path to our Studio host adapter script."""
-    return paths.resource("vendor-host", "magnm-host.js")
+    return paths.resource("vendor", "magnm-pitch", "host", "magnm-host.js")
 
 
 def font_paths():

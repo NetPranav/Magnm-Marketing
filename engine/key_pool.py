@@ -300,6 +300,25 @@ class KeyPool:
             pref_entry, pool_entries = self._candidate_entries_locked(role)
             return pref_entry is not None or bool(pool_entries)
 
+    def has_any_keys(self):
+        """Return True if at least one pool or role key is configured."""
+        with self._lock:
+            self._sync_locked()
+            return bool(self._entries)
+
+    def configured_keys(self):
+        """Return deduplicated raw key strings currently configured in pool or role env vars."""
+        with self._lock:
+            self._sync_locked()
+            seen = set()
+            out = []
+            for entry in sorted(self._entries.values(), key=lambda e: e.order):
+                val = (entry.key or "").strip()
+                if val and val not in seen:
+                    seen.add(val)
+                    out.append(val)
+            return out
+
     def first_pool_key(self):
         """Return the first configured pool key value (for backward compat), or empty string."""
         with self._lock:

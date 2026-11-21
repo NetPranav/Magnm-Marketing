@@ -26,9 +26,13 @@ export const STUDIO_EVENT_NAMES = [
   'agent_cancelled',
   'content_status',
   'review.updated',
+  'pitch.updated',
+  'pitch.quote_request',
+  'team_knowledge.updated',
   'repo_synced',
   'research_digest',
   'browser_frame',
+  'notification',
 ] as const;
 
 export type StudioEventHandler = (eventName: string, data: unknown) => void;

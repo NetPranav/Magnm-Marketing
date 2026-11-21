@@ -35,7 +35,10 @@ import {
   type SecretStatus,
 } from '../../desktop';
 import { useFallbackPoll, useStudioEvents } from '../../events';
+import { AccountPanel } from './AccountPanel';
+import { NotificationsPanel } from './NotificationsPanel';
 import { PitchBasePricesPanel } from './PitchBasePricesPanel';
+import { TeamKnowledgePanel } from './TeamKnowledgePanel';
 import type {
   BakeoffModelStat,
   BakeoffResult,
@@ -517,7 +520,7 @@ export function SettingsSection() {
     [matrix],
   );
 
-  const providerRows = desktopMode
+  const providerRows: Array<{ name: string; configured: boolean; label?: string }> = desktopMode
     ? desktopSecrets.length > 0
       ? [
           {
@@ -546,7 +549,11 @@ export function SettingsSection() {
       : []
     : env
       ? [
-          { name: 'NVIDIA NIM', configured: Boolean(env.nvidia_nim_global) },
+          {
+            name: 'NVIDIA NIM',
+            configured: Boolean(env.nvidia_nim_global || env.team_ai),
+            label: !env.nvidia_nim_global && env.team_ai ? "Using the team's AI keys" : undefined,
+          },
           { name: 'OpenAI', configured: Boolean(env.openai) },
           { name: 'Anthropic', configured: Boolean(env.anthropic) },
           { name: 'Gemini', configured: Boolean(env.gemini) },
@@ -572,9 +579,15 @@ export function SettingsSection() {
 
       {notice ? <div className="mg-notice">{notice}</div> : null}
 
+      <AccountPanel />
+
+      <TeamKnowledgePanel />
+
+      <NotificationsPanel />
+
       <section className="studio-section" aria-labelledby="settings-models-heading">
         <div className="studio-settings-head">
-          <span className="studio-settings-num">01</span>
+          <span className="studio-settings-num">02</span>
           <h2 id="settings-models-heading" className="studio-section-title">
             Engines and models
           </h2>
@@ -650,7 +663,13 @@ export function SettingsSection() {
                       </div>
                       <StatusDot
                         state={role.has_key ? 'online' : 'off'}
-                        label={role.has_key ? 'Key configured' : 'Key missing'}
+                        label={
+                          role.key_source === 'team'
+                            ? "Using the team's AI keys"
+                            : role.has_key
+                              ? 'Key configured'
+                              : 'Key missing'
+                        }
                       />
                     </div>
 
@@ -712,7 +731,7 @@ export function SettingsSection() {
 
       <section className="studio-section" aria-labelledby="settings-keys-heading">
         <div className="studio-settings-head">
-          <span className="studio-settings-num">02</span>
+          <span className="studio-settings-num">03</span>
           <h2 id="settings-keys-heading" className="studio-section-title">
             Keys
           </h2>
@@ -731,7 +750,7 @@ export function SettingsSection() {
               <div className="studio-chip-row">
                 {providerRows.map((p) => (
                   <span key={p.name} className="mg-chip">
-                    {p.name}: {p.configured ? 'Configured' : 'Not configured'}
+                    {p.name}: {p.label ?? (p.configured ? 'Configured' : 'Not configured')}
                   </span>
                 ))}
               </div>
@@ -740,7 +759,9 @@ export function SettingsSection() {
         ) : null}
 
         {!desktopMode && keyPool.length === 0 ? (
-          <div className="mg-empty">No NVIDIA NIM keys in pool yet.</div>
+          <div className="mg-empty">
+            {env?.team_ai ? "Using the team's AI keys" : 'No NVIDIA NIM keys in pool yet.'}
+          </div>
         ) : keyPool.length > 0 ? (
           <RowList aria-label="NVIDIA key pool health">
             {keyPool.map((entry) => {
@@ -892,7 +913,7 @@ export function SettingsSection() {
       <section className="studio-section" aria-labelledby="settings-setup-heading">
         <div className="studio-section-bar">
           <div className="studio-settings-head">
-            <span className="studio-settings-num">03</span>
+            <span className="studio-settings-num">04</span>
             <h2 id="settings-setup-heading" className="studio-section-title">
               Setup check
             </h2>
@@ -963,7 +984,7 @@ export function SettingsSection() {
 
       <section className="studio-section" aria-labelledby="settings-import-heading">
         <div className="studio-settings-head">
-          <span className="studio-settings-num">04</span>
+          <span className="studio-settings-num">05</span>
           <h2 id="settings-import-heading" className="studio-section-title">
             Import old folder
           </h2>
@@ -1003,7 +1024,7 @@ export function SettingsSection() {
 
       <section className="studio-section" aria-labelledby="settings-bakeoff-heading">
         <div className="studio-settings-head">
-          <span className="studio-settings-num">05</span>
+          <span className="studio-settings-num">06</span>
           <h2 id="settings-bakeoff-heading" className="studio-section-title">
             Bake-off
           </h2>
@@ -1049,7 +1070,7 @@ export function SettingsSection() {
 
       <section className="studio-section" aria-labelledby="settings-appearance-heading">
         <div className="studio-settings-head">
-          <span className="studio-settings-num">06</span>
+          <span className="studio-settings-num">07</span>
           <h2 id="settings-appearance-heading" className="studio-section-title">
             Appearance
           </h2>
@@ -1070,7 +1091,7 @@ export function SettingsSection() {
 
       <section className="studio-section" aria-labelledby="settings-about-heading">
         <div className="studio-settings-head">
-          <span className="studio-settings-num">07</span>
+          <span className="studio-settings-num">08</span>
           <h2 id="settings-about-heading" className="studio-section-title">
             About
           </h2>

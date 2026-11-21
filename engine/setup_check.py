@@ -224,6 +224,14 @@ def _check_nvidia_key():
     cfg = ai_gateway.get_config()
     api_key = (key_pool.get_pool().peek_healthy_key() or cfg.get("NVIDIA_NIM_API_KEY") or "").strip()
     if not api_key:
+        team_ok, _, _ = ai_gateway._get_team_ai_context()
+        if team_ok:
+            return _make_check(
+                "nvidia_key",
+                "NVIDIA NIM API Key",
+                "ok",
+                "Using the team's AI keys",
+            )
         return _make_check(
             "nvidia_key",
             "NVIDIA NIM API Key",

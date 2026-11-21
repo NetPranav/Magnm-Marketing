@@ -10,7 +10,8 @@ export type SectionId =
   | 'pitch'
   | 'library'
   | 'repos'
-  | 'settings';
+  | 'settings'
+  | 'admin';
 
 export type PageLayout = 'read' | 'wide';
 
@@ -34,12 +35,24 @@ export const SECTIONS: SectionSpec[] = [
   { id: 'settings', label: 'Settings', layout: 'read', coming: 'Provider configuration, model defaults, and engine checks are coming here.' },
 ];
 
+export const ADMIN_SECTION: SectionSpec = {
+  id: 'admin',
+  label: 'Admin',
+  layout: 'wide',
+  coming: '',
+};
+
+/** Return navigation sections visible for the current user's role. */
+export function getVisibleSections(isAdmin: boolean): SectionSpec[] {
+  return isAdmin ? [...SECTIONS, ADMIN_SECTION] : SECTIONS;
+}
+
 export interface Route {
   section: SectionId;
   param: string | null;
 }
 
-const SECTION_SET = new Set<string>(SECTIONS.map((s) => s.id));
+const SECTION_SET = new Set<string>([...SECTIONS.map((s) => s.id), ADMIN_SECTION.id]);
 
 /** Parse a URL hash such as "#/review/abc" or "#/pitch/prop_1/present" into a valid Route, defaulting to Today. */
 export function parseHash(hash: string): Route {

@@ -17,6 +17,7 @@ export interface StudioShellProps {
   layout: PageLayout;
   engineState: StatusState;
   engineLabel: string;
+  notificationBell?: ReactNode;
   children: ReactNode;
 }
 
@@ -55,6 +56,7 @@ export function StudioShell({
   layout,
   engineState,
   engineLabel,
+  notificationBell,
   children,
 }: StudioShellProps) {
   const isDesktop = useIsDesktop();
@@ -87,7 +89,10 @@ export function StudioShell({
             </nav>
           </div>
           <div className="studio-sidebar-foot">
-            <StatusDot state={engineState} label={engineLabel} live />
+            <div className="studio-sidebar-foot-row">
+              <StatusDot state={engineState} label={engineLabel} live />
+              {notificationBell}
+            </div>
             <ThemeToggle />
           </div>
         </aside>
@@ -102,6 +107,7 @@ export function StudioShell({
         <Wordmark compact />
         <div className="studio-mobile-actions">
           <StatusDot state={engineState} label={engineLabel} live />
+          {notificationBell}
           <PillButton
             variant="outline"
             size="sm"

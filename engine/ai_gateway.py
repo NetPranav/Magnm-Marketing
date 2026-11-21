@@ -7,6 +7,7 @@ Unified multi-model inference adapter supporting:
 """
 
 import base64
+from datetime import datetime, timezone
 import json
 import os
 import re
@@ -31,6 +32,11 @@ import paths
 ROOT = paths.DATA_ROOT
 ENV_PATH = paths.data(".env")
 DEFAULT_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
+TEAM_PROXY_TIMEOUT_S = 120
+TEAM_AUTH_REQUIRED_MSG = "Sign in under Settings, Account to use the team's AI keys."
+TEAM_NO_KEYS_MSG = "The team has no shared AI keys yet. Ask your admin."
+DEFAULT_DAILY_REQUESTS = 200
+DEFAULT_DAILY_TOKENS = 400000
 
 _sleep = time.sleep
 
@@ -311,6 +317,120 @@ def _resolve_for_role(role_id, cfg, models_cfg, nim_key, tier=None):
     return model_registry.resolve_role_models(role_id, merged_cfg, catalog, tier_override=tier)
 
 
+def has_local_nim_keys():
+    """Return True if this laptop has any local NVIDIA NIM pool or role key configured."""
+    pool = key_pool.get_pool()
+    if pool.has_any_keys():
+        return True
+    cfg = get_config()
+    if cfg.get("NVIDIA_NIM_API_KEY"):
+        return True
+    return any(bool(v) for v in (cfg.get("ROLE_KEYS") or {}).values())
+
+
+def _get_team_ai_context():
+    """Return (available, account_or_none, error_reason_or_none) for team AI proxy."""
+    try:
+        import team_auth
+    except Exception:
+        return False, None, None
+
+    cfg = team_auth.get_config()
+    if not cfg.get("configured"):
+        return False, None, None
+
+    try:
+        acct = team_auth.current_account()
+    except team_auth.TeamAuthError as exc:
+        if exc.status == 0 or exc.code == "network_error":
+            return False, None, "network error"
+        if exc.status in (401, 403) or exc.code in ("not_signed_in", "session_expired"):
+            return False, None, None
+        return False, None, f"HTTP {exc.status}" if exc.status else "request failed"
+    except Exception:
+        return False, None, None
+
+    if not isinstance(acct, dict) or not acct.get("signed_in") or acct.get("deactivated"):
+        return False, acct, None
+    user = acct.get("user") or {}
+    if not bool(user.get("active", True)):
+        return False, acct, None
+    return True, acct, None
+
+
+def get_account_ai_status():
+    """Return {mode, today, limit} for the signed-in user or local key state."""
+    own_keys = has_local_nim_keys()
+    today_out = {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0}
+    limit_out = {"daily_requests": DEFAULT_DAILY_REQUESTS, "daily_tokens": DEFAULT_DAILY_TOKENS}
+
+    team_ok, acct, _ = _get_team_ai_context()
+    if own_keys:
+        mode = "own_keys"
+    elif team_ok:
+        mode = "team"
+    else:
+        mode = "none"
+
+    if team_ok and isinstance(acct, dict):
+        user = acct.get("user") or {}
+        uid = str(user.get("id") or "").strip().lower()
+        if uid:
+            import team_auth
+
+            q_uid = urllib.parse.quote(uid, safe="")
+            today_utc = datetime.now(timezone.utc).date().isoformat()
+            try:
+                usage_rows = team_auth.rest(
+                    "GET",
+                    f"ai_usage_daily?owner_id=eq.{q_uid}&day=eq.{today_utc}&select=requests,prompt_tokens,completion_tokens&limit=1",
+                )
+                if isinstance(usage_rows, list) and usage_rows:
+                    row = usage_rows[0]
+                    today_out = {
+                        "requests": int(row.get("requests") or 0),
+                        "prompt_tokens": int(row.get("prompt_tokens") or 0),
+                        "completion_tokens": int(row.get("completion_tokens") or 0),
+                    }
+            except team_auth.TeamAuthError:
+                pass
+            try:
+                limit_rows = team_auth.rest(
+                    "GET",
+                    f"ai_limits?or=(owner_id.eq.{q_uid},owner_id.is.null)&select=owner_id,daily_requests,daily_tokens",
+                )
+                if isinstance(limit_rows, list) and limit_rows:
+                    chosen = None
+                    for row in limit_rows:
+                        if isinstance(row, dict) and str(row.get("owner_id") or "").lower() == uid:
+                            chosen = row
+                            break
+                    if chosen is None:
+                        for row in limit_rows:
+                            if isinstance(row, dict) and row.get("owner_id") is None:
+                                chosen = row
+                                break
+                    if chosen is not None:
+                        limit_out = {
+                            "daily_requests": int(chosen.get("daily_requests") or DEFAULT_DAILY_REQUESTS),
+                            "daily_tokens": int(chosen.get("daily_tokens") or DEFAULT_DAILY_TOKENS),
+                        }
+            except team_auth.TeamAuthError:
+                pass
+
+    result = {
+        "mode": mode,
+        "today": today_out,
+        "limit": limit_out,
+    }
+    try:
+        import notifications
+        notifications.evaluate_ai_limit(result)
+    except Exception:
+        pass
+    return result
+
+
 def get_role_model_matrix():
     """Return per-role model & API key readiness metadata (never returning raw secrets)."""
     cfg = get_config()
@@ -319,6 +439,9 @@ def get_role_model_matrix():
     pool_count = pool.pool_count()
     global_key = cfg["NVIDIA_NIM_API_KEY"]
     healthy_pool_key = pool.peek_healthy_key() or global_key
+    team_ai_ok = False
+    if pool_count == 0 and not global_key:
+        team_ai_ok, _, _ = _get_team_ai_context()
 
     catalog_by_key = {}
     matrix = []
@@ -330,6 +453,8 @@ def get_role_model_matrix():
             key_source = "role"
         elif pool_count > 0:
             key_source = f"pool ({pool_count} key)" if pool_count == 1 else f"pool ({pool_count} keys)"
+        elif team_ai_ok:
+            key_source = "team"
         else:
             key_source = "none"
 
@@ -363,7 +488,7 @@ def get_role_model_matrix():
             "timeout_s": tier_info["timeout_s"],
             "max_tokens": tier_info["max_tokens"],
             "specialization": spec["specialization"],
-            "has_key": bool(role_key or pool_count > 0),
+            "has_key": bool(role_key or pool_count > 0 or team_ai_ok),
             "key_source": key_source,
             "masked_key": _mask_secret(effective_key)
         })
@@ -468,6 +593,8 @@ def _single_openai_compat_chat_meta(
     timeout=45,
     top_p=None,
     accept_json=False,
+    tool_choice=None,
+    extra_headers=None,
 ):
     """Execute one OpenAI-compatible chat/completions call and parse text, tool_calls, and usage."""
     headers = {
@@ -476,6 +603,8 @@ def _single_openai_compat_chat_meta(
     }
     if accept_json:
         headers["Accept"] = "application/json"
+    if extra_headers:
+        headers.update(extra_headers)
 
     prepared_messages, img_warning = _prepare_messages_for_model(messages, model)
     payload = {
@@ -489,6 +618,8 @@ def _single_openai_compat_chat_meta(
         payload["max_tokens"] = max_tokens
     if tools:
         payload["tools"] = tools
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
 
     res = _http_post_json(url, payload, headers, timeout=timeout)
     msg = res["choices"][0]["message"] or {}
@@ -1211,6 +1342,157 @@ def _complete_confidential_ollama(base_url, ollama_model, messages, tools=None):
         ) from e
 
 
+def _parse_proxy_error(err):
+    """Extract (message, reason) from an ai-proxy HTTPError JSON or text body."""
+    raw = ""
+    try:
+        raw = err.read().decode("utf-8", errors="ignore")
+    except Exception:
+        pass
+    msg = ""
+    reason = None
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                if isinstance(parsed.get("error"), str):
+                    msg = parsed["error"].strip()
+                elif isinstance(parsed.get("message"), str):
+                    msg = parsed["message"].strip()
+                if isinstance(parsed.get("reason"), str):
+                    reason = parsed["reason"].strip()
+        except Exception:
+            msg = raw.strip()[:300]
+    if not msg:
+        msg = str(getattr(err, "reason", "") or f"HTTP {err.code}").strip()
+    return msg[:300], reason
+
+
+def _complete_team_proxy_messages(
+    messages,
+    model,
+    tools=None,
+    tool_choice=None,
+    fallback_model=None,
+    max_tokens=1500,
+    timeout=TEAM_PROXY_TIMEOUT_S,
+):
+    """Execute completion through the Supabase ai-proxy Edge Function."""
+    import team_auth
+
+    cfg = team_auth.get_config()
+    if not cfg.get("configured"):
+        raise AIAuthError(TEAM_AUTH_REQUIRED_MSG)
+    try:
+        token = team_auth.get_access_token()
+    except team_auth.TeamAuthError as exc:
+        if exc.status in (401, 403) or exc.code in ("not_signed_in", "session_expired", "not_configured"):
+            raise AIAuthError(TEAM_AUTH_REQUIRED_MSG) from exc
+        raise
+
+    url = f"{cfg['url']}/functions/v1/ai-proxy"
+    extra_headers = {"apikey": cfg["publishable_key"]}
+    effective_timeout = max(TEAM_PROXY_TIMEOUT_S, int(timeout or TEAM_PROXY_TIMEOUT_S))
+
+    def _call(target_model):
+        return _single_openai_compat_chat_meta(
+            url=url,
+            api_key=token,
+            messages=messages,
+            model=target_model,
+            tools=tools,
+            max_tokens=max_tokens,
+            timeout=effective_timeout,
+            top_p=0.9,
+            accept_json=True,
+            tool_choice=tool_choice,
+            extra_headers=extra_headers,
+        )
+
+    def _build_success(model_used, res_meta, fallback_reason=None):
+        usage = res_meta.get("usage") or {}
+        out = {
+            "text": res_meta["text"],
+            "tool_calls": res_meta.get("tool_calls") or [],
+            "provider": "team",
+            "model_requested": model,
+            "model_used": model_used,
+            "fallback_used": model_used != model,
+            "fallback_reason": fallback_reason,
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "usage": res_meta.get("usage"),
+        }
+        if res_meta.get("img_warning"):
+            out["img_warning"] = res_meta["img_warning"]
+        return out
+
+    def _map_http_error(err, target_model):
+        err_msg, reason = _parse_proxy_error(err)
+        if err.code in (401, 403):
+            raise AIAuthError(TEAM_AUTH_REQUIRED_MSG) from err
+        if err.code == 429:
+            is_quota = (
+                reason in ("daily_requests_limit", "daily_tokens_limit")
+                or "daily" in err_msg.lower()
+                or "limit" in err_msg.lower()
+            )
+            if is_quota:
+                try:
+                    import notifications
+                    notifications.notify_ai_limit_100(err_msg)
+                except Exception:
+                    pass
+                raise AINotConnected(err_msg) from err
+            return f"HTTP 429: {err_msg}"
+        if err.code == 503:
+            low = err_msg.lower()
+            if "no shared ai keys" in low or "no team keys" in low:
+                raise AINotConnected(TEAM_NO_KEYS_MSG) from err
+            raise AINotConnected(err_msg) from err
+        if err.code == 400:
+            raise RuntimeError(
+                f"Team AI proxy bad request (HTTP 400) for '{target_model}': {err_msg}"
+            ) from err
+        if err.code in (404, 410, 500, 502, 504):
+            return f"HTTP {err.code}: {err_msg}"
+        raise RuntimeError(
+            f"Team AI proxy error (HTTP {err.code}) for '{target_model}': {err_msg}"
+        ) from err
+
+    fallback_reason = None
+    last_error = None
+    try:
+        res_meta = _call(model)
+        return _build_success(model, res_meta)
+    except urllib.error.HTTPError as e:
+        last_error = e
+        fallback_reason = _map_http_error(e, model)
+    except (urllib.error.URLError, TimeoutError, socket.timeout):
+        raise
+    except EmptyModelResponse as e:
+        last_error = e
+        fallback_reason = "empty answer"
+
+    if fallback_model and fallback_model != model:
+        try:
+            res_meta = _call(fallback_model)
+            return _build_success(fallback_model, res_meta, fallback_reason=fallback_reason)
+        except urllib.error.HTTPError as e:
+            _map_http_error(e, fallback_model)
+            raise RuntimeError(
+                f"Team AI proxy backup '{fallback_model}' failed (HTTP {e.code})"
+            ) from e
+        except (urllib.error.URLError, TimeoutError, socket.timeout):
+            raise
+        except EmptyModelResponse as e:
+            raise RuntimeError(
+                f"Team AI proxy backup '{fallback_model}' failed (empty answer): {e}"
+            ) from e
+
+    raise RuntimeError(f"Team AI proxy error for '{model}': {fallback_reason}") from last_error
+
+
 def _dispatch_non_confidential_messages(
     cfg,
     models_cfg,
@@ -1224,11 +1506,14 @@ def _dispatch_non_confidential_messages(
     effective_max_tokens,
     messages,
     tools=None,
+    tool_choice=None,
     model_tier="fast",
     image_paths=None,
     force_live_only=False,
     pool=None,
     allow_image_warning=False,
+    use_team_proxy=False,
+    team_context_error=None,
 ):
     """Run provider cascade for non-confidential chat/completions with optional tools."""
     failures = {}
@@ -1263,6 +1548,32 @@ def _dispatch_non_confidential_messages(
             print(f"[ai_gateway] NVIDIA NIM failed for role '{role_key}': {e}", file=sys.stderr)
             if force_live_only:
                 raise
+    elif use_team_proxy:
+        try:
+            result = _complete_team_proxy_messages(
+                messages=messages,
+                model=requested_model,
+                tools=tools if has_tools else None,
+                tool_choice=tool_choice,
+                fallback_model=backup_model,
+                max_tokens=effective_max_tokens,
+                timeout=TEAM_PROXY_TIMEOUT_S,
+            )
+            img_warn = result.pop("img_warning", None)
+            out_warnings = list(base_warnings)
+            if allow_image_warning and img_warn and img_warn not in out_warnings:
+                out_warnings.append(img_warn)
+            result["warnings"] = out_warnings
+            return result
+        except (AIAuthError, AINotConnected):
+            raise
+        except Exception as e:
+            failures["team"] = _short_error_reason(e)
+            print(f"[ai_gateway] Team AI proxy failed for role '{role_key}': {e}", file=sys.stderr)
+            if force_live_only:
+                raise
+    elif team_context_error:
+        failures["team"] = team_context_error
 
     sec_cfg = models_cfg.get("secondary_providers", {})
     system_prompt, user_prompt = _messages_to_prompts(messages)
@@ -1400,6 +1711,7 @@ def _dispatch_non_confidential_messages(
 def _execute_gateway_messages(
     messages,
     tools=None,
+    tool_choice=None,
     model_tier="fast",
     image_paths=None,
     agent_role="",
@@ -1458,6 +1770,11 @@ def _execute_gateway_messages(
     pool = key_pool.get_pool()
     has_nim = pool.has_keys(role=role_key)
     nim_key = pool.peek_healthy_key(role=role_key) if has_nim else (cfg["ROLE_KEYS"].get(role_key) or cfg["NVIDIA_NIM_API_KEY"])
+    use_team_proxy = False
+    team_context_error = None
+    if not has_nim and not nim_key:
+        use_team_proxy, _, team_context_error = _get_team_ai_context()
+
     explicit_model = str(model).strip() if model else ""
     if explicit_model:
         requested_model = explicit_model
@@ -1468,7 +1785,12 @@ def _execute_gateway_messages(
     tier_info = model_registry.tier_settings(role_key, models_cfg, tier_override=tier)
     effective_timeout = tier_info["timeout_s"]
     effective_max_tokens = tier_info["max_tokens"] if max_tokens is None else int(max_tokens)
-    default_provider = "nvidia_nim" if (has_nim or nim_key) else cfg["DEFAULT_PROVIDER"]
+    if has_nim or nim_key:
+        default_provider = "nvidia_nim"
+    elif use_team_proxy or team_context_error:
+        default_provider = "team"
+    else:
+        default_provider = cfg["DEFAULT_PROVIDER"]
 
     try:
         result = _dispatch_non_confidential_messages(
@@ -1484,11 +1806,14 @@ def _execute_gateway_messages(
             effective_max_tokens=effective_max_tokens,
             messages=messages,
             tools=tools,
+            tool_choice=tool_choice,
             model_tier=model_tier,
             image_paths=image_paths,
             force_live_only=force_live_only,
             pool=pool if has_nim else None,
             allow_image_warning=allow_image_warning,
+            use_team_proxy=use_team_proxy,
+            team_context_error=team_context_error,
         )
     except Exception as e:
         err_msg = str(e)[:300] if isinstance(e, AINotConnected) else _short_error_reason(e)
@@ -1530,11 +1855,13 @@ def chat_with_tools(
     confidential=False,
     max_tokens=None,
     model=None,
+    tool_choice=None,
 ):
     """Multi-turn chat completion supporting OpenAI-compatible tools, vision filtering, and confidential Ollama."""
     res = _execute_gateway_messages(
         messages=messages,
         tools=list(tools) if tools else None,
+        tool_choice=tool_choice,
         agent_role=agent_role,
         confidential=confidential,
         max_tokens=max_tokens,
@@ -1616,8 +1943,11 @@ def test_role_endpoint(role_id):
     has_nim = pool.has_keys(role=role_key)
     nim_key = pool.peek_healthy_key(role=role_key) if has_nim else (cfg["ROLE_KEYS"].get(role_key) or cfg["NVIDIA_NIM_API_KEY"])
     primary, backup, warnings = _resolve_for_role(role_key, cfg, models_cfg, nim_key)
+    team_ok = False
+    if not has_nim and not nim_key:
+        team_ok, _, _ = _get_team_ai_context()
 
-    if not has_nim and not nim_key and not (cfg["OPENAI_API_KEY"] or cfg["ANTHROPIC_API_KEY"] or cfg["GEMINI_API_KEY"] or cfg["GROQ_API_KEY"]):
+    if not has_nim and not nim_key and not team_ok and not (cfg["OPENAI_API_KEY"] or cfg["ANTHROPIC_API_KEY"] or cfg["GEMINI_API_KEY"] or cfg["GROQ_API_KEY"]):
         return {
             "success": False,
             "role_id": role_key,

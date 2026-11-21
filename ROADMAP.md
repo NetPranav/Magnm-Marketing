@@ -83,6 +83,44 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
   - New deliverable categories with their own services, on an existing sheet or as a new page with its own tab.
   - The preview follows the form (scroll and focus), the tab row stays visible with Previous/Next at the end of each tab,
     and the Prices tab shows the live preview with prices updating as you type.
+- **Phase 4 done (2026-11-22).** Development uses a cloud Supabase project (`magnm-dev`); the laptop has no room
+  for local Supabase. Production will be a separate project that is never reset.
+  - **T4.1 done:** database tables and privacy rules: invite-only sign-up, profiles and roles (the last admin can't be
+    removed), activity and device status, the workspace mirror (members write their own, the admin reads all), shared
+    knowledge and Pitch base prices (admin writes), Pitch links and quote forms (clients reach them only through two
+    functions, with size and rate limits), and an audit log. 45 privacy checks run on magnm-dev and in CI.
+  - **T4.2 done:** Google sign-in from the app (system browser, PKCE, back to the app's local address), Settings
+    Account card, admin invites. The database accepts Google sign-ups only. First admin signed in on 2026-11-21.
+  - **T4.3 done:** the engine mirrors each member's work (chats, team room, drafts, research, reviews, metrics, briefs,
+    tasks, posted links), activity and a device heartbeat. Confidential chats, and anything naming a confidential
+    product, upload only as text-free stubs; sync pauses if the product rules can't be read. agy now runs on Gemini 4
+    Hydrogen (High for auth, privacy and sync work).
+  - **2026-11-21: magnm-dev now holds the team's real data** (team decision; no client data yet). It is never reset
+    (`supabase/dev.sh` refuses); test data is labelled and deleted right after each test.
+  - **T4.4 done:** thumbnails and WebP/480p previews made on the laptop with ffmpeg (local files and safe formats only),
+    stored privately in Supabase Storage (owner and admin rules, signed links), video previews deleted after 60 days,
+    storage meter.
+  - **T4.5 + T4.6 done, live on https://magnm-pitch.vercel.app:** `/p/` proposal, `/q/` quote form ("Send my plan to
+    magnm"), `/f/` final quotation. "Copy link" publishes (only the client's name and business plus prices and layout),
+    saving keeps links current, "Withdraw link" turns them off, and quote requests arrive in the sender's Pitch section.
+    The Pitch adapter now lives in Magnm-Pitch (`host/magnm-host.js`) and the Studio vendors it. Tested end to end by
+    the user.
+  - **T4.7 done:** Admin section (admins only): team presence, roles and deactivation, activity timeline and chart,
+    read-only member workspaces with previews, members' links and quote requests, storage, audit log. Tested with a
+    second Google account as a member (cleaned up afterwards).
+  - **T4.8 + T4.9 done:** shared AI keys. The admin shares this laptop's NVIDIA keys once; they are stored encrypted in
+    Supabase Vault and can't be read back. Laptops without their own keys use the `ai-proxy` Edge Function with their
+    sign-in: daily limits per member (default 200 requests / 400k tokens), usage and key health in Admin, key rotation
+    with cooldowns, a 100 s time budget, and no logging of prompts or keys. Tested live on 2026-11-22 (4 keys shared,
+    test request OK in 3.5 s).
+  - **T4.10 done:** shared knowledge sync. Admins publish the brand kit, team product rules, agent instructions,
+    templates and Pitch base prices; members' apps apply them automatically (previous versions backed up first, strict
+    file-path checks) and show them as "Managed by your admin". Admins are never overwritten silently.
+  - **T4.11 done:** notifications: in-app bell and list, desktop notifications (app plugin or browser), per-event
+    settings, and a test button. Phone push (FCM) moves to Phase 6 with the Android app.
+  - Open items carried forward: a production Supabase project (team account, Mumbai) when real client data starts;
+    Google brand verification once the team owns a domain; a desktop installer for teammates (Phase 10); a server-side
+    scheduled clean-up of expired video previews (the laptop does it today).
 
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.

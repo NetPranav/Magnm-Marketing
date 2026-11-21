@@ -567,6 +567,11 @@ def save_research_note(ctx, title, body, url=None, source=None):
         agent_id=ctx.agent_id if ctx else None,
         created_at=created_at,
     )
+    try:
+        import cloud_sync
+        cloud_sync.request_sync()
+    except Exception:
+        pass
     return {"saved": True, "id": saved["id"], "created_at": saved["created_at"]}
 
 

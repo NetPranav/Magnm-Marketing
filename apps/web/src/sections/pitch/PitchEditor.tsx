@@ -17,7 +17,9 @@ import {
   getPitchPreviewPayload,
   getProposal,
   listProposalPdfs,
+  publishProposal,
   updateProposal,
+  withdrawProposalLink,
   type PitchCatalog,
   type PitchDroppedItemChange,
   type PitchIncludedFromHidden,
@@ -26,12 +28,13 @@ import {
   type PitchProposal,
   type PitchRuleViolation,
 } from '../../api/pitch';
+import { getAccount, type AccountState } from '../../api/account';
 import { postAgentChat } from '../../api/team';
 import { useStudioEvents } from '../../events';
 import { formatTimestamp } from '../../ui/format';
 import { PitchDeliverablesTab } from './PitchDeliverablesTab';
 import { PitchDetailsTab } from './PitchDetailsTab';
-import { DraftWithWriterDialog, UnsavedChangesDialog } from './PitchDialogs';
+import { DraftWithWriterDialog, UnsavedChangesDialog, WithdrawLinkDialog } from './PitchDialogs';
 import { PitchPlansTab } from './PitchPlansTab';
 import { PitchPricesTab } from './PitchPricesTab';
 import {
@@ -145,6 +148,11 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
   const [pendingLeaveAction, setPendingLeaveAction] = useState<(() => void) | null>(null);
   const [writerOpen, setWriterOpen] = useState(false);
   const [writerBusy, setWriterBusy] = useState(false);
+  const [account, setAccount] = useState<AccountState | null>(null);
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [withdrawOpen, setWithdrawOpen] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const formContainerRef = useRef<HTMLDivElement | null>(null);
@@ -197,6 +205,34 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getAccount()
+      .then((res) => {
+        if (!cancelled) setAccount(res);
+      })
+      .catch(() => {
+        if (!cancelled) setAccount(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+    }, 3000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (layoutMode === 'wide' && activeTab === 'preview') {
@@ -650,6 +686,46 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
     }
   };
 
+  const canShareLinks = Boolean(
+    account?.configured && account?.signed_in && !account?.deactivated && account?.user,
+  );
+
+  const handleCopyLink = async () => {
+    if (!proposal || !canShareLinks) return;
+    setError(null);
+    setLinkBusy(true);
+    try {
+      const res = await publishProposal(proposal.id);
+      setProposal((prev) =>
+        prev ? { ...prev, link_status: 'live', published_at: res.published_at } : prev,
+      );
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(res.url);
+      }
+      showToast('Link copied');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not publish link.');
+    } finally {
+      setLinkBusy(false);
+    }
+  };
+
+  const handleConfirmWithdraw = async (id: string) => {
+    setError(null);
+    setLinkBusy(true);
+    try {
+      await withdrawProposalLink(id);
+      setProposal((prev) => (prev ? { ...prev, link_status: 'withdrawn' } : prev));
+      setWithdrawOpen(false);
+      setNotice('Link withdrawn.');
+    } catch (err) {
+      setWithdrawOpen(false);
+      setError(err instanceof Error ? err.message : 'Could not withdraw link.');
+    } finally {
+      setLinkBusy(false);
+    }
+  };
+
   const reservedPresets = useMemo(
     () => Object.keys(catalog?.presets || {}),
     [catalog],
@@ -1065,14 +1141,30 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
         >
           Download PDF
         </PillButton>
+        {proposal.link_status === 'live' ? (
+          <span className="mg-chip">Link live</span>
+        ) : proposal.link_status === 'withdrawn' ? (
+          <span className="mg-chip">Link withdrawn</span>
+        ) : null}
         <PillButton
           variant="outline"
           size="sm"
-          disabled
-          title="Client links need the team connection (Phase 4)"
+          disabled={!canShareLinks || linkBusy}
+          title={canShareLinks ? undefined : 'Sign in under Settings, Account to share links'}
+          onClick={() => void handleCopyLink()}
         >
           Copy link
         </PillButton>
+        {proposal.link_status === 'live' ? (
+          <PillButton
+            variant="quiet"
+            size="sm"
+            disabled={!canShareLinks || linkBusy}
+            onClick={() => setWithdrawOpen(true)}
+          >
+            Withdraw link
+          </PillButton>
+        ) : null}
         <PillButton
           variant="outline"
           size="sm"
@@ -1082,6 +1174,19 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
           Send to my phone
         </PillButton>
       </BottomBar>
+
+      {toast ? (
+        <div className="studio-toast" role="status" aria-live="polite">
+          {toast}
+        </div>
+      ) : null}
+
+      <WithdrawLinkDialog
+        proposal={withdrawOpen ? proposal : null}
+        submitting={linkBusy}
+        onClose={() => setWithdrawOpen(false)}
+        onConfirmWithdraw={handleConfirmWithdraw}
+      />
 
       <UnsavedChangesDialog
         open={pendingLeaveAction !== null}

@@ -123,6 +123,10 @@ def main(argv=None):
     if os.environ.get("MAGNM_DISABLE_SCHEDULER", "").strip() not in ("1", "true", "yes"):
         scheduler_loop.start()
 
+    import cloud_sync
+    if cloud_sync.is_enabled():
+        cloud_sync.start()
+
     import server
 
     httpd = ThreadingHTTPServer((args.host, args.port), server.CommandCenterHandler)
@@ -143,6 +147,10 @@ def main(argv=None):
             _safe_log(f"[magnm-engine] Shutting down: {reason}")
         try:
             scheduler_loop.stop(timeout=1.0)
+        except Exception:
+            pass
+        try:
+            cloud_sync.stop(timeout=1.0)
         except Exception:
             pass
         try:
@@ -186,6 +194,11 @@ def main(argv=None):
         httpd.serve_forever()
     finally:
         stop_event.set()
+        if not shutdown_started.is_set():
+            try:
+                cloud_sync.stop(timeout=1.0)
+            except Exception:
+                pass
         httpd.server_close()
 
 

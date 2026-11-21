@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Work with the Supabase *dev* project (never production).
+# Credentials are read from ~/.config/magnm/supabase-dev.env (or $MAGNM_SUPABASE_ENV) and are never printed.
+#
+#   supabase/dev.sh push      apply new migrations in supabase/migrations
+#   supabase/dev.sh reset     REFUSED: magnm-dev now holds real data (needs MAGNM_ALLOW_DEV_RESET=yes-delete-real-data)
+#   supabase/dev.sh test      run supabase/tests/*.sql (each test rolls back its own changes)
+#   supabase/dev.sh sql FILE  run one SQL file
+#   supabase/dev.sh deploy NAME   deploy supabase/functions/NAME to magnm-dev (bundled server-side, no Docker)
+#
+# With DB_URL set (for example CI's local database), that database is used instead of the dev file.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+CLI="npx -y supabase@2.122.1"
+ENV_FILE="${MAGNM_SUPABASE_ENV:-$HOME/.config/magnm/supabase-dev.env}"
+
+if [ -z "${DB_URL:-}" ]; then
+  [ -r "$ENV_FILE" ] || { echo "Missing $ENV_FILE (see ROADMAP Phase 4 setup)." >&2; exit 2; }
+  DB_URL="$(grep -E '^SUPABASE_DB_URL=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d "\"'")"
+  [ -n "$DB_URL" ] || { echo "SUPABASE_DB_URL is empty in $ENV_FILE." >&2; exit 2; }
+  case "$DB_URL" in
+    *fetsrthktatspwucwrwk*) ;;
+    *) echo "Refusing: SUPABASE_DB_URL is not the magnm-dev project." >&2; exit 2 ;;
+  esac
+fi
+
+# Hide connection strings in any output.
+mask() { sed -E 's#postgres(ql)?://[^ ]+#<db-url>#g'; }
+
+case "${1:-}" in
+  push)  $CLI db push --db-url "$DB_URL" --yes 2>&1 | mask ;;
+  reset)
+    # magnm-dev holds the team's real data since 2026-11-21: a reset would delete it.
+    if [ "${MAGNM_ALLOW_DEV_RESET:-}" = "yes-delete-real-data" ]; then
+      $CLI db reset --db-url "$DB_URL" --no-seed --yes 2>&1 | mask
+    else
+      echo "Refusing: magnm-dev holds real team data. Use 'push' for new migrations." >&2; exit 3
+    fi ;;
+  test)
+    status=0
+    for f in supabase/tests/*.sql; do
+      [ -e "$f" ] || { echo "No tests in supabase/tests/."; exit 1; }
+      if PGCONNECT_TIMEOUT=20 psql "$DB_URL" -X -q -v ON_ERROR_STOP=1 -f "$f" 2>&1 | mask; then
+        echo "PASS $f"
+      else
+        echo "FAIL $f"; status=1
+      fi
+    done
+    exit $status ;;
+  deploy)
+    [ -n "${2:-}" ] && [ -d "supabase/functions/$2" ] || { echo "usage: supabase/dev.sh deploy NAME (folder supabase/functions/NAME)" >&2; exit 2; }
+    TOKEN="$(grep -E '^SUPABASE_ACCESS_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d "\"'")"
+    [ -n "$TOKEN" ] || { echo "SUPABASE_ACCESS_TOKEN is missing in $ENV_FILE." >&2; exit 2; }
+    SUPABASE_ACCESS_TOKEN="$TOKEN" $CLI functions deploy "$2" --project-ref fetsrthktatspwucwrwk --use-api 2>&1 | sed -E 's#sbp_[A-Za-z0-9]+#<token>#g' ;;
+  sql)
+    [ -n "${2:-}" ] || { echo "usage: supabase/dev.sh sql FILE" >&2; exit 2; }
+    PGCONNECT_TIMEOUT=20 psql "$DB_URL" -X -v ON_ERROR_STOP=1 -f "$2" 2>&1 | mask ;;
+  *) sed -n 2,10p "$0"; exit 2 ;;
+esac

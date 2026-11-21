@@ -12,6 +12,7 @@ import base64
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import hmac
+import html
 import importlib.util
 import json
 import mimetypes
@@ -22,26 +23,32 @@ import shutil
 import sys
 import threading
 import urllib.parse
+import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
 
+import admin_dashboard
 import agent_chat
 import agent_runtime
 import agents
 import ai_gateway
 import assets_manager
 import bakeoff
+import cloud_sync
 import cmo_runtime
 import db
 import events
 import jobs
 import key_pool
+import media_previews
+import notifications
 import paths
 import pitch
 import pitch_host
+import pitch_links
 import platforms
 import product_rules
 import repo_sync
@@ -50,6 +57,8 @@ import review
 import review_studio
 import scheduler
 import setup_check
+import team_auth
+import team_knowledge
 import team_room
 import web_ui
 import workflows
@@ -237,6 +246,320 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_auth_callback_html(self, ok, message, status=200):
+        heading = "Signed in to Magnm Studio" if ok else "Sign-in failed"
+        safe_heading = html.escape(heading, quote=True)
+        safe_message = html.escape(str(message or ""), quote=True)
+        doc = (
+            "<!doctype html>"
+            "<html lang=\"en\">"
+            "<head>"
+            "<meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            f"<title>{safe_heading}</title>"
+            "<style>"
+            "body{margin:0;background:#ffffff;color:#111111;"
+            "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+            "display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;}"
+            "main{max-width:460px;width:100%;border:1px solid #e5e5e5;border-radius:12px;padding:32px;}"
+            "h1{margin:0 0 12px;font-family:Georgia,'Times New Roman',serif;"
+            "font-weight:500;font-size:28px;line-height:1.2;}"
+            "p{margin:0 0 12px;font-size:15px;line-height:1.5;color:#222222;}"
+            ".hint{margin:0;font-size:13px;color:#666666;}"
+            "</style>"
+            "</head>"
+            "<body>"
+            "<main>"
+            f"<h1>{safe_heading}</h1>"
+            f"<p>{safe_message}</p>"
+            "<p class=\"hint\">You can close this tab and go back to Magnm Studio.</p>"
+            "</main>"
+            "</body>"
+            "</html>"
+        ).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Length", str(len(doc)))
+        self.end_headers()
+        self.wfile.write(doc)
+
+    def _handle_auth_callback(self, url):
+        qs = urllib.parse.parse_qs(url.query, keep_blank_values=True)
+        try:
+            res = team_auth.finish_login(qs)
+            email = res.get("email") or ""
+            msg = f"Signed in as {email}." if email else "Your Google account is connected."
+            self._send_auth_callback_html(True, msg, status=200)
+        except team_auth.TeamAuthError as exc:
+            status = exc.status if isinstance(exc.status, int) and 400 <= exc.status < 600 else 400
+            self._send_auth_callback_html(False, exc.message, status=status)
+        except Exception:
+            self._send_auth_callback_html(False, "Sign-in could not be completed.", status=500)
+
+    def _handle_account_get(self, url):
+        try:
+            if url.path == "/api/account":
+                self.send_json(team_auth.current_account())
+            elif url.path == "/api/account/invites":
+                self.send_json({"invites": team_auth.list_invites()})
+            elif url.path == "/api/account/sync":
+                self.send_json(cloud_sync.status())
+            elif url.path == "/api/account/media":
+                self.send_json(media_previews.status())
+            elif url.path == "/api/account/storage":
+                self.send_json(media_previews.storage_usage())
+            elif url.path == "/api/account/ai":
+                self.send_json(ai_gateway.get_account_ai_status())
+            else:
+                self.send_error(404, "Not Found")
+        except team_auth.TeamAuthError as exc:
+            status = exc.status if isinstance(exc.status, int) and 400 <= exc.status < 600 else 502
+            self.send_json({"error": exc.message}, status=status)
+        except RuntimeError as exc:
+            self.send_json({"error": str(exc)}, status=500)
+
+    def _handle_account_post(self, url, params):
+        try:
+            if url.path == "/api/account/login/start":
+                open_browser = params.get("open_browser", True)
+                port = self.server.server_address[1] if getattr(self, "server", None) else PORT
+                authorize_url = team_auth.start_login(port)
+                if open_browser:
+                    try:
+                        webbrowser.open(authorize_url)
+                    except Exception:
+                        pass
+                self.send_json({"authorize_url": authorize_url})
+            elif url.path == "/api/account/login/cancel":
+                team_auth.cancel_login()
+                self.send_json({"ok": True})
+            elif url.path == "/api/account/logout":
+                team_auth.logout()
+                self.send_json({"ok": True})
+            elif url.path == "/api/account/invites":
+                invite = team_auth.create_invite(params.get("email"), params.get("role", "member"))
+                self.send_json({"invite": invite})
+            elif url.path == "/api/account/invites/revoke":
+                invite = team_auth.revoke_invite(params.get("email"))
+                self.send_json({"invite": invite})
+            elif url.path == "/api/account/sync":
+                cloud_sync.request_sync(immediate=True)
+                self.send_json(cloud_sync.status())
+            elif url.path == "/api/account/media/sign":
+                storage_path = params.get("storage_path")
+                expires_in = params.get("expires_in", 3600)
+                if not isinstance(storage_path, str) or not storage_path.strip():
+                    self.send_json({"error": "storage_path is required"}, status=400)
+                    return
+                signed = media_previews.signed_url(storage_path, expires_in=expires_in)
+                self.send_json({"url": signed})
+            else:
+                self.send_error(404, "Unknown endpoint")
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+        except team_auth.TeamAuthError as exc:
+            status = exc.status if isinstance(exc.status, int) and 400 <= exc.status < 600 else 400
+            self.send_json({"error": exc.message}, status=status)
+
+    def _handle_team_get(self, url):
+        path = url.path.rstrip("/") or "/"
+        try:
+            if path == "/api/team/knowledge":
+                self.send_json(team_knowledge.status(refresh=True))
+                return
+            self.send_json({"error": "Not found"}, status=404)
+        except team_knowledge.TeamKnowledgeError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+        except team_auth.TeamAuthError as exc:
+            status = exc.status if isinstance(exc.status, int) and 400 <= exc.status < 600 else 502
+            self.send_json({"error": exc.message}, status=status)
+
+    def _handle_team_post(self, url, params):
+        path = url.path.rstrip("/") or "/"
+        parts = [urllib.parse.unquote(p) for p in path.split("/") if p]
+        try:
+            if len(parts) == 5 and parts[:3] == ["api", "team", "knowledge"]:
+                key = parts[3]
+                action = parts[4]
+                if action == "publish":
+                    item = team_knowledge.publish(key)
+                    self.send_json({"ok": True, "item": item, "status": team_knowledge.status(refresh=False)})
+                    return
+                if action == "apply":
+                    item = team_knowledge.apply(key)
+                    self.send_json({"ok": True, "item": item, "status": team_knowledge.status(refresh=False)})
+                    return
+            self.send_json({"error": "Not found"}, status=404)
+        except team_knowledge.TeamKnowledgeError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+        except team_auth.TeamAuthError as exc:
+            status = 502 if exc.status in (0, None) or exc.status >= 500 else (
+                exc.status if isinstance(exc.status, int) and 400 <= exc.status < 500 else 502
+            )
+            self.send_json({"error": exc.message}, status=status)
+
+    def _handle_admin_get(self, url):
+        qs = urllib.parse.parse_qs(url.query, keep_blank_values=True)
+        path = url.path.rstrip("/") or "/"
+        try:
+            if path == "/api/admin/team":
+                self.send_json(admin_dashboard.get_team())
+                return
+            if path == "/api/admin/activity":
+                self.send_json(
+                    admin_dashboard.get_activity(
+                        member=(qs.get("member") or [""])[0],
+                        kind=(qs.get("kind") or [""])[0],
+                        before=(qs.get("before") or [""])[0],
+                        limit=(qs.get("limit") or [""])[0],
+                    )
+                )
+                return
+            if path == "/api/admin/activity/daily":
+                self.send_json(
+                    admin_dashboard.get_daily_activity(
+                        days=(qs.get("days") or ["14"])[0],
+                    )
+                )
+                return
+            if path == "/api/admin/storage":
+                self.send_json(admin_dashboard.get_storage())
+                return
+            if path == "/api/admin/ai":
+                self.send_json(admin_dashboard.get_ai_overview())
+                return
+            if path == "/api/admin/audit":
+                self.send_json(
+                    admin_dashboard.get_audit(
+                        before=(qs.get("before") or [""])[0],
+                        limit=(qs.get("limit") or [""])[0],
+                    )
+                )
+                return
+
+            parts = path.split("/")
+            # /api/admin/members/<id>/records
+            if len(parts) == 6 and parts[:4] == ["", "api", "admin", "members"] and parts[5] == "records":
+                member_id = urllib.parse.unquote(parts[4])
+                self.send_json(
+                    admin_dashboard.list_member_records(
+                        member_id,
+                        kind=(qs.get("kind") or [""])[0],
+                        q=(qs.get("q") or [""])[0],
+                        before=(qs.get("before") or [""])[0],
+                        limit=(qs.get("limit") or [""])[0],
+                    )
+                )
+                return
+            # /api/admin/members/<id>/records/<kind>/<local_id>
+            if len(parts) == 8 and parts[:4] == ["", "api", "admin", "members"] and parts[5] == "records":
+                member_id = urllib.parse.unquote(parts[4])
+                kind = urllib.parse.unquote(parts[6])
+                local_id = urllib.parse.unquote(parts[7])
+                self.send_json(admin_dashboard.get_member_record_detail(member_id, kind, local_id))
+                return
+            # /api/admin/members/<id>/previews
+            if len(parts) == 6 and parts[:4] == ["", "api", "admin", "members"] and parts[5] == "previews":
+                member_id = urllib.parse.unquote(parts[4])
+                self.send_json(
+                    admin_dashboard.get_member_previews(
+                        member_id,
+                        parent=(qs.get("parent") or [""])[0],
+                        limit=(qs.get("limit") or [""])[0],
+                    )
+                )
+                return
+            # /api/admin/members/<id>/pitch
+            if len(parts) == 6 and parts[:4] == ["", "api", "admin", "members"] and parts[5] == "pitch":
+                member_id = urllib.parse.unquote(parts[4])
+                self.send_json(admin_dashboard.get_member_pitch(member_id))
+                return
+
+            admin_dashboard.require_admin()
+            if parts[:4] == ["", "api", "admin", "members"] and len(parts) > 6 and parts[5] == "records":
+                self.send_json({"error": "Invalid record path."}, status=400)
+                return
+            self.send_json({"error": "Not found"}, status=404)
+        except admin_dashboard.AdminDashboardError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+
+    def _handle_admin_post(self, url, params):
+        path = url.path.rstrip("/") or "/"
+        parts = path.split("/")
+        try:
+            if path == "/api/admin/ai/share-local-keys":
+                self.send_json(admin_dashboard.share_local_ai_keys())
+                return
+            if path == "/api/admin/ai/clear-keys":
+                self.send_json(admin_dashboard.clear_shared_ai_keys())
+                return
+            if path == "/api/admin/ai/limits":
+                self.send_json(admin_dashboard.update_ai_limits(params))
+                return
+            if path == "/api/admin/ai/models":
+                self.send_json(admin_dashboard.update_ai_model(params))
+                return
+            if path == "/api/admin/ai/test":
+                self.send_json(admin_dashboard.test_shared_ai_keys())
+                return
+            if len(parts) == 6 and parts[:4] == ["", "api", "admin", "members"]:
+                member_id = urllib.parse.unquote(parts[4])
+                action = parts[5]
+                if action == "role":
+                    self.send_json(admin_dashboard.update_member_role(member_id, params.get("role")))
+                    return
+                if action == "active":
+                    self.send_json(admin_dashboard.update_member_active(member_id, params.get("active")))
+                    return
+            admin_dashboard.require_admin()
+            self.send_json({"error": "Unknown endpoint"}, status=404)
+        except admin_dashboard.AdminDashboardError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+
+    def _handle_notifications_get(self, url):
+        qs = urllib.parse.parse_qs(url.query)
+        path = url.path.rstrip("/") or "/"
+        if path == "/api/notifications":
+            try:
+                limit = int((qs.get("limit") or ["50"])[0])
+            except (TypeError, ValueError):
+                limit = 50
+            limit = max(1, min(limit, 200))
+            self.send_json(notifications.list_notifications(limit=limit))
+            return
+        if path == "/api/notifications/settings":
+            self.send_json(notifications.get_settings())
+            return
+        self.send_json({"error": "Not found"}, status=404)
+
+    def _handle_notifications_post(self, url, params):
+        path = url.path.rstrip("/") or "/"
+        try:
+            if path == "/api/notifications/read":
+                self.send_json(
+                    notifications.mark_read(
+                        ids=params.get("ids"),
+                        mark_all=bool(params.get("all") is True),
+                    )
+                )
+                return
+            if path == "/api/notifications/test":
+                self.send_json({"notification": notifications.send_test()})
+                return
+            if path == "/api/notifications/settings":
+                self.send_json(
+                    notifications.update_setting(
+                        params.get("kind"),
+                        params.get("enabled"),
+                    )
+                )
+                return
+            self.send_json({"error": "Not found"}, status=404)
+        except notifications.NotificationError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+
     def _serve_sse(self):
         """Stream live Server-Sent Events ('job', 'message', 'ping') to connected clients."""
         q = events.subscribe()
@@ -309,6 +632,12 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, status=404)
         elif isinstance(exc, pitch.ValidationError):
             self.send_json({"error": str(exc), "errors": exc.errors}, status=400)
+        elif isinstance(exc, pitch_links.PitchLinkError):
+            status = exc.status if isinstance(exc.status, int) and 400 <= exc.status < 600 else 400
+            self.send_json({"error": str(exc)}, status=status)
+        elif isinstance(exc, team_knowledge.TeamKnowledgeError):
+            status = exc.status if isinstance(exc.status, int) and 400 <= exc.status < 600 else 400
+            self.send_json({"error": exc.message}, status=status)
         else:
             self.send_json({"error": str(exc)}, status=400)
 
@@ -327,6 +656,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 pending_raw = (qs.get("pending", ["0"])[0] or "").strip().lower()
                 pending_only = pending_raw in ("1", "true", "yes")
                 self.send_json(pitch.list_outbox(pending_only=pending_only))
+            elif parts == ["requests"]:
+                self.send_json(pitch_links.list_requests())
             elif parts == ["proposals"]:
                 status_filter = qs.get("status", [None])[0] or None
                 kind_filter = qs.get("kind", [None])[0] or None
@@ -359,26 +690,30 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
         try:
             if parts == ["base_prices"]:
+                write_role = team_knowledge.check_write_access()
                 if "item_id" not in params or "price" not in params:
                     self.send_json({"error": "item_id and price are required"}, status=400)
                     return
-                self.send_json(
-                    pitch.set_base_price(
-                        params.get("item_id"),
-                        params.get("price"),
-                        actor=params.get("actor") or "admin",
-                    )
+                res = pitch.set_base_price(
+                    params.get("item_id"),
+                    params.get("price"),
+                    actor=params.get("actor") or "admin",
                 )
+                if write_role == "admin":
+                    team_knowledge.queue_auto_publish("pitch_base_prices")
+                self.send_json(res)
             elif parts == ["base_prices", "reset"]:
+                write_role = team_knowledge.check_write_access()
                 if "item_id" not in params:
                     self.send_json({"error": "item_id is required"}, status=400)
                     return
-                self.send_json(
-                    pitch.reset_base_price(
-                        params.get("item_id"),
-                        actor=params.get("actor") or "admin",
-                    )
+                res = pitch.reset_base_price(
+                    params.get("item_id"),
+                    actor=params.get("actor") or "admin",
                 )
+                if write_role == "admin":
+                    team_knowledge.queue_auto_publish("pitch_base_prices")
+                self.send_json(res)
             elif parts == ["preview_payload"]:
                 self.send_json(pitch.preview_payload(params))
             elif parts == ["proposals"]:
@@ -414,6 +749,12 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                         created_by=params.get("created_by") or "user",
                     )
                 )
+            elif len(parts) == 3 and parts[0] == "proposals" and parts[2] == "publish":
+                self.send_json(pitch_links.publish(parts[1]))
+            elif len(parts) == 3 and parts[0] == "proposals" and parts[2] == "withdraw":
+                self.send_json(pitch_links.withdraw(parts[1]))
+            elif len(parts) == 3 and parts[0] == "requests" and parts[2] == "read":
+                self.send_json(pitch_links.mark_request_read(parts[1]))
             else:
                 self.send_json({"error": "Not found"}, status=404)
         except ValueError as exc:
@@ -543,6 +884,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 )
             else:
                 self.send_json({"error": "Not found"}, status=404)
+                return
+            cloud_sync.request_sync()
         except ValueError as exc:
             self._send_review_error(exc)
 
@@ -579,6 +922,10 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.wfile.write(body)
                 return
 
+        if url.path == "/auth/callback":
+            self._handle_auth_callback(url)
+            return
+
         if not self._is_authorized():
             self.send_json({"error": "unauthorized"}, status=401)
             return
@@ -599,6 +946,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             cfg = ai_gateway.get_config()
             matrix = ai_gateway.get_role_model_matrix()
             roles_ready = sum(1 for m in matrix if m["has_key"])
+            team_ai_active = any(m.get("key_source") == "team" for m in matrix)
 
             state["env_status"] = {
                 "has_env_file": os.path.exists(paths.data(".env")),
@@ -608,6 +956,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 "nvidia_nim_global_masked": ai_gateway._mask_secret(cfg["NVIDIA_NIM_API_KEY"]),
                 "nvidia_nim_fallback_model": cfg["NIM_FALLBACK_MODEL"],
                 "nvidia_nim_roles_configured": roles_ready,
+                "team_ai": team_ai_active,
                 "openai": bool(cfg["OPENAI_API_KEY"]),
                 "anthropic": bool(cfg["ANTHROPIC_API_KEY"]),
                 "gemini": bool(cfg["GEMINI_API_KEY"]),
@@ -889,6 +1238,18 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         elif url.path.startswith("/api/pitch/"):
             self._handle_pitch_get(url)
 
+        elif url.path == "/api/account" or url.path.startswith("/api/account/"):
+            self._handle_account_get(url)
+
+        elif url.path.startswith("/api/team/"):
+            self._handle_team_get(url)
+
+        elif url.path.startswith("/api/admin/"):
+            self._handle_admin_get(url)
+
+        elif url.path == "/api/notifications" or url.path.startswith("/api/notifications/"):
+            self._handle_notifications_get(url)
+
         elif url.path.startswith("/api/asset/"):
             parts = url.path.split("/")[3:]
             if len(parts) >= 2:
@@ -953,7 +1314,14 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             self._handle_pitch_post_pdf(proposal_id, content_len)
             return
 
-        is_strict_json = url.path.startswith("/api/review/") or url.path.startswith("/api/pitch/")
+        is_strict_json = (
+            url.path.startswith("/api/review/")
+            or url.path.startswith("/api/pitch/")
+            or url.path.startswith("/api/account/")
+            or url.path.startswith("/api/team/")
+            or url.path.startswith("/api/admin/")
+            or url.path.startswith("/api/notifications/")
+        )
         max_len = MAX_REVIEW_BODY_BYTES if url.path.startswith("/api/review/") else MAX_POST_BYTES
         if content_len > max_len:
             self.send_json({"error": "Request body too large"}, status=413)
@@ -977,6 +1345,22 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         if url.path.startswith("/api/pitch/"):
             self._handle_pitch_post(url, params)
+            return
+
+        if url.path.startswith("/api/account/"):
+            self._handle_account_post(url, params)
+            return
+
+        if url.path.startswith("/api/team/"):
+            self._handle_team_post(url, params)
+            return
+
+        if url.path.startswith("/api/admin/"):
+            self._handle_admin_post(url, params)
+            return
+
+        if url.path.startswith("/api/notifications/"):
+            self._handle_notifications_post(url, params)
             return
 
         if url.path == "/api/shutdown":
@@ -1013,6 +1397,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Text required"}, status=400)
                 return
             replies = team_room.post_message(sender, text, attached_assets=attached_assets)
+            cloud_sync.request_sync()
             self.send_json({"success": True, "replies": replies})
 
         elif url.path == "/api/assets/upload":
@@ -1127,6 +1512,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "agent_id and message required"}, status=400)
                 return
             res = agent_chat.chat_with_agent(agent_id, message, attached_assets=attached_assets)
+            cloud_sync.request_sync()
             self.send_json(res)
 
         elif url.path == "/api/approve":
@@ -1365,14 +1751,19 @@ Hard Rules:
                 self.send_json({"error": str(e)}, status=500)
 
         elif url.path == "/api/product_rules":
-            product_id = params.get("product_id") or params.get("id")
             try:
+                write_role = team_knowledge.check_write_access()
+                product_id = params.get("product_id") or params.get("id")
                 updated_prod, rules_data = product_rules.save_product_rule(product_id, params)
+                if write_role == "admin":
+                    team_knowledge.queue_auto_publish("product_rules")
                 self.send_json({
                     "success": True,
                     "product": updated_prod,
                     "rules": rules_data,
                 })
+            except team_knowledge.TeamKnowledgeError as exc:
+                self.send_json({"error": exc.message}, status=exc.status)
             except ValueError as exc:
                 msg = str(exc)
                 status = 404 if "not found" in msg.lower() else 400
@@ -1443,6 +1834,7 @@ Hard Rules:
                 title=params.get("title"),
             )
             _SESSION_EXECUTOR.submit(agent_runtime.run_session, session["id"])
+            cloud_sync.request_sync()
             self.send_json({"success": True, "session_id": session["id"]})
 
         elif re.match(r"^/api/sessions/[^/]+/answer$", url.path):
@@ -1458,6 +1850,7 @@ Hard Rules:
                 self.send_json({"error": msg}, status=status)
                 return
             _SESSION_EXECUTOR.submit(agent_runtime.run_session, session_id)
+            cloud_sync.request_sync()
             self.send_json({"success": True, "session_id": session_id, "status": "running"})
 
         elif re.match(r"^/api/sessions/[^/]+/cancel$", url.path):
@@ -1466,6 +1859,7 @@ Hard Rules:
             if sess is None:
                 self.send_json({"error": "Session not found"}, status=404)
                 return
+            cloud_sync.request_sync()
             self.send_json({"success": True, "session": sess})
 
         elif url.path == "/api/workflows/start":
@@ -1481,6 +1875,7 @@ Hard Rules:
             except ValueError as exc:
                 self.send_json({"error": str(exc)}, status=400)
                 return
+            cloud_sync.request_sync()
             self.send_json(run)
 
         elif re.match(r"^/api/workflows/[^/]+/cancel$", url.path):
@@ -1531,6 +1926,7 @@ Hard Rules:
                 self.send_json({"error": msg}, status=status)
                 return
             self.send_json(updated)
+            cloud_sync.request_sync()
 
         elif url.path == "/api/setup/install_browser":
             actor = params.get("actor", "UI")
@@ -4285,12 +4681,17 @@ def main():
     db.init_db()
     agent_runtime.recover_stale_sessions()
     jobs.start_worker()
+    # Same as engine/main.py: mirror work, publish live links and pull quote requests in the background.
+    import cloud_sync
+    if cloud_sync.is_enabled():
+        cloud_sync.start()
     print(f"Starting multi-threaded server on http://{HOST}:{PORT}")
     server = ThreadingHTTPServer((HOST, PORT), CommandCenterHandler)
     server.daemon_threads = True
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        cloud_sync.stop(timeout=1.0)
         jobs.stop_worker(timeout=1.0)
         server.server_close()
 
