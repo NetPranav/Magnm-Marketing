@@ -552,6 +552,33 @@ def build_mirror_records(now_iso=None):
             )
         )
 
+    for rem in db.list_all_reminders():
+        cid = rem.get("content_id")
+        ts_val = rem.get("done_at") or rem.get("snoozed_until") or rem.get("due_at") or rem.get("created_at") or fallback_ts
+        if cid and cid in confidential_cids:
+            title = "Confidential item"
+            data = {
+                "kind": "reminder",
+                "confidential": True,
+                "reminder_kind": rem.get("kind"),
+                "due_at": rem.get("due_at"),
+                "done_at": rem.get("done_at"),
+            }
+        else:
+            title = rem.get("title")
+            data = {
+                "kind": "reminder",
+                "reminder_kind": rem.get("kind"),
+                "note": rem.get("note") or "",
+                "due_at": rem.get("due_at"),
+                "content_id": cid,
+                "created_by": rem.get("created_by"),
+                "created_at": rem.get("created_at"),
+                "done_at": rem.get("done_at"),
+                "snoozed_until": rem.get("snoozed_until"),
+            }
+        records.append(_make_record("task", rem["id"], cid or None, title, data, ts_val))
+
     return [_stub_if_mentions_confidential(rec, checker) for rec in records]
 
 
@@ -629,6 +656,8 @@ def _stub_if_mentions_confidential(rec, checker):
         return rec
     data = rec.get("data") if isinstance(rec.get("data"), dict) else {}
     stub = {"confidential": True}
+    if rec.get("kind") == "task" and data.get("kind") == "reminder":
+        stub["kind"] = "reminder"
     for key in ("agent_id", "status", "platform", "version", "updated_at", "created_at", "ts"):
         if key in data and not isinstance(data[key], (dict, list)):
             stub[key] = data[key]

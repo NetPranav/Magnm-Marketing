@@ -471,3 +471,40 @@ export interface PostingKitResult {
   files: string[];
   attachments?: ContentFileEntry[];
 }
+
+export interface ReminderRecord {
+  id: string;
+  title: string;
+  note: string;
+  due_at: string;
+  kind: 'custom' | 'results_due' | 'post_due' | string;
+  content_id?: string | null;
+  created_by: string;
+  created_at: string;
+  done_at?: string | null;
+  snoozed_until?: string | null;
+  fired_at?: string | null;
+}
+
+export interface MetricProposal {
+  id: string;
+  content_id?: string | null;
+  platform?: string | null;
+  metrics: Record<string, number>;
+  evidence: Record<string, string>;
+  image_path?: string | null;
+  status: 'pending' | 'saved' | 'discarded' | string;
+  created_at: string;
+  decided_at?: string | null;
+}
+
+export interface MetricRecord {
+  id: string;
+  content_id?: string | null;
+  platform: string;
+  metrics: Record<string, number>;
+  source: 'screenshot' | 'manual' | string;
+  captured_at: string;
+  created_by?: string | null;
+  created_at: string;
+}

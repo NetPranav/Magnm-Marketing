@@ -1153,6 +1153,17 @@ def mark_posted(content_id, *, url=None, platform=None):
     }
 
 
+def unmark_posted(content_id, *, status="ready"):
+    """Revert a posted content_id back to ready/draft and clear pending results reminders."""
+    _require_item(content_id)
+    updated = db.unmark_posted(content_id, status=status)
+    _publish(content_id, "status")
+    return {
+        "item": updated,
+        "status": updated["status"],
+    }
+
+
 def _run_comment_agent_job(params, job_id=None):
     content_id = params["content_id"]
     comment_id = params["comment_id"]

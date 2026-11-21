@@ -19,6 +19,9 @@ import {
   listSessions,
   listWorkflows,
 } from '../../api/today';
+import { listReminders } from '../../api/reminders';
+import { discardResultsProposal, listResultsProposals } from '../../api/results';
+import { AddResultsDialog } from '../../components/AddResultsDialog';
 import { useStudioEvents } from '../../events';
 import type {
   AgentSession,
@@ -26,11 +29,15 @@ import type {
   EngineStatusInfo,
   HealthInfo,
   JobRecord,
+  MetricProposal,
   ProductFact,
+  ReminderRecord,
   WorkflowGate,
   WorkflowRun,
 } from '../../types';
 import { formatTimestamp } from '../../ui/format';
+import { RemindersCard } from './RemindersCard';
+import { ResultsCard } from './ResultsCard';
 
 export interface TodaySectionProps {
   health: HealthInfo | null;
@@ -123,12 +130,38 @@ export function TodaySection({
   const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
   const [pendingFacts, setPendingFacts] = useState<ProductFact[]>([]);
   const [contentItems, setContentItems] = useState<ContentItem[]>([]);
+  const [reminders, setReminders] = useState<ReminderRecord[]>([]);
+  const [proposals, setProposals] = useState<MetricProposal[]>([]);
+  const [resultsDialog, setResultsDialog] = useState<{
+    open: boolean;
+    contentId?: string | null;
+    platform?: string | null;
+    proposal?: MetricProposal | null;
+  }>({ open: false });
   const [auxLoading, setAuxLoading] = useState(true);
   const [auxError, setAuxError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [sessionAnswers, setSessionAnswers] = useState<Record<string, string>>({});
   const [gateFeedback, setGateFeedback] = useState<Record<string, string>>({});
+
+  const refreshReminders = useCallback(async () => {
+    try {
+      const next = await listReminders('open');
+      setReminders(next);
+    } catch {
+      // Non-fatal during partial refresh
+    }
+  }, []);
+
+  const refreshProposals = useCallback(async () => {
+    try {
+      const next = await listResultsProposals('pending');
+      setProposals(next);
+    } catch {
+      // Non-fatal during partial refresh
+    }
+  }, []);
 
   const loadWorkItems = useCallback(async () => {
     setAuxError(null);
@@ -137,10 +170,12 @@ export function TodaySection({
       listWorkflows(20),
       listPendingFacts(),
       listContent(50),
+      listReminders('open'),
+      listResultsProposals('pending'),
     ]);
 
     let firstErr: string | null = null;
-    const [sessRes, wfRes, factsRes, contentRes] = results;
+    const [sessRes, wfRes, factsRes, contentRes, remRes, propRes] = results;
 
     if (sessRes.status === 'fulfilled') {
       setSessions(Array.isArray(sessRes.value) ? sessRes.value : []);
@@ -164,6 +199,18 @@ export function TodaySection({
       setContentItems(Array.isArray(contentRes.value) ? contentRes.value : []);
     } else if (contentRes.reason instanceof Error) {
       firstErr = firstErr ?? contentRes.reason.message;
+    }
+
+    if (remRes.status === 'fulfilled') {
+      setReminders(Array.isArray(remRes.value) ? remRes.value : []);
+    } else if (remRes.reason instanceof Error) {
+      firstErr = firstErr ?? remRes.reason.message;
+    }
+
+    if (propRes.status === 'fulfilled') {
+      setProposals(Array.isArray(propRes.value) ? propRes.value : []);
+    } else if (propRes.reason instanceof Error) {
+      firstErr = firstErr ?? propRes.reason.message;
     }
 
     setAuxError(firstErr);
@@ -203,9 +250,17 @@ export function TodaySection({
           void listContent(50)
             .then((next) => setContentItems(Array.isArray(next) ? next : []))
             .catch(() => {});
+          void refreshReminders();
+        } else if (eventName === 'notification' && data && typeof data === 'object') {
+          const kind = (data as { kind?: string }).kind;
+          if (kind === 'reminder') {
+            void refreshReminders();
+          } else if (kind === 'results_pending') {
+            void refreshProposals();
+          }
         }
       },
-      [],
+      [refreshProposals, refreshReminders],
     ),
   );
 
@@ -547,6 +602,50 @@ export function TodaySection({
             ))}
           </RowList>
         )}
+
+        <RemindersCard
+          reminders={reminders}
+          loading={auxLoading}
+          onRefresh={refreshReminders}
+          onAddResults={(cid) => {
+            const matched = contentItems.find((item) => item.id === cid);
+            setActionError(null);
+            setResultsDialog({
+              open: true,
+              contentId: cid,
+              platform: matched?.platform ?? null,
+              proposal: null,
+            });
+          }}
+          onError={(msg) => setActionError(msg)}
+        />
+
+        <ResultsCard
+          proposals={proposals}
+          contentItems={contentItems}
+          loading={auxLoading}
+          onOpenNew={() => {
+            setActionError(null);
+            setResultsDialog({ open: true, contentId: null, platform: null, proposal: null });
+          }}
+          onReviewProposal={(prop) => {
+            setActionError(null);
+            setResultsDialog({
+              open: true,
+              contentId: prop.content_id ?? null,
+              platform: prop.platform ?? null,
+              proposal: prop,
+            });
+          }}
+          onDiscardProposal={(proposalId) => {
+            setActionError(null);
+            void discardResultsProposal(proposalId)
+              .then(() => refreshProposals())
+              .catch((err) => {
+                setActionError(err instanceof Error ? err.message : 'Failed to discard results.');
+              });
+          }}
+        />
       </section>
 
       <section className="studio-section" aria-labelledby="today-engine-heading">
@@ -643,6 +742,22 @@ export function TodaySection({
           </RowList>
         )}
       </section>
+
+      <AddResultsDialog
+        open={resultsDialog.open}
+        onClose={() => setResultsDialog({ open: false })}
+        initialContentId={resultsDialog.contentId}
+        initialPlatform={resultsDialog.platform}
+        initialProposal={resultsDialog.proposal}
+        contentItems={contentItems}
+        onSaved={() => {
+          void refreshProposals();
+          void refreshReminders();
+        }}
+        onDiscarded={() => {
+          void refreshProposals();
+        }}
+      />
     </div>
   );
 }

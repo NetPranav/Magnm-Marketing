@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Checkbox, PillButton, Row, RowList, SheetHeader, StatusDot } from '@magnm/design/react';
 import { listReviewContent } from '../../api/review';
+import { AddResultsDialog } from '../../components/AddResultsDialog';
 import { useStudioEvents } from '../../events';
 import type { ContentItem } from '../../types';
 import { formatTimestamp } from '../../ui/format';
@@ -20,6 +21,7 @@ interface StatusGroup {
 export function ReviewList({ onOpenItem }: ReviewListProps) {
   const [items, setItems] = useState<ContentItem[]>([]);
   const [showPosted, setShowPosted] = useState(false);
+  const [resultsTarget, setResultsTarget] = useState<ContentItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -141,9 +143,9 @@ export function ReviewList({ onOpenItem }: ReviewListProps) {
                   const openCount = item.open_comments_count ?? 0;
                   const warnCount = item.warnings_count ?? 0;
                   const platformLabel = item.platform || 'general';
-                  return (
+                  const rowEl = (
                     <Row
-                      key={item.id}
+                      key={item.status === 'posted' ? undefined : item.id}
                       title={item.title || item.id}
                       description={
                         <span className="studio-review-row-meta">
@@ -162,12 +164,35 @@ export function ReviewList({ onOpenItem }: ReviewListProps) {
                       onClick={() => onOpenItem(item.id)}
                     />
                   );
+                  if (item.status === 'posted') {
+                    return (
+                      <div key={item.id} className="studio-content-row-wrap">
+                        {rowEl}
+                        <PillButton
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setResultsTarget(item)}
+                        >
+                          Add results
+                        </PillButton>
+                      </div>
+                    );
+                  }
+                  return rowEl;
                 })}
               </RowList>
             )}
           </section>
         ))
       )}
+
+      <AddResultsDialog
+        open={Boolean(resultsTarget)}
+        onClose={() => setResultsTarget(null)}
+        initialContentId={resultsTarget?.id ?? null}
+        initialPlatform={resultsTarget?.platform ?? null}
+        contentItems={items}
+      />
     </div>
   );
 }

@@ -14,6 +14,7 @@ if _ENGINE_DIR not in sys.path:
 import cmo_runtime
 import db
 import jobs
+import reminders
 
 CHECK_INTERVAL_S = 60
 IST = ZoneInfo("Asia/Kolkata")
@@ -173,8 +174,9 @@ def ensure_default_schedules():
 
 
 def tick(now=None):
-    """Evaluate all schedules at `now`, enqueue due jobs without duplicates, and record last_run."""
+    """Evaluate all schedules and due reminders at `now`, enqueueing due jobs without duplicates."""
     now_utc = _as_utc(now)
+    reminders.check_due_reminders(now=now_utc)
     schedules = db.load_schedules()
     if not schedules:
         return []
@@ -211,8 +213,21 @@ def _startup_delay_s():
 
 
 def _loop(interval_s):
-    if _stop_event.wait(_startup_delay_s()):
-        return
+    try:
+        reminders.check_due_reminders()
+    except Exception:
+        pass
+    remaining = _startup_delay_s()
+    while remaining > 0 and not _stop_event.is_set():
+        step = min(interval_s, remaining)
+        if _stop_event.wait(step):
+            return
+        remaining -= step
+        if remaining > 0:
+            try:
+                reminders.check_due_reminders()
+            except Exception:
+                pass
     while not _stop_event.is_set():
         try:
             tick()

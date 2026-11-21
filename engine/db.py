@@ -6,7 +6,7 @@ schedules, activity audit logs, and AI gateway run telemetry into
 ``state/magnm.db``.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import secrets
@@ -22,7 +22,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -776,6 +776,47 @@ def _apply_migration_v17(conn):
     )
 
 
+def _apply_migration_v18(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS reminders (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            due_at TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'custom',
+            content_id TEXT,
+            created_by TEXT NOT NULL DEFAULT 'user',
+            created_at TEXT NOT NULL,
+            done_at TEXT,
+            snoozed_until TEXT,
+            fired_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_reminders_due
+            ON reminders(done_at, due_at);
+
+        CREATE INDEX IF NOT EXISTS idx_reminders_content_kind
+            ON reminders(content_id, kind);
+
+        CREATE TABLE IF NOT EXISTS metric_proposals (
+            id TEXT PRIMARY KEY,
+            content_id TEXT,
+            platform TEXT,
+            metrics_json TEXT NOT NULL DEFAULT '{}',
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            image_path TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            decided_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_metric_proposals_status_created
+            ON metric_proposals(status, created_at DESC);
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -794,6 +835,7 @@ _MIGRATIONS = (
     (15, _apply_migration_v15),
     (16, _apply_migration_v16),
     (17, _apply_migration_v17),
+    (18, _apply_migration_v18),
 )
 
 
@@ -2419,14 +2461,38 @@ def mark_ready(content_id):
     return get_content_item(content_id, include_versions=True)
 
 
+def _parse_utc_dt(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _normalize_utc_iso(value, fallback=None):
+    dt = _parse_utc_dt(value)
+    if dt is not None:
+        return dt.isoformat()
+    if fallback is not None:
+        return str(fallback)
+    return datetime.now(timezone.utc).isoformat()
+
+
 def mark_posted(content_id, url=None, platform=None, posted_at=None):
-    """Mark a content item as posted, record URL/timestamp, log activity, and publish event."""
+    """Mark a content item as posted, record URL/timestamp, schedule results reminders, log activity, and publish event."""
     ensure_init()
     item = get_content_item(content_id)
     if item is None:
         raise ValueError(f"Content item '{content_id}' not found")
     now = datetime.now(timezone.utc).isoformat()
-    posted_ts = str(posted_at or now)
+    posted_ts = _normalize_utc_iso(posted_at, fallback=now) if posted_at else now
     target_platform = str(platform) if platform is not None and str(platform).strip() else item.get("platform")
     conn = connect()
     with conn:
@@ -2438,6 +2504,11 @@ def mark_posted(content_id, url=None, platform=None, posted_at=None):
             """,
             (url, posted_ts, target_platform, now, str(content_id)),
         )
+    ensure_results_reminders_for_post(
+        content_id=str(content_id),
+        title=item.get("title") or str(content_id),
+        posted_at=posted_ts,
+    )
     log_activity(
         "CEO",
         str(target_platform or "social"),
@@ -2453,6 +2524,34 @@ def mark_posted(content_id, url=None, platform=None, posted_at=None):
             "platform": target_platform,
             "posted_at": posted_ts,
         },
+    )
+    return get_content_item(content_id, include_versions=True)
+
+
+def unmark_posted(content_id, status="ready"):
+    """Revert a posted content item back to ready/draft, clearing posted fields and pending results reminders."""
+    ensure_init()
+    target_status = str(status or "ready").strip().lower()
+    if target_status not in ("ready", "draft"):
+        raise ValueError("status must be 'ready' or 'draft'")
+    item = get_content_item(content_id)
+    if item is None:
+        raise ValueError(f"Content item '{content_id}' not found")
+    now = datetime.now(timezone.utc).isoformat()
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            UPDATE content_items
+            SET status = ?, posted_url = NULL, posted_at = NULL, updated_at = ?
+            WHERE id = ?
+            """,
+            (target_status, now, str(content_id)),
+        )
+    delete_pending_results_reminders(content_id)
+    events.publish(
+        "content_status",
+        {"content_id": str(content_id), "status": target_status},
     )
     return get_content_item(content_id, include_versions=True)
 
@@ -5011,3 +5110,365 @@ def set_notification_setting(kind, enabled, updated_at=None):
             (str(kind), 1 if enabled else 0, ts),
         )
     return {"kind": str(kind), "enabled": bool(enabled), "updated_at": ts}
+
+
+# --- Reminders ---
+
+def _row_to_reminder(row):
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "note": row["note"] or "",
+        "due_at": row["due_at"],
+        "kind": row["kind"],
+        "content_id": row["content_id"],
+        "created_by": row["created_by"],
+        "created_at": row["created_at"],
+        "done_at": row["done_at"],
+        "snoozed_until": row["snoozed_until"],
+        "fired_at": row["fired_at"],
+    }
+
+
+def create_reminder(
+    title,
+    due_at,
+    *,
+    note="",
+    kind="custom",
+    content_id=None,
+    created_by="user",
+    reminder_id=None,
+    created_at=None,
+):
+    """Insert a reminder row and return its dict representation."""
+    ensure_init()
+    rid = str(reminder_id or f"rem_{uuid.uuid4().hex[:12]}")
+    now = datetime.now(timezone.utc).isoformat()
+    created_ts = _normalize_utc_iso(created_at, fallback=now) if created_at else now
+    due_ts = _normalize_utc_iso(due_at, fallback=str(due_at))
+    cid = str(content_id).strip() if content_id and str(content_id).strip() else None
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO reminders (
+                id, title, note, due_at, kind, content_id, created_by,
+                created_at, done_at, snoozed_until, fired_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+            """,
+            (
+                rid,
+                str(title).strip(),
+                str(note or "").strip(),
+                due_ts,
+                str(kind or "custom").strip(),
+                cid,
+                str(created_by or "user").strip(),
+                created_ts,
+            ),
+        )
+    return get_reminder(rid)
+
+
+def get_reminder(reminder_id):
+    """Return a single reminder dict by ID, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute("SELECT * FROM reminders WHERE id = ?", (str(reminder_id),)).fetchone()
+    return _row_to_reminder(row)
+
+
+def list_reminders(status="open", limit=200):
+    """List reminders filtered by status ('open', 'done', 'all')."""
+    ensure_init()
+    conn = connect()
+    cap = max(1, min(int(limit or 200), 500))
+    norm = str(status or "open").strip().lower()
+    if norm == "open":
+        rows = conn.execute(
+            "SELECT * FROM reminders WHERE done_at IS NULL ORDER BY due_at ASC, rowid ASC LIMIT ?",
+            (cap,),
+        ).fetchall()
+    elif norm == "done":
+        rows = conn.execute(
+            "SELECT * FROM reminders WHERE done_at IS NOT NULL ORDER BY done_at DESC, rowid DESC LIMIT ?",
+            (cap,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM reminders ORDER BY CASE WHEN done_at IS NULL THEN 0 ELSE 1 END, due_at ASC, rowid ASC LIMIT ?",
+            (cap,),
+        ).fetchall()
+    return [_row_to_reminder(r) for r in rows]
+
+
+def list_all_reminders():
+    """Return all reminder rows in creation order."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute("SELECT * FROM reminders ORDER BY created_at ASC, rowid ASC").fetchall()
+    return [_row_to_reminder(r) for r in rows]
+
+
+def list_unfired_open_reminders():
+    """Return all reminders that are not done and not yet fired."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT * FROM reminders WHERE done_at IS NULL AND fired_at IS NULL ORDER BY due_at ASC, rowid ASC"
+    ).fetchall()
+    return [_row_to_reminder(r) for r in rows]
+
+
+def mark_reminder_done(reminder_id, done_at=None):
+    """Mark a reminder done and return the updated dict, or None if not found."""
+    ensure_init()
+    if get_reminder(reminder_id) is None:
+        return None
+    ts = _normalize_utc_iso(done_at) if done_at else datetime.now(timezone.utc).isoformat()
+    conn = connect()
+    with conn:
+        conn.execute(
+            "UPDATE reminders SET done_at = COALESCE(done_at, ?) WHERE id = ?",
+            (ts, str(reminder_id)),
+        )
+    return get_reminder(reminder_id)
+
+
+def mark_content_results_reminders_done(content_id, done_at=None):
+    """Mark open results_due reminders for content_id as done, returning updated count."""
+    if not content_id or not str(content_id).strip():
+        return 0
+    ensure_init()
+    ts = _normalize_utc_iso(done_at) if done_at else datetime.now(timezone.utc).isoformat()
+    conn = connect()
+    with conn:
+        cur = conn.execute(
+            "UPDATE reminders SET done_at = ? WHERE content_id = ? AND kind = 'results_due' AND done_at IS NULL",
+            (ts, str(content_id).strip()),
+        )
+    return int(cur.rowcount or 0)
+
+
+def snooze_reminder(reminder_id, snoozed_until):
+    """Snooze an open reminder until snoozed_until (clearing fired_at so it fires when snooze ends)."""
+    ensure_init()
+    existing = get_reminder(reminder_id)
+    if existing is None:
+        return None
+    until_ts = _normalize_utc_iso(snoozed_until)
+    conn = connect()
+    with conn:
+        conn.execute(
+            "UPDATE reminders SET snoozed_until = ?, fired_at = NULL WHERE id = ?",
+            (until_ts, str(reminder_id)),
+        )
+    return get_reminder(reminder_id)
+
+
+def mark_reminders_fired(reminder_ids, fired_at=None):
+    """Set fired_at on the given reminder IDs if not already set."""
+    clean_ids = [str(rid).strip() for rid in (reminder_ids or []) if rid and str(rid).strip()]
+    if not clean_ids:
+        return 0
+    ensure_init()
+    ts = _normalize_utc_iso(fired_at) if fired_at else datetime.now(timezone.utc).isoformat()
+    placeholders = ",".join("?" for _ in clean_ids)
+    conn = connect()
+    with conn:
+        cur = conn.execute(
+            f"UPDATE reminders SET fired_at = COALESCE(fired_at, ?) WHERE id IN ({placeholders})",
+            [ts, *clean_ids],
+        )
+    return int(cur.rowcount or 0)
+
+
+def delete_reminder(reminder_id):
+    """Delete a reminder row by ID, returning True if deleted."""
+    ensure_init()
+    conn = connect()
+    with conn:
+        cur = conn.execute("DELETE FROM reminders WHERE id = ?", (str(reminder_id),))
+    return cur.rowcount > 0
+
+
+def delete_pending_results_reminders(content_id):
+    """Delete open (done_at IS NULL) results_due reminders for content_id."""
+    if not content_id or not str(content_id).strip():
+        return 0
+    ensure_init()
+    conn = connect()
+    with conn:
+        cur = conn.execute(
+            "DELETE FROM reminders WHERE content_id = ? AND kind = 'results_due' AND done_at IS NULL",
+            (str(content_id).strip(),),
+        )
+    return int(cur.rowcount or 0)
+
+
+def ensure_results_reminders_for_post(content_id, title, posted_at):
+    """Create day-1 (+24h) and day-7 (+7d) results_due reminders for a posted item without duplicating."""
+    cid = str(content_id or "").strip()
+    if not cid:
+        return []
+    ensure_init()
+    posted_dt = _parse_utc_dt(posted_at) or datetime.now(timezone.utc)
+    clean_title = str(title or cid).strip() or cid
+
+    conn = connect()
+    existing_rows = conn.execute(
+        "SELECT * FROM reminders WHERE content_id = ? AND kind = 'results_due'",
+        (cid,),
+    ).fetchall()
+    existing_titles = {str(r["title"] or "") for r in existing_rows}
+
+    created = []
+    specs = (
+        (f"Add results for {clean_title} (day 1)", "(day 1)", posted_dt + timedelta(hours=24)),
+        (f"Add results for {clean_title} (day 7)", "(day 7)", posted_dt + timedelta(days=7)),
+    )
+    for rem_title, suffix, due_dt in specs:
+        if any(t.endswith(suffix) for t in existing_titles):
+            continue
+        created.append(
+            create_reminder(
+                rem_title,
+                due_dt.astimezone(timezone.utc).isoformat(),
+                note="",
+                kind="results_due",
+                content_id=cid,
+                created_by="analyst",
+            )
+        )
+    return created
+
+
+# --- Metric Proposals ---
+
+def _row_to_metric_proposal(row):
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "content_id": row["content_id"],
+        "platform": row["platform"],
+        "metrics": json.loads(row["metrics_json"]) if row["metrics_json"] else {},
+        "evidence": json.loads(row["evidence_json"]) if row["evidence_json"] else {},
+        "image_path": row["image_path"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "decided_at": row["decided_at"],
+    }
+
+
+def create_metric_proposal(
+    proposal_id,
+    *,
+    content_id=None,
+    platform=None,
+    metrics=None,
+    evidence=None,
+    image_path=None,
+    status="pending",
+    created_at=None,
+):
+    """Insert a metric_proposals row and return its dict."""
+    ensure_init()
+    pid = str(proposal_id or f"mprop_{uuid.uuid4().hex[:12]}")
+    now = datetime.now(timezone.utc).isoformat()
+    created_ts = _normalize_utc_iso(created_at, fallback=now) if created_at else now
+    cid = str(content_id).strip() if content_id and str(content_id).strip() else None
+    plat = str(platform).strip() if platform and str(platform).strip() else None
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO metric_proposals (
+                id, content_id, platform, metrics_json, evidence_json,
+                image_path, status, created_at, decided_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                pid,
+                cid,
+                plat,
+                json.dumps(dict(metrics or {}), ensure_ascii=False),
+                json.dumps(dict(evidence or {}), ensure_ascii=False),
+                image_path,
+                str(status or "pending"),
+                created_ts,
+            ),
+        )
+    return get_metric_proposal(pid)
+
+
+def get_metric_proposal(proposal_id):
+    """Return a single metric proposal dict by ID, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute("SELECT * FROM metric_proposals WHERE id = ?", (str(proposal_id),)).fetchone()
+    return _row_to_metric_proposal(row)
+
+
+def list_metric_proposals(status="pending", limit=100):
+    """List metric proposals filtered by status ('pending', 'saved', 'discarded', or 'all')."""
+    ensure_init()
+    conn = connect()
+    cap = max(1, min(int(limit or 100), 500))
+    norm = str(status or "pending").strip().lower()
+    if norm in ("all", ""):
+        rows = conn.execute(
+            "SELECT * FROM metric_proposals ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (cap,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM metric_proposals WHERE status = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (norm, cap),
+        ).fetchall()
+    return [_row_to_metric_proposal(r) for r in rows]
+
+
+def decide_metric_proposal(
+    proposal_id,
+    status,
+    *,
+    content_id=_TK_UNSET,
+    platform=_TK_UNSET,
+    metrics=_TK_UNSET,
+    decided_at=None,
+):
+    """Update status ('saved' or 'discarded') and optional overrides on a metric proposal."""
+    ensure_init()
+    existing = get_metric_proposal(proposal_id)
+    if existing is None:
+        return None
+    ts = _normalize_utc_iso(decided_at) if decided_at else datetime.now(timezone.utc).isoformat()
+    next_cid = existing["content_id"] if content_id is _TK_UNSET else (
+        str(content_id).strip() if content_id and str(content_id).strip() else None
+    )
+    next_plat = existing["platform"] if platform is _TK_UNSET else (
+        str(platform).strip() if platform and str(platform).strip() else None
+    )
+    next_metrics = existing["metrics"] if metrics is _TK_UNSET else dict(metrics or {})
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            UPDATE metric_proposals
+            SET status = ?, content_id = ?, platform = ?, metrics_json = ?, decided_at = ?
+            WHERE id = ?
+            """,
+            (
+                str(status),
+                next_cid,
+                next_plat,
+                json.dumps(next_metrics, ensure_ascii=False),
+                ts,
+                str(proposal_id),
+            ),
+        )
+    return get_metric_proposal(proposal_id)

@@ -52,6 +52,15 @@ describe('LibrarySection', () => {
             created_at: '2026-11-19T06:00:00Z',
             updated_at: '2026-11-19T06:30:00Z',
           },
+          {
+            id: 'cnt-11',
+            type: 'post',
+            platform: 'x',
+            title: 'Cero posted thread',
+            status: 'posted',
+            created_at: '2026-11-19T05:00:00Z',
+            updated_at: '2026-11-19T05:30:00Z',
+          },
         ]);
       }
       if (url === '/api/assets/upload' && init?.method === 'POST') {
@@ -81,9 +90,13 @@ describe('LibrarySection', () => {
     expect(screen.getByText('demo-clip.mp4')).toBeTruthy();
     expect(screen.getByText('IMAGE · 42.0 KB')).toBeTruthy();
 
-    // Content list links to Review
+    // Content list links to Review, and posted item opens Add results dialog
     const reviewLink = screen.getByRole('link', { name: /Cero safety release/i });
     expect(reviewLink.getAttribute('href')).toBe('#/review/cnt-10');
+    fireEvent.click(screen.getByRole('button', { name: 'Add results' }));
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect((screen.getByLabelText('Post') as HTMLSelectElement).value).toBe('cnt-11');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
 
     // Open side panel and check download link
     fireEvent.click(screen.getByText('cero-prompt.png'));
