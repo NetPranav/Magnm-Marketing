@@ -83,7 +83,7 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
   - New deliverable categories with their own services, on an existing sheet or as a new page with its own tab.
   - The preview follows the form (scroll and focus), the tab row stays visible with Previous/Next at the end of each tab,
     and the Prices tab shows the live preview with prices updating as you type.
-- **Phase 4 in progress (2026-11-21).** Development uses a cloud Supabase project (`magnm-dev`); the laptop has no room
+- **Phase 4 done (2026-11-22).** Development uses a cloud Supabase project (`magnm-dev`); the laptop has no room
   for local Supabase. Production will be a separate project that is never reset.
   - **T4.1 done:** database tables and privacy rules: invite-only sign-up, profiles and roles (the last admin can't be
     removed), activity and device status, the workspace mirror (members write their own, the admin reads all), shared
@@ -118,6 +118,9 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
     file-path checks) and show them as "Managed by your admin". Admins are never overwritten silently.
   - **T4.11 done:** notifications: in-app bell and list, desktop notifications (app plugin or browser), per-event
     settings, and a test button. Phone push (FCM) moves to Phase 6 with the Android app.
+  - Open items carried forward: a production Supabase project (team account, Mumbai) when real client data starts;
+    Google brand verification once the team owns a domain; a desktop installer for teammates (Phase 10); a server-side
+    scheduled clean-up of expired video previews (the laptop does it today).
 
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.
