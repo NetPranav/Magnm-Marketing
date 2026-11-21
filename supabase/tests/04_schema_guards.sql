@@ -118,4 +118,19 @@ end;
 $$;
 
 reset role;
+-- API requests run with pg-safeupdate: DELETE or UPDATE without WHERE fails there (but not in these direct tests).
+do $$
+declare v_bad text;
+begin
+  select string_agg(p.proname, ', ') into v_bad
+  from pg_proc p
+  where p.pronamespace = 'public'::regnamespace
+    and (p.prosrc ~* 'delete\s+from\s+[a-z_\.]+\s*;' or p.prosrc ~* 'update\s+[a-z_\.]+\s+set\s+[^;]*;'
+         and not p.prosrc ~* 'update\s+[a-z_\.]+\s+set\s+[^;]*\swhere\s[^;]*;');
+  if v_bad is not null then
+    raise exception 'FAIL: functions with DELETE/UPDATE lacking WHERE (blocked by pg-safeupdate): %', v_bad;
+  end if;
+  raise notice 'PASS: no public function runs DELETE/UPDATE without WHERE';
+end $$;
+
 rollback;
