@@ -8,7 +8,11 @@ import { classifyUpstreamError, KeyPool, MAX_KEY_ATTEMPTS } from "./keys.ts";
 import { createSsePassthroughStream } from "./sse.ts";
 
 export const DEFAULT_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
-export const DEFAULT_UPSTREAM_TIMEOUT_MS = 120_000;
+export const DEFAULT_UPSTREAM_TIMEOUT_MS = 100_000;
+// Total time for all key attempts. Kept below the engine's 120 s client timeout (and the Edge Function wall-clock
+// limit) so the caller always gets a clear answer instead of a dropped connection.
+export const TOTAL_BUDGET_MS = 100_000;
+export const TIMEOUT_MESSAGE = "The AI model took too long to answer. Try again, or use a faster model.";
 
 export interface QuotaCheckResult {
   allowed: boolean;
@@ -169,10 +173,13 @@ export function createProxyHandler(deps: ProxyDeps) {
     let lastError = "Upstream AI request failed.";
     let lastLabel = "none";
 
+    const deadline = Date.now() + Math.min(TOTAL_BUDGET_MS, timeoutMs);
     for (const candidate of candidates) {
+      const remaining = deadline - Date.now();
+      if (remaining < 5_000) break;
       lastLabel = candidate.label;
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const timer = setTimeout(() => controller.abort(), remaining);
 
       let resp: Response;
       try {
@@ -189,8 +196,13 @@ export function createProxyHandler(deps: ProxyDeps) {
       } catch (err) {
         clearTimeout(timer);
         const isAbort = err instanceof Error && err.name === "AbortError";
-        lastStatus = isAbort ? 504 : 502;
-        lastError = isAbort ? "Upstream AI request timed out." : "Upstream AI network error.";
+        if (isAbort) {
+          // A slow model is not the key's fault: no cooldown, and no retry on other keys (it would only be slow again).
+          log(`ai-proxy user=${user.id.slice(0, 8)} model=${model} status=504 tokens=0+0 key=${candidate.label}`);
+          return jsonError(504, TIMEOUT_MESSAGE);
+        }
+        lastStatus = 502;
+        lastError = "Upstream AI network error.";
         deps.keyPool.markCooldown(candidate.label, 30);
         await deps.reportKey(candidate.label, lastStatus, lastError, 30);
         continue;

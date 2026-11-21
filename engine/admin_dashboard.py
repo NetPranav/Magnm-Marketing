@@ -20,6 +20,7 @@ import ai_gateway
 import key_pool
 import media_previews
 import pitch_host
+import paths
 import team_auth
 
 MAX_LIMIT = 200
@@ -1171,17 +1172,31 @@ def update_ai_model(params):
     return {"model": rows[0]}
 
 
+def _pick_test_model(allowed):
+    """Prefer the app's fast tier for the one-word test (a large model can take minutes to answer)."""
+    try:
+        with open(paths.resource("config", "models.json"), "r", encoding="utf-8") as f:
+            fast = (json.load(f).get("tiers") or {}).get("fast") or {}
+    except (OSError, ValueError):
+        fast = {}
+    for candidate in (fast.get("primary"), fast.get("backup")):
+        if candidate and candidate in allowed:
+            return candidate
+    return allowed[0]
+
+
 def test_shared_ai_keys():
     """Send one tiny test request through ai-proxy using the admin's token (always uses proxy)."""
     require_admin()
     rows = _rest_with_retry(
         "GET",
-        "ai_allowed_models?enabled=eq.true&select=model,max_tokens_cap&order=model.asc&limit=1",
+        "ai_allowed_models?enabled=eq.true&select=model&order=model.asc&limit=200",
     )
-    if not isinstance(rows, list) or not rows or not rows[0].get("model"):
+    allowed = [str(r.get("model") or "").strip() for r in rows] if isinstance(rows, list) else []
+    allowed = [m for m in allowed if m]
+    if not allowed:
         raise AdminDashboardError("No enabled AI models configured.", status=400, code="no_enabled_models")
-
-    model = str(rows[0]["model"]).strip()
+    model = _pick_test_model(allowed)
     try:
         cfg = team_auth.get_config()
         token = team_auth.get_access_token()

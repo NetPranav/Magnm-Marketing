@@ -324,30 +324,23 @@ Deno.test("handler rejects non-POST, missing/invalid auth, and does not retry up
   assert.equal(healthReports.length, 0);
 });
 
-Deno.test("handler cools down key for 30s on upstream timeout", async () => {
-  let attempt = 0;
+Deno.test("handler returns 504 on a slow model without cooling down or retrying other keys", async () => {
+  let attempts = 0;
   const { deps, healthReports } = makeDeps({
     fetchFn: () => {
-      attempt++;
-      if (attempt === 1) {
-        const err = new Error("aborted");
-        err.name = "AbortError";
-        return Promise.reject(err);
-      }
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 5, completion_tokens: 2 } }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      );
+      attempts++;
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      return Promise.reject(err);
     },
   });
 
   const resp = await createProxyHandler(deps)(
     makeReq({ model: "nvidia/nemotron-3-ultra-550b-a55b", messages: [{ role: "user", content: "Hi" }] }),
   );
-  assert.equal(resp.status, 200);
-  assert.equal(healthReports[0].status, 504);
-  assert.equal(healthReports[0].cooldown, 30);
-  assert.equal(healthReports[1].status, 200);
+  assert.equal(resp.status, 504);
+  const body = await resp.json();
+  assert.ok(/took too long/.test(body.error), "timeout message");
+  assert.equal(attempts, 1);
+  assert.equal(healthReports.length, 0);
 });
