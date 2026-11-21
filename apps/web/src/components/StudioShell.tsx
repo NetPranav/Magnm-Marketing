@@ -89,11 +89,11 @@ export function StudioShell({
             </nav>
           </div>
           <div className="studio-sidebar-foot">
-            <StatusDot state={engineState} label={engineLabel} live />
-            <div className="studio-sidebar-foot-controls">
-              <ThemeToggle />
+            <div className="studio-sidebar-foot-row">
+              <StatusDot state={engineState} label={engineLabel} live />
               {notificationBell}
             </div>
+            <ThemeToggle />
           </div>
         </aside>
         {mainContent}

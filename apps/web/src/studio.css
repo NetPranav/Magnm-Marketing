@@ -2100,3 +2100,12 @@
     font-size: 8px;
   }
 }
+
+/* Sidebar footer: status and the notification bell share a row; the theme switch keeps its full width below. */
+.studio-sidebar-foot-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  min-width: 0;
+}

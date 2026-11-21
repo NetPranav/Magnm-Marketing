@@ -46,7 +46,8 @@ export async function showSystemNotification(
   notif: NotificationRecord,
   onClickRoute: (route: string) => void,
 ): Promise<boolean> {
-  if (!isAppUnfocused()) {
+  // Normal notifications only pop up when the app is in the background; a test always does, so people can check.
+  if (notif.kind !== 'test' && !isAppUnfocused()) {
     return false;
   }
 
