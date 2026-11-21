@@ -115,6 +115,38 @@ NOTIFICATION_KINDS = (
         "admin_only": True,
         "route": "#/admin",
     },
+    {
+        "kind": "reminder",
+        "label": "Reminders",
+        "description": "When a scheduled or results reminder becomes due",
+        "default": True,
+        "admin_only": False,
+        "route": "#/today",
+    },
+    {
+        "kind": "results_pending",
+        "label": "Results ready to confirm",
+        "description": "When metrics extracted from a screenshot are waiting for confirmation",
+        "default": True,
+        "admin_only": False,
+        "route": "#/today",
+    },
+    {
+        "kind": "weekly_summary",
+        "label": "Weekly summary",
+        "description": "When the Analyst finishes a weekly performance summary",
+        "default": True,
+        "admin_only": False,
+        "route": "#/today/summary",
+    },
+    {
+        "kind": "learning_proposed",
+        "label": "Proposed learnings",
+        "description": "When the Analyst proposes new learnings for approval",
+        "default": True,
+        "admin_only": False,
+        "route": "#/today/learnings",
+    },
 )
 
 KINDS_BY_ID = {item["kind"]: item for item in NOTIFICATION_KINDS}

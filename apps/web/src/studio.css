@@ -2109,3 +2109,244 @@
   gap: var(--s-2);
   min-width: 0;
 }
+
+/* Reminders & Results (Analyst) */
+
+.studio-reminder-item {
+  display: grid;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.studio-reminder-item:last-child {
+  border-bottom: 0;
+}
+
+.studio-reminder--overdue {
+  border-left: 3px solid var(--fg);
+  background: var(--tint);
+}
+
+.studio-reminder-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+.studio-reminder-snooze {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  padding: var(--s-2) var(--s-3);
+  background: var(--tint-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.studio-reminder-form {
+  display: grid;
+  gap: var(--s-2);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--line);
+}
+
+.studio-results-dialog {
+  width: min(860px, calc(100vw - 32px));
+}
+
+.studio-results-review {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: var(--s-4);
+  align-items: start;
+}
+
+.studio-results-thumb {
+  width: 100%;
+  max-height: 300px;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid var(--line-2);
+  background: var(--tint);
+  display: block;
+}
+
+.studio-results-row-thumb {
+  width: 56px;
+  height: 42px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  background: var(--tint);
+  flex-shrink: 0;
+}
+
+.studio-results-proposal-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  padding: var(--s-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.studio-results-proposal-row:last-child {
+  border-bottom: 0;
+}
+
+.studio-results-proposal-main {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+}
+
+.studio-results-fields {
+  display: grid;
+  gap: var(--s-2);
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.studio-results-field-row {
+  display: grid;
+  grid-template-columns: 140px minmax(90px, 120px) minmax(0, 1fr);
+  gap: var(--s-2);
+  align-items: center;
+}
+
+.studio-results-evidence {
+  font-family: var(--f-mono);
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.studio-content-row-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  border-bottom: 1px solid var(--line);
+  padding-right: var(--s-3);
+}
+
+.studio-content-row-wrap:last-child {
+  border-bottom: 0;
+}
+
+.studio-content-row-wrap > .mg-row {
+  flex: 1 1 auto;
+  border-bottom: 0;
+}
+
+@media (max-width: 720px) {
+  .studio-results-review {
+    grid-template-columns: 1fr;
+  }
+
+  .studio-results-field-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Weekly summary & Learnings (Analyst part 2) */
+
+.studio-older-summaries {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.studio-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.studio-summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+
+.studio-summary-table th,
+.studio-summary-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.studio-summary-table th {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.studio-missing-result-row,
+.studio-learning-approved-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  padding: var(--s-2) var(--s-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.studio-missing-result-row:last-child,
+.studio-learning-approved-row:last-child {
+  border-bottom: 0;
+}
+
+.studio-summary-narrative {
+  display: grid;
+  gap: var(--s-2);
+  padding-top: var(--s-2);
+  border-top: 1px solid var(--line);
+}
+
+.studio-summary-narrative-text {
+  display: grid;
+  gap: var(--s-2);
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--fg);
+}
+
+.studio-summary-narrative-text p {
+  margin: 0;
+}
+
+.studio-learning-item {
+  display: grid;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.studio-learning-evidence {
+  display: grid;
+  gap: 2px;
+}
+
+.studio-applies-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+}

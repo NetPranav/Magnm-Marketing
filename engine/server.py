@@ -11,6 +11,8 @@ Runs on http://127.0.0.1:5050
 import base64
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import email.parser
+import email.policy
 import hmac
 import html
 import importlib.util
@@ -43,6 +45,7 @@ import db
 import events
 import jobs
 import key_pool
+import learnings
 import media_previews
 import notifications
 import paths
@@ -51,8 +54,10 @@ import pitch_host
 import pitch_links
 import platforms
 import product_rules
+import reminders
 import repo_sync
 import repos
+import results_extract
 import review
 import review_studio
 import scheduler
@@ -61,6 +66,7 @@ import team_auth
 import team_knowledge
 import team_room
 import web_ui
+import weekly_summary
 import workflows
 
 ROOT = paths.DATA_ROOT
@@ -560,6 +566,248 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         except notifications.NotificationError as exc:
             self.send_json({"error": exc.message}, status=exc.status)
 
+    def _handle_reminders_get(self, url):
+        path = url.path.rstrip("/") or "/"
+        if path != "/api/reminders":
+            self.send_json({"error": "Not found"}, status=404)
+            return
+        qs = urllib.parse.parse_qs(url.query)
+        status_filter = (qs.get("status") or ["open"])[0] or "open"
+        try:
+            items = reminders.list_reminders(status=status_filter)
+            self.send_json({"reminders": items})
+        except reminders.ReminderError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+
+    def _handle_reminders_post(self, url, params):
+        raw_rest = url.path[len("/api/reminders"):].strip("/")
+        parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
+        try:
+            if not parts:
+                rem = reminders.create_reminder(
+                    title=params.get("title"),
+                    due_at=params.get("due_at"),
+                    note=params.get("note") or "",
+                    kind=params.get("kind") or "custom",
+                    content_id=params.get("content_id"),
+                    created_by="user",
+                )
+                cloud_sync.request_sync()
+                self.send_json({"reminder": rem})
+                return
+            if len(parts) == 2 and parts[1] == "done":
+                rem = reminders.mark_done(parts[0])
+                cloud_sync.request_sync()
+                self.send_json({"reminder": rem})
+                return
+            if len(parts) == 2 and parts[1] == "snooze":
+                rem = reminders.snooze_reminder(
+                    parts[0],
+                    minutes=params.get("minutes"),
+                    until=params.get("until"),
+                )
+                cloud_sync.request_sync()
+                self.send_json({"reminder": rem})
+                return
+            self.send_json({"error": "Not found"}, status=404)
+        except reminders.ReminderError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+
+    def _handle_results_get(self, url):
+        raw_rest = url.path[len("/api/results/"):].strip("/")
+        parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
+        qs = urllib.parse.parse_qs(url.query)
+        try:
+            if parts == ["proposals"]:
+                status_filter = (qs.get("status") or ["pending"])[0] or "pending"
+                self.send_json({"proposals": results_extract.list_proposals(status=status_filter)})
+                return
+            if len(parts) == 2 and parts[0] == "proposals":
+                prop = db.get_metric_proposal(parts[1])
+                if prop is None:
+                    self.send_json({"error": "Metric proposal not found"}, status=404)
+                    return
+                self.send_json({"proposal": prop})
+                return
+            if len(parts) == 3 and parts[0] == "proposals" and parts[2] == "image":
+                img_path, mime = results_extract.resolve_proposal_image(parts[1])
+                self._serve_file_with_range(img_path, mime)
+                return
+            self.send_json({"error": "Not found"}, status=404)
+        except results_extract.ResultsExtractError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+
+    def _parse_results_extract_body(self, content_len):
+        if content_len > MAX_POST_BYTES:
+            raise results_extract.ResultsExtractError("Request body too large", status=413)
+        raw_body = self.rfile.read(content_len) if content_len > 0 else b""
+        content_type = self.headers.get("Content-Type") or self.headers.get("content-type") or ""
+        ctype_lower = content_type.split(";")[0].strip().lower()
+
+        if ctype_lower == "multipart/form-data":
+            hdr = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("latin-1", errors="replace")
+            msg = email.parser.BytesParser(policy=email.policy.default).parsebytes(hdr + raw_body)
+            if not msg.is_multipart():
+                raise results_extract.ResultsExtractError("Invalid multipart request", status=400)
+            image_bytes = None
+            content_id = None
+            platform = None
+            for part in msg.iter_parts():
+                field_name = (part.get_param("name", header="content-disposition") or "").strip().lower()
+                filename = part.get_filename()
+                payload = part.get_payload(decode=True)
+                if payload is None:
+                    raw_text = part.get_content()
+                    payload = raw_text.encode("utf-8") if isinstance(raw_text, str) else b""
+                if filename or field_name in ("file", "image", "screenshot"):
+                    if image_bytes is None and payload:
+                        image_bytes = payload
+                elif field_name == "content_id":
+                    content_id = payload.decode("utf-8", errors="replace").strip() or None
+                elif field_name == "platform":
+                    platform = payload.decode("utf-8", errors="replace").strip() or None
+            if image_bytes is None:
+                raise results_extract.ResultsExtractError("Screenshot file is required", status=400)
+            return image_bytes, content_id, platform
+
+        try:
+            params = json.loads(raw_body.decode("utf-8") if raw_body else "{}")
+        except Exception as exc:
+            raise results_extract.ResultsExtractError("Invalid JSON body", status=400) from exc
+        if not isinstance(params, dict):
+            raise results_extract.ResultsExtractError("JSON body must be an object", status=400)
+
+        b64_raw = params.get("image_base64") or params.get("content_base64") or params.get("image") or ""
+        if not isinstance(b64_raw, str) or not b64_raw.strip():
+            raise results_extract.ResultsExtractError("image_base64 is required", status=400)
+        b64_clean = b64_raw.strip()
+        if b64_clean.startswith("data:") and "," in b64_clean:
+            b64_clean = b64_clean.split(",", 1)[1].strip()
+        try:
+            image_bytes = base64.b64decode(b64_clean, validate=True)
+        except Exception as exc:
+            raise results_extract.ResultsExtractError("Invalid base64 image payload", status=400) from exc
+
+        return image_bytes, params.get("content_id"), params.get("platform")
+
+    def _handle_results_extract_post(self, content_len):
+        try:
+            image_bytes, content_id, platform = self._parse_results_extract_body(content_len)
+            res = results_extract.extract_from_image(
+                image_bytes,
+                content_id=content_id,
+                platform=platform,
+            )
+            self.send_json(res)
+        except results_extract.ResultsExtractError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+        except ai_gateway.AINotConnected as exc:
+            self.send_json({"error": str(exc)}, status=503)
+
+    def _handle_results_post(self, url, params):
+        raw_rest = url.path[len("/api/results/"):].strip("/")
+        parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
+        try:
+            if len(parts) == 3 and parts[0] == "proposals" and parts[2] == "confirm":
+                res = results_extract.confirm_proposal(
+                    parts[1],
+                    metrics=params.get("metrics") if "metrics" in params else None,
+                    content_id=params.get("content_id") if "content_id" in params else None,
+                    platform=params.get("platform") if "platform" in params else None,
+                )
+                cloud_sync.request_sync()
+                self.send_json(res)
+                return
+            if len(parts) == 3 and parts[0] == "proposals" and parts[2] == "discard":
+                res = results_extract.discard_proposal(parts[1])
+                self.send_json(res)
+                return
+            self.send_json({"error": "Not found"}, status=404)
+        except results_extract.ResultsExtractError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+
+    def _handle_summaries_get(self, url):
+        path = url.path.rstrip("/") or "/"
+        qs = urllib.parse.parse_qs(url.query)
+        try:
+            if path == "/api/summaries":
+                try:
+                    limit = int((qs.get("limit") or ["52"])[0])
+                except (TypeError, ValueError):
+                    limit = 52
+                self.send_json({"summaries": weekly_summary.list_summaries(limit=limit)})
+                return
+            raw_rest = url.path[len("/api/summaries/"):].strip("/")
+            parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
+            if len(parts) == 1:
+                self.send_json({"summary": weekly_summary.get_summary(parts[0])})
+                return
+            self.send_json({"error": "Not found"}, status=404)
+        except weekly_summary.WeeklySummaryError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+
+    def _handle_summaries_post(self, url, params):
+        path = url.path.rstrip("/") or "/"
+        try:
+            if path == "/api/summaries/generate":
+                res = weekly_summary.generate_summary(
+                    week_start=params.get("week_start"),
+                    notify=True,
+                )
+                cloud_sync.request_sync()
+                self.send_json(res)
+                return
+            self.send_json({"error": "Not found"}, status=404)
+        except weekly_summary.WeeklySummaryError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+
+    def _handle_learnings_get(self, url):
+        path = url.path.rstrip("/") or "/"
+        if path != "/api/learnings":
+            self.send_json({"error": "Not found"}, status=404)
+            return
+        qs = urllib.parse.parse_qs(url.query)
+        status_filter = (qs.get("status") or [""])[0].strip() or None
+        try:
+            limit = int((qs.get("limit") or ["200"])[0])
+        except (TypeError, ValueError):
+            limit = 200
+        self.send_json({"learnings": learnings.list_learnings(status=status_filter, limit=limit)})
+
+    def _handle_learnings_post(self, url, params):
+        raw_rest = url.path[len("/api/learnings"):].strip("/")
+        parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
+        try:
+            if not parts:
+                lr = learnings.add_manual_learning(
+                    text=params.get("text"),
+                    applies_to=params.get("applies_to"),
+                )
+                cloud_sync.request_sync()
+                self.send_json({"learning": lr})
+                return
+            if len(parts) == 2 and parts[1] == "approve":
+                lr = learnings.approve_learning(
+                    parts[0],
+                    text=params.get("text") if "text" in params else None,
+                )
+                cloud_sync.request_sync()
+                self.send_json({"learning": lr})
+                return
+            if len(parts) == 2 and parts[1] == "reject":
+                lr = learnings.reject_learning(parts[0])
+                cloud_sync.request_sync()
+                self.send_json({"learning": lr})
+                return
+            if len(parts) == 2 and parts[1] == "retire":
+                lr = learnings.retire_learning(parts[0])
+                cloud_sync.request_sync()
+                self.send_json({"learning": lr})
+                return
+            self.send_json({"error": "Not found"}, status=404)
+        except learnings.LearningError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+
     def _serve_sse(self):
         """Stream live Server-Sent Events ('job', 'message', 'ping') to connected clients."""
         q = events.subscribe()
@@ -880,6 +1128,13 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                         parts[0],
                         url=params.get("url"),
                         platform=params.get("platform"),
+                    )
+                )
+            elif len(parts) == 2 and parts[1] == "unpost":
+                self.send_json(
+                    review_studio.unmark_posted(
+                        parts[0],
+                        status=params.get("status") or "ready",
                     )
                 )
             else:
@@ -1250,6 +1505,18 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         elif url.path == "/api/notifications" or url.path.startswith("/api/notifications/"):
             self._handle_notifications_get(url)
 
+        elif url.path == "/api/reminders" or url.path.startswith("/api/reminders/"):
+            self._handle_reminders_get(url)
+
+        elif url.path.startswith("/api/results/"):
+            self._handle_results_get(url)
+
+        elif url.path == "/api/summaries" or url.path.startswith("/api/summaries/"):
+            self._handle_summaries_get(url)
+
+        elif url.path == "/api/learnings" or url.path.startswith("/api/learnings/"):
+            self._handle_learnings_get(url)
+
         elif url.path.startswith("/api/asset/"):
             parts = url.path.split("/")[3:]
             if len(parts) >= 2:
@@ -1292,6 +1559,14 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Watch topic not found"}, status=404)
                 return
             self.send_json({"success": True, "id": topic_id})
+        elif re.match(r"^/api/reminders/[^/]+$", url.path):
+            reminder_id = urllib.parse.unquote(url.path.split("/")[3])
+            try:
+                res = reminders.delete_reminder(reminder_id)
+                cloud_sync.request_sync()
+                self.send_json(res)
+            except reminders.ReminderError as exc:
+                self.send_json({"error": exc.message}, status=exc.status)
         else:
             self.send_error(404, "Not Found")
 
@@ -1314,6 +1589,10 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             self._handle_pitch_post_pdf(proposal_id, content_len)
             return
 
+        if url.path == "/api/results/extract":
+            self._handle_results_extract_post(content_len)
+            return
+
         is_strict_json = (
             url.path.startswith("/api/review/")
             or url.path.startswith("/api/pitch/")
@@ -1321,6 +1600,12 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             or url.path.startswith("/api/team/")
             or url.path.startswith("/api/admin/")
             or url.path.startswith("/api/notifications/")
+            or url.path == "/api/reminders"
+            or url.path.startswith("/api/reminders/")
+            or url.path.startswith("/api/results/")
+            or url.path.startswith("/api/summaries/")
+            or url.path == "/api/learnings"
+            or url.path.startswith("/api/learnings/")
         )
         max_len = MAX_REVIEW_BODY_BYTES if url.path.startswith("/api/review/") else MAX_POST_BYTES
         if content_len > max_len:
@@ -1361,6 +1646,22 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         if url.path.startswith("/api/notifications/"):
             self._handle_notifications_post(url, params)
+            return
+
+        if url.path == "/api/reminders" or url.path.startswith("/api/reminders/"):
+            self._handle_reminders_post(url, params)
+            return
+
+        if url.path.startswith("/api/results/"):
+            self._handle_results_post(url, params)
+            return
+
+        if url.path.startswith("/api/summaries/"):
+            self._handle_summaries_post(url, params)
+            return
+
+        if url.path == "/api/learnings" or url.path.startswith("/api/learnings/"):
+            self._handle_learnings_post(url, params)
             return
 
         if url.path == "/api/shutdown":
@@ -1907,12 +2208,20 @@ Hard Rules:
         elif re.match(r"^/api/content/[^/]+/status$", url.path):
             content_id = url.path.split("/")[3]
             status_val = (params.get("status") or "").strip().lower()
-            if status_val not in ("ready", "posted"):
-                self.send_json({"error": "status must be 'ready' or 'posted'"}, status=400)
+            if status_val not in ("draft", "ready", "posted"):
+                self.send_json({"error": "status must be 'draft', 'ready', or 'posted'"}, status=400)
                 return
             try:
-                if status_val == "ready":
-                    updated = db.mark_ready(content_id)
+                if status_val in ("draft", "ready"):
+                    existing = db.get_content_item(content_id)
+                    if existing is None:
+                        raise ValueError(f"Content item '{content_id}' not found")
+                    if existing.get("status") == "posted":
+                        updated = db.unmark_posted(content_id, status=status_val)
+                    elif status_val == "ready":
+                        updated = db.mark_ready(content_id)
+                    else:
+                        raise ValueError("status must be 'ready' or 'posted'")
                 else:
                     updated = db.mark_posted(
                         content_id,

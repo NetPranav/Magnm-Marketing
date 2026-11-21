@@ -19,6 +19,11 @@ import {
   listSessions,
   listWorkflows,
 } from '../../api/today';
+import { listLearnings } from '../../api/learnings';
+import { listReminders } from '../../api/reminders';
+import { discardResultsProposal, listResultsProposals } from '../../api/results';
+import { generateSummary, listSummaries } from '../../api/summaries';
+import { AddResultsDialog } from '../../components/AddResultsDialog';
 import { useStudioEvents } from '../../events';
 import type {
   AgentSession,
@@ -26,11 +31,19 @@ import type {
   EngineStatusInfo,
   HealthInfo,
   JobRecord,
+  LearningRecord,
+  MetricProposal,
   ProductFact,
+  ReminderRecord,
+  WeeklySummaryRecord,
   WorkflowGate,
   WorkflowRun,
 } from '../../types';
 import { formatTimestamp } from '../../ui/format';
+import { LearningsCard } from './LearningsCard';
+import { RemindersCard } from './RemindersCard';
+import { ResultsCard } from './ResultsCard';
+import { WeeklySummaryCard } from './WeeklySummaryCard';
 
 export interface TodaySectionProps {
   health: HealthInfo | null;
@@ -38,6 +51,7 @@ export interface TodaySectionProps {
   jobs: JobRecord[];
   loading: boolean;
   error: string | null;
+  focusParam?: string | null;
   onRefreshSummary?: () => void;
 }
 
@@ -117,18 +131,77 @@ export function TodaySection({
   jobs,
   loading,
   error,
+  focusParam,
   onRefreshSummary,
 }: TodaySectionProps) {
   const [sessions, setSessions] = useState<AgentSession[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
   const [pendingFacts, setPendingFacts] = useState<ProductFact[]>([]);
   const [contentItems, setContentItems] = useState<ContentItem[]>([]);
+  const [reminders, setReminders] = useState<ReminderRecord[]>([]);
+  const [proposals, setProposals] = useState<MetricProposal[]>([]);
+  const [summaries, setSummaries] = useState<WeeklySummaryRecord[]>([]);
+  const [selectedSummaryId, setSelectedSummaryId] = useState<string | null>(null);
+  const [generatingSummary, setGeneratingSummary] = useState(false);
+  const [learnings, setLearnings] = useState<LearningRecord[]>([]);
+  const [resultsDialog, setResultsDialog] = useState<{
+    open: boolean;
+    contentId?: string | null;
+    platform?: string | null;
+    proposal?: MetricProposal | null;
+  }>({ open: false });
   const [auxLoading, setAuxLoading] = useState(true);
   const [auxError, setAuxError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [sessionAnswers, setSessionAnswers] = useState<Record<string, string>>({});
   const [gateFeedback, setGateFeedback] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!focusParam) return;
+    if (focusParam.startsWith('summary/')) {
+      const targetId = focusParam.slice('summary/'.length).trim();
+      if (targetId) {
+        setSelectedSummaryId(targetId);
+      }
+    }
+  }, [focusParam]);
+
+  const refreshReminders = useCallback(async () => {
+    try {
+      const next = await listReminders('open');
+      setReminders(next);
+    } catch {
+      // Non-fatal during partial refresh
+    }
+  }, []);
+
+  const refreshProposals = useCallback(async () => {
+    try {
+      const next = await listResultsProposals('pending');
+      setProposals(next);
+    } catch {
+      // Non-fatal during partial refresh
+    }
+  }, []);
+
+  const refreshSummaries = useCallback(async () => {
+    try {
+      const next = await listSummaries();
+      setSummaries(next);
+    } catch {
+      // Non-fatal during partial refresh
+    }
+  }, []);
+
+  const refreshLearnings = useCallback(async () => {
+    try {
+      const next = await listLearnings();
+      setLearnings(next);
+    } catch {
+      // Non-fatal during partial refresh
+    }
+  }, []);
 
   const loadWorkItems = useCallback(async () => {
     setAuxError(null);
@@ -137,10 +210,14 @@ export function TodaySection({
       listWorkflows(20),
       listPendingFacts(),
       listContent(50),
+      listReminders('open'),
+      listResultsProposals('pending'),
+      listSummaries(),
+      listLearnings(),
     ]);
 
     let firstErr: string | null = null;
-    const [sessRes, wfRes, factsRes, contentRes] = results;
+    const [sessRes, wfRes, factsRes, contentRes, remRes, propRes, sumRes, lrnRes] = results;
 
     if (sessRes.status === 'fulfilled') {
       setSessions(Array.isArray(sessRes.value) ? sessRes.value : []);
@@ -164,6 +241,26 @@ export function TodaySection({
       setContentItems(Array.isArray(contentRes.value) ? contentRes.value : []);
     } else if (contentRes.reason instanceof Error) {
       firstErr = firstErr ?? contentRes.reason.message;
+    }
+
+    if (remRes.status === 'fulfilled') {
+      setReminders(Array.isArray(remRes.value) ? remRes.value : []);
+    } else if (remRes.reason instanceof Error) {
+      firstErr = firstErr ?? remRes.reason.message;
+    }
+
+    if (propRes.status === 'fulfilled') {
+      setProposals(Array.isArray(propRes.value) ? propRes.value : []);
+    } else if (propRes.reason instanceof Error) {
+      firstErr = firstErr ?? propRes.reason.message;
+    }
+
+    if (sumRes.status === 'fulfilled') {
+      setSummaries(Array.isArray(sumRes.value) ? sumRes.value : []);
+    }
+
+    if (lrnRes.status === 'fulfilled') {
+      setLearnings(Array.isArray(lrnRes.value) ? lrnRes.value : []);
     }
 
     setAuxError(firstErr);
@@ -203,9 +300,22 @@ export function TodaySection({
           void listContent(50)
             .then((next) => setContentItems(Array.isArray(next) ? next : []))
             .catch(() => {});
+          void refreshReminders();
+        } else if (eventName === 'notification' && data && typeof data === 'object') {
+          const kind = (data as { kind?: string }).kind;
+          if (kind === 'reminder') {
+            void refreshReminders();
+          } else if (kind === 'results_pending') {
+            void refreshProposals();
+          } else if (kind === 'weekly_summary') {
+            void refreshSummaries();
+            void refreshLearnings();
+          } else if (kind === 'learning_proposed') {
+            void refreshLearnings();
+          }
         }
       },
-      [],
+      [refreshLearnings, refreshProposals, refreshReminders, refreshSummaries],
     ),
   );
 
@@ -311,6 +421,22 @@ export function TodaySection({
       setActionError(err instanceof Error ? err.message : 'Failed to answer gate.');
     } finally {
       setBusyId(null);
+    }
+  };
+
+  const handleGenerateSummary = async () => {
+    setActionError(null);
+    setGeneratingSummary(true);
+    try {
+      const res = await generateSummary();
+      await Promise.all([refreshSummaries(), refreshLearnings()]);
+      if (res?.summary?.id) {
+        setSelectedSummaryId(res.summary.id);
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to generate weekly summary.');
+    } finally {
+      setGeneratingSummary(false);
     }
   };
 
@@ -547,6 +673,77 @@ export function TodaySection({
             ))}
           </RowList>
         )}
+
+        <RemindersCard
+          reminders={reminders}
+          loading={auxLoading}
+          onRefresh={refreshReminders}
+          onAddResults={(cid) => {
+            const matched = contentItems.find((item) => item.id === cid);
+            setActionError(null);
+            setResultsDialog({
+              open: true,
+              contentId: cid,
+              platform: matched?.platform ?? null,
+              proposal: null,
+            });
+          }}
+          onError={(msg) => setActionError(msg)}
+        />
+
+        <ResultsCard
+          proposals={proposals}
+          contentItems={contentItems}
+          loading={auxLoading}
+          onOpenNew={() => {
+            setActionError(null);
+            setResultsDialog({ open: true, contentId: null, platform: null, proposal: null });
+          }}
+          onReviewProposal={(prop) => {
+            setActionError(null);
+            setResultsDialog({
+              open: true,
+              contentId: prop.content_id ?? null,
+              platform: prop.platform ?? null,
+              proposal: prop,
+            });
+          }}
+          onDiscardProposal={(proposalId) => {
+            setActionError(null);
+            void discardResultsProposal(proposalId)
+              .then(() => refreshProposals())
+              .catch((err) => {
+                setActionError(err instanceof Error ? err.message : 'Failed to discard results.');
+              });
+          }}
+        />
+
+        <WeeklySummaryCard
+          summaries={summaries}
+          loading={auxLoading}
+          generating={generatingSummary}
+          selectedSummaryId={selectedSummaryId}
+          onSelectSummary={(id) => setSelectedSummaryId(id)}
+          onGenerateNow={() => void handleGenerateSummary()}
+          onAddResults={(cid, plat) => {
+            const matched = contentItems.find((item) => item.id === cid);
+            setActionError(null);
+            setResultsDialog({
+              open: true,
+              contentId: cid,
+              platform: plat ?? matched?.platform ?? null,
+              proposal: null,
+            });
+          }}
+        />
+
+        <LearningsCard
+          learnings={learnings}
+          contentItems={contentItems}
+          loading={auxLoading}
+          onRefresh={refreshLearnings}
+          onError={(msg) => setActionError(msg)}
+        />
       </section>
 
       <section className="studio-section" aria-labelledby="today-engine-heading">
@@ -643,6 +840,22 @@ export function TodaySection({
           </RowList>
         )}
       </section>
+
+      <AddResultsDialog
+        open={resultsDialog.open}
+        onClose={() => setResultsDialog({ open: false })}
+        initialContentId={resultsDialog.contentId}
+        initialPlatform={resultsDialog.platform}
+        initialProposal={resultsDialog.proposal}
+        contentItems={contentItems}
+        onSaved={() => {
+          void refreshProposals();
+          void refreshReminders();
+        }}
+        onDiscarded={() => {
+          void refreshProposals();
+        }}
+      />
     </div>
   );
 }

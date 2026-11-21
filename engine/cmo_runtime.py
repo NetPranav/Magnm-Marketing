@@ -45,6 +45,7 @@ ALLOWED_JOBS = {
     "workflow_step": "Execute Workflow Step",
     "review_action": "Execute Review Studio Background Action",
     "install_browser": "Install Playwright Chromium Browser",
+    "weekly_summary": "Generate Weekly Analyst Summary & Learnings",
 }
 
 def log_activity(actor, target_role, task_name, output_file):
@@ -142,6 +143,13 @@ def run_job_body(job_name, job_id=None, actor="UI", log_file=None, params=None):
     elif job_name == "review_action":
         import review_studio
         res = review_studio.execute_review_job(params or {}, job_id=job_id, log_file=log_file)
+        if isinstance(res, dict) and job_id:
+            db.update_job(job_id, result=res)
+        output += json.dumps(res, indent=2, default=str) + "\n"
+    elif job_name == "weekly_summary":
+        _checkpoint(20, "Building weekly performance summary...")
+        import weekly_summary
+        res = weekly_summary.generate_summary(week_start=(params or {}).get("week_start"), notify=True)
         if isinstance(res, dict) and job_id:
             db.update_job(job_id, result=res)
         output += json.dumps(res, indent=2, default=str) + "\n"

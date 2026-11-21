@@ -349,6 +349,7 @@ export function App() {
             jobs={jobs}
             loading={loading}
             error={error}
+            focusParam={param}
             onRefreshSummary={() => void loadSummary()}
           />
         );

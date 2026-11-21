@@ -471,3 +471,128 @@ export interface PostingKitResult {
   files: string[];
   attachments?: ContentFileEntry[];
 }
+
+export interface ReminderRecord {
+  id: string;
+  title: string;
+  note: string;
+  due_at: string;
+  kind: 'custom' | 'results_due' | 'post_due' | string;
+  content_id?: string | null;
+  created_by: string;
+  created_at: string;
+  done_at?: string | null;
+  snoozed_until?: string | null;
+  fired_at?: string | null;
+}
+
+export interface MetricProposal {
+  id: string;
+  content_id?: string | null;
+  platform?: string | null;
+  metrics: Record<string, number>;
+  evidence: Record<string, string>;
+  image_path?: string | null;
+  status: 'pending' | 'saved' | 'discarded' | string;
+  created_at: string;
+  decided_at?: string | null;
+}
+
+export interface MetricRecord {
+  id: string;
+  content_id?: string | null;
+  platform: string;
+  metrics: Record<string, number>;
+  source: 'screenshot' | 'manual' | string;
+  captured_at: string;
+  created_by?: string | null;
+  created_at: string;
+}
+
+export interface WeeklySummaryPostHighlight {
+  content_id: string;
+  metric_id?: string | null;
+  title: string;
+  platform: string;
+  posted_at?: string | null;
+  posted_url?: string;
+  metrics?: Record<string, number>;
+  engagement?: number;
+  views?: number | null;
+  score?: number;
+  score_unit?: 'per_view' | 'engagement' | string;
+}
+
+export interface WeeklySummaryMissingResult {
+  content_id: string;
+  title: string;
+  platform: string;
+  posted_at?: string | null;
+  posted_url?: string;
+}
+
+export interface WeeklySummaryPlatformRow {
+  platform: string;
+  posts_count: number;
+  with_results_count: number;
+  totals: Record<string, number>;
+  averages: Record<string, number>;
+  prev_posts_count: number;
+  prev_totals: Record<string, number>;
+  wow_change: Record<string, number | 'n/a'>;
+}
+
+export interface WeeklySummaryHighlights {
+  platforms?: Record<string, WeeklySummaryPlatformRow>;
+  platform_rows?: WeeklySummaryPlatformRow[];
+  overall?: Omit<WeeklySummaryPlatformRow, 'platform'>;
+  top_post?: WeeklySummaryPostHighlight | null;
+  bottom_post?: WeeklySummaryPostHighlight | null;
+  missing_results?: WeeklySummaryMissingResult[];
+  counts?: Record<string, number>;
+}
+
+export interface WeeklySummaryData {
+  week_start: string;
+  week_end: string;
+  week_label?: string;
+  posts?: Array<{
+    content_id: string;
+    title: string;
+    platform: string;
+    posted_at?: string;
+    posted_url?: string;
+  }>;
+  drafts_created?: Array<{ content_id: string; title: string }>;
+  research_notes?: Array<{ id: string; title: string }>;
+  reminders?: { done?: unknown[]; missed?: unknown[] };
+}
+
+export interface WeeklySummaryRecord {
+  id: string;
+  week_start: string;
+  created_at: string;
+  data: WeeklySummaryData;
+  highlights: WeeklySummaryHighlights;
+  narrative: string;
+  status: 'ready' | 'tables_only' | 'narrative_skipped' | string;
+}
+
+export interface LearningEvidence {
+  content_id: string;
+  metric_id?: string | null;
+  title?: string;
+  platform?: string;
+  metrics?: Record<string, number>;
+}
+
+export interface LearningRecord {
+  id: string;
+  text: string;
+  evidence: LearningEvidence[];
+  applies_to: string[];
+  status: 'pending' | 'approved' | 'rejected' | 'retired' | string;
+  source_summary_id?: string | null;
+  created_at: string;
+  decided_at?: string | null;
+}

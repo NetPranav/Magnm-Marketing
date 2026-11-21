@@ -15,6 +15,7 @@ import db
 import paths
 import platforms
 import product_rules
+import results_extract
 import review
 from tools import tool
 
@@ -303,9 +304,25 @@ def write_review(ctx, content_id, verdict, notes):
     }
 
 
+def _session_saw_image(ctx):
+    """Return True if the current chat has image attachments or the agent called check_image in it."""
+    if not ctx:
+        return False
+    if getattr(ctx, "attachments", None):
+        return True
+    session_id = getattr(ctx, "session_id", None)
+    if not session_id:
+        return False
+    try:
+        calls = db.list_tool_calls(session_id=session_id, limit=500)
+    except Exception:
+        return True  # If we can't tell, be safe and ask for confirmation.
+    return any(str(c.get("tool") or "") == "check_image" for c in calls or [])
+
+
 @tool(
     name="record_metrics",
-    description="Persist observed post performance metrics from a screenshot or manual numbers.",
+    description="Persist manual post performance numbers directly, or stage screenshot metrics as a pending proposal for user confirmation.",
     parameters_schema={
         "type": "object",
         "properties": {
@@ -318,7 +335,7 @@ def write_review(ctx, content_id, verdict, notes):
             "source": {
                 "type": "string",
                 "enum": list(VALID_METRIC_SOURCES),
-                "description": "Where the numbers came from: 'screenshot' or 'manual'.",
+                "description": "Where the numbers came from: 'screenshot' (stages proposal for confirmation) or 'manual' (saves directly).",
             },
             "captured_at": {"type": "string", "description": "Optional ISO timestamp of capture."},
         },
@@ -332,6 +349,48 @@ def record_metrics(ctx, content_id, platform, metrics, source, captured_at=None)
         return {"error": f"Invalid source '{source}'. Expected 'screenshot' or 'manual'."}
     if not isinstance(metrics, dict):
         return {"error": "metrics must be an object"}
+
+    # The model chooses `source`, so don't trust it: if this chat has an image attached or the agent looked at one,
+    # the numbers may come from a screenshot and must wait for the user's confirmation.
+    if norm_source == "manual" and _session_saw_image(ctx):
+        norm_source = "screenshot"
+
+    if norm_source == "screenshot":
+        cleaned = results_extract.clean_metrics_dict(metrics)
+        if not cleaned:
+            return {"error": "At least one valid non-negative metric is required."}
+        norm_platform = platforms.normalize_platform(platform) if platform else None
+        img_rel = None
+        if ctx and ctx.attachments:
+            real_root = os.path.realpath(paths.DATA_ROOT)
+            for att in ctx.attachments:
+                if not isinstance(att, str) or not att.strip():
+                    continue
+                cand = att if os.path.isabs(att) else os.path.join(paths.DATA_ROOT, att)
+                real_att = os.path.realpath(cand)
+                try:
+                    inside = os.path.commonpath([real_root, real_att]) == real_root
+                except ValueError:
+                    inside = False
+                if inside and os.path.isfile(real_att):
+                    img_rel = os.path.relpath(real_att, real_root).replace("\\", "/")
+                    break
+        proposal_id = f"mprop_{uuid.uuid4().hex[:12]}"
+        proposal = db.create_metric_proposal(
+            proposal_id,
+            content_id=content_id,
+            platform=norm_platform,
+            metrics=cleaned,
+            evidence={},
+            image_path=img_rel,
+            status="pending",
+        )
+        results_extract.notify_pending_proposal(proposal)
+        return {
+            "status": "pending",
+            "message": "Waiting for your confirmation in Results",
+            "proposal": proposal,
+        }
 
     metric_id = f"met_{uuid.uuid4().hex[:12]}"
     saved = db.record_metric(

@@ -36,21 +36,29 @@ async function parseErrorBody(response: Response): Promise<{ message: string; da
   return { message: response.statusText || `Request failed (${response.status})` };
 }
 
-async function request<T>(method: 'GET' | 'POST' | 'DELETE', path: string, body?: unknown): Promise<T> {
+async function request<T>(
+  method: 'GET' | 'POST' | 'DELETE',
+  path: string,
+  body?: unknown,
+): Promise<T> {
   const headers: Record<string, string> = {
     Accept: 'application/json',
   };
-  let serializedBody: string | undefined;
+  let requestBody: BodyInit | undefined;
   if (method === 'POST') {
-    headers['Content-Type'] = 'application/json';
-    serializedBody = JSON.stringify(body === undefined ? {} : body);
+    if (body instanceof FormData) {
+      requestBody = body;
+    } else {
+      headers['Content-Type'] = 'application/json';
+      requestBody = JSON.stringify(body === undefined ? {} : body);
+    }
   }
 
   const response = await fetch(path, {
     method,
     credentials: 'same-origin',
     headers,
-    body: serializedBody,
+    body: requestBody,
   });
 
   if (response.status === 401) {
@@ -75,6 +83,9 @@ export const api = {
   },
   post<T>(path: string, body?: unknown): Promise<T> {
     return request<T>('POST', path, body);
+  },
+  postForm<T>(path: string, formData: FormData): Promise<T> {
+    return request<T>('POST', path, formData);
   },
   delete<T>(path: string): Promise<T> {
     return request<T>('DELETE', path);

@@ -24,6 +24,7 @@ import {
   updateReviewComment,
 } from '../../api/review';
 import { getRoster, type RosterAgent } from '../../api/team';
+import { AddResultsDialog } from '../../components/AddResultsDialog';
 import { useFallbackPoll, useStudioEvents } from '../../events';
 import type {
   JobRecord,
@@ -144,6 +145,7 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
   const [postingKit, setPostingKit] = useState<PostingKitResult | null>(null);
   const [postingKitOpen, setPostingKitOpen] = useState(false);
   const [postedDialogOpen, setPostedDialogOpen] = useState(false);
+  const [resultsDialogOpen, setResultsDialogOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   const [activeJob, setActiveJob] = useState<JobRecord | null>(null);
@@ -547,7 +549,11 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
   // Keyboard shortcuts: J/K navigate comments, R reply, E resolve/reopen, ? help, Escape closes popovers.
   useEffect(() => {
     const anyModalOpen =
-      postingKitOpen || postedDialogOpen || restoreVersionTarget !== null || shortcutsOpen;
+      postingKitOpen ||
+      postedDialogOpen ||
+      resultsDialogOpen ||
+      restoreVersionTarget !== null ||
+      shortcutsOpen;
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -615,6 +621,7 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
   }, [
     postingKitOpen,
     postedDialogOpen,
+    resultsDialogOpen,
     restoreVersionTarget,
     shortcutsOpen,
     visibleComments,
@@ -883,6 +890,16 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
         >
           Mark as posted
         </PillButton>
+        {review.item.status === 'posted' ? (
+          <PillButton
+            variant="outline"
+            size="sm"
+            disabled={busyAction !== null}
+            onClick={() => setResultsDialogOpen(true)}
+          >
+            Add results
+          </PillButton>
+        ) : null}
       </BottomBar>
 
       <PostingKitDialog
@@ -911,6 +928,17 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
       <ShortcutsDialog
         open={shortcutsOpen}
         onClose={() => setShortcutsOpen(false)}
+      />
+
+      <AddResultsDialog
+        open={resultsDialogOpen}
+        onClose={() => setResultsDialogOpen(false)}
+        initialContentId={review.item.id}
+        initialPlatform={review.item.platform ?? null}
+        contentItems={[review.item]}
+        onSaved={() => {
+          setNotice('Results saved.');
+        }}
       />
     </div>
   );

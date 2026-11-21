@@ -14,9 +14,11 @@ if _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
 
 import agents
+import cloud_sync
 import db
 import paths
 import product_rules
+import reminders
 import repos
 from tools import tool
 
@@ -695,3 +697,72 @@ def recall_memory(ctx):
         "team_feedback": team_feedback,
         "summary": block,
     }
+
+
+@tool(
+    name="set_reminder",
+    description="Set a future reminder for the user. due_at accepts ISO timestamps or IST phrases like 'in 2 hours', 'tomorrow 10am', or 'Friday 10am'.",
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Short reminder title (e.g. 'Post LinkedIn update').",
+            },
+            "due_at": {
+                "type": "string",
+                "description": "Future time in IST or ISO-8601 (e.g. 'in 2 hours', 'tomorrow 10am', 'Friday 10am', '2026-11-25T10:00:00+05:30').",
+            },
+            "note": {
+                "type": "string",
+                "description": "Optional additional context or note.",
+            },
+            "content_id": {
+                "type": "string",
+                "description": "Optional linked content_id.",
+            },
+        },
+        "required": ["title", "due_at"],
+    },
+    side_effects=True,
+)
+def set_reminder(ctx, title, due_at, note=None, content_id=None):
+    raw_aid = ctx.agent_id if ctx and ctx.agent_id else "user"
+    ag = agents.get_agent(raw_aid)
+    created_by = ag["id"] if ag else (str(raw_aid).strip().lower() or "user")
+    try:
+        rem = reminders.create_reminder(
+            title=title,
+            due_at=due_at,
+            note=note or "",
+            kind="custom",
+            content_id=content_id,
+            created_by=created_by,
+        )
+    except reminders.ReminderError as exc:
+        return {"error": exc.message}
+    cloud_sync.request_sync()
+    return {"reminder": rem}
+
+
+@tool(
+    name="list_reminders",
+    description="List open or completed reminders.",
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": ["open", "done", "all"],
+                "description": "Filter reminders by status (default 'open').",
+            }
+        },
+        "required": [],
+    },
+)
+def list_reminders(ctx, status="open"):
+    try:
+        rows = reminders.list_reminders(status=status)
+    except reminders.ReminderError as exc:
+        return {"error": exc.message}
+    return {"reminders": rows}

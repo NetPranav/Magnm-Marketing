@@ -10,6 +10,7 @@ import {
   TextInput,
 } from '@magnm/design/react';
 import { deleteAsset, listAssets, listContent, uploadAsset } from '../../api/library';
+import { AddResultsDialog } from '../../components/AddResultsDialog';
 import type { AssetRecord, ContentItem } from '../../types';
 import { formatTimestamp } from '../../ui/format';
 
@@ -42,6 +43,7 @@ export function LibrarySection() {
 
   const [selectedAsset, setSelectedAsset] = useState<AssetRecord | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<AssetRecord | null>(null);
+  const [resultsTarget, setResultsTarget] = useState<ContentItem | null>(null);
 
   const [uploadCategory, setUploadCategory] = useState('cero');
   const [uploadDescription, setUploadDescription] = useState('');
@@ -452,24 +454,41 @@ export function LibrarySection() {
           <div className="mg-empty">No content items match this status.</div>
         ) : (
           <RowList aria-label="Content library">
-            {filteredContent.map((item) => (
-              <a
-                key={item.id}
-                className="mg-row"
-                href={`#/review/${encodeURIComponent(item.id)}`}
-              >
-                <div className="mg-row-main">
-                  <span className="mg-row-title">{item.title || item.id}</span>
-                  <span className="mg-row-desc">
-                    {item.type}
-                    {item.platform ? ` · ${item.platform}` : ''}
-                    {item.product_id ? ` · ${item.product_id}` : ''}
-                    {item.updated_at ? ` · ${formatTimestamp(item.updated_at)}` : ''}
-                  </span>
-                </div>
-                <span className="mg-row-meta">{item.status}</span>
-              </a>
-            ))}
+            {filteredContent.map((item) => {
+              const rowLink = (
+                <a
+                  key={item.status === 'posted' ? undefined : item.id}
+                  className="mg-row"
+                  href={`#/review/${encodeURIComponent(item.id)}`}
+                >
+                  <div className="mg-row-main">
+                    <span className="mg-row-title">{item.title || item.id}</span>
+                    <span className="mg-row-desc">
+                      {item.type}
+                      {item.platform ? ` · ${item.platform}` : ''}
+                      {item.product_id ? ` · ${item.product_id}` : ''}
+                      {item.updated_at ? ` · ${formatTimestamp(item.updated_at)}` : ''}
+                    </span>
+                  </div>
+                  <span className="mg-row-meta">{item.status}</span>
+                </a>
+              );
+              if (item.status === 'posted') {
+                return (
+                  <div key={item.id} className="studio-content-row-wrap">
+                    {rowLink}
+                    <PillButton
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setResultsTarget(item)}
+                    >
+                      Add results
+                    </PillButton>
+                  </div>
+                );
+              }
+              return rowLink;
+            })}
           </RowList>
         )}
       </section>
@@ -502,6 +521,17 @@ export function LibrarySection() {
           </p>
         ) : null}
       </Dialog>
+
+      <AddResultsDialog
+        open={Boolean(resultsTarget)}
+        onClose={() => setResultsTarget(null)}
+        initialContentId={resultsTarget?.id ?? null}
+        initialPlatform={resultsTarget?.platform ?? null}
+        contentItems={contentItems}
+        onSaved={() => {
+          setNotice('Results saved.');
+        }}
+      />
     </div>
   );
 }

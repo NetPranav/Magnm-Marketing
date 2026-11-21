@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """In-process daemon scheduler loop for desktop and standalone engine runs."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import os
 import sys
 import threading
@@ -14,6 +14,7 @@ if _ENGINE_DIR not in sys.path:
 import cmo_runtime
 import db
 import jobs
+import reminders
 
 CHECK_INTERVAL_S = 60
 IST = ZoneInfo("Asia/Kolkata")
@@ -55,6 +56,16 @@ DEFAULT_SCHEDULES = [
         "command": "watch_topics",
         "interval_hours": 1,
         "description": "Runs due research watch topics hourly",
+        "enabled": True,
+        "last_run": None,
+        "last_status": "idle",
+    },
+    {
+        "id": "weekly_summary",
+        "name": "Weekly Analyst Summary",
+        "command": "weekly_summary",
+        "cron": "0 9 * * 1",
+        "description": "Generates the previous week's Analyst summary and learnings on Monday at 09:00 IST",
         "enabled": True,
         "last_run": None,
         "last_status": "idle",
@@ -124,6 +135,18 @@ def is_due(schedule, now=None):
             return False
 
         now_ist = now_utc.astimezone(IST)
+        # Weekly summary runs Monday 09:00 IST and catches up once if Monday 09:00 IST was missed.
+        if schedule.get("id") == "weekly_summary" or schedule.get("command") == "weekly_summary":
+            this_monday = now_ist.date() - timedelta(days=now_ist.weekday())
+            target_monday = datetime(
+                this_monday.year, this_monday.month, this_monday.day, hour, minute, 0, tzinfo=IST
+            )
+            if now_ist < target_monday:
+                return False
+            if last_run_utc is None:
+                return True
+            return last_run_utc.astimezone(IST) < target_monday
+
         if not _cron_field_matches(dom_s, now_ist.day):
             return False
         if not _cron_field_matches(month_s, now_ist.month):
@@ -173,8 +196,9 @@ def ensure_default_schedules():
 
 
 def tick(now=None):
-    """Evaluate all schedules at `now`, enqueue due jobs without duplicates, and record last_run."""
+    """Evaluate all schedules and due reminders at `now`, enqueueing due jobs without duplicates."""
     now_utc = _as_utc(now)
+    reminders.check_due_reminders(now=now_utc)
     schedules = db.load_schedules()
     if not schedules:
         return []
@@ -210,9 +234,58 @@ def _startup_delay_s():
         return 120.0
 
 
+def is_disabled():
+    """Return True when MAGNM_DISABLE_SCHEDULER disables the background scheduler loop."""
+    return os.environ.get("MAGNM_DISABLE_SCHEDULER", "").strip().lower() in ("1", "true", "yes")
+
+
+def check_missed_weekly_summary(now=None):
+    """Run missed Monday 09:00 IST weekly_summary once at startup if overdue."""
+    if is_disabled():
+        return []
+    now_utc = _as_utc(now)
+    schedules = db.load_schedules()
+    if not schedules:
+        return []
+    dirty = False
+    enqueued = []
+    for sched in schedules:
+        if sched.get("command") != "weekly_summary":
+            continue
+        if not is_due(sched, now_utc):
+            continue
+        if db.has_active_job("weekly_summary"):
+            continue
+        job = jobs.enqueue("weekly_summary", actor="scheduler")
+        sched["last_run"] = now_utc.isoformat()
+        sched["last_status"] = "queued"
+        dirty = True
+        enqueued.append(job)
+    if dirty:
+        db.save_schedules(schedules)
+    return enqueued
+
+
 def _loop(interval_s):
-    if _stop_event.wait(_startup_delay_s()):
-        return
+    try:
+        reminders.check_due_reminders()
+    except Exception:
+        pass
+    try:
+        check_missed_weekly_summary()
+    except Exception:
+        pass
+    remaining = _startup_delay_s()
+    while remaining > 0 and not _stop_event.is_set():
+        step = min(interval_s, remaining)
+        if _stop_event.wait(step):
+            return
+        remaining -= step
+        if remaining > 0:
+            try:
+                reminders.check_due_reminders()
+            except Exception:
+                pass
     while not _stop_event.is_set():
         try:
             tick()
@@ -225,6 +298,8 @@ def _loop(interval_s):
 def start(interval_s=CHECK_INTERVAL_S, seed_defaults=True):
     """Idempotently start the background scheduler daemon thread."""
     global _thread
+    if is_disabled():
+        return None
     with _lock:
         if _thread is not None and _thread.is_alive():
             return _thread
