@@ -283,6 +283,14 @@ begin
   delete from public.invites where email = 'temp.invite@example.com';
   raise notice 'PASS: admin can create, revoke, and delete invites';
 
+  -- Demote any pre-existing active admins in this rolled-back test transaction
+  -- so v_admin1 is the sole active admin for the last-admin protection checks.
+  update public.profiles
+  set role = 'member'
+  where id <> v_admin1
+    and role = 'admin'
+    and active = true;
+
   -- The last active admin cannot be demoted.
   begin
     update public.profiles set role = 'member' where id = v_admin1;

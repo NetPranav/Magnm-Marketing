@@ -6,3 +6,4 @@ Engines started by tests must never run scheduled jobs: those make real network 
 import os
 
 os.environ["MAGNM_DISABLE_SCHEDULER"] = "1"
+os.environ["MAGNM_DISABLE_CLOUD_SYNC"] = "1"

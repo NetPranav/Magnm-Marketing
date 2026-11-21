@@ -22,7 +22,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -664,6 +664,22 @@ def _apply_migration_v12(conn):
         conn.execute("ALTER TABLE pitch_proposals ADD COLUMN custom_categories_json TEXT NOT NULL DEFAULT '[]'")
 
 
+def _apply_migration_v13(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS cloud_sync_state (
+            user_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            local_id TEXT NOT NULL,
+            hash TEXT NOT NULL,
+            synced_at TEXT NOT NULL,
+            error TEXT,
+            PRIMARY KEY (user_id, kind, local_id)
+        );
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -677,6 +693,7 @@ _MIGRATIONS = (
     (10, _apply_migration_v10),
     (11, _apply_migration_v11),
     (12, _apply_migration_v12),
+    (13, _apply_migration_v13),
 )
 
 
@@ -4014,3 +4031,311 @@ def list_sync_outbox(pending_only=False, limit=100):
         (max_rows,),
     ).fetchall()
     return [_deserialize_sync_outbox(r) for r in rows]
+
+
+def list_pending_sync_outbox(limit=200):
+    """Return unsent sync_outbox rows ordered oldest-first."""
+    ensure_init()
+    conn = connect()
+    max_rows = max(1, min(int(limit or 200), 1000))
+    rows = conn.execute(
+        """
+        SELECT * FROM sync_outbox
+        WHERE sent_at IS NULL
+        ORDER BY created_at ASC, rowid ASC
+        LIMIT ?
+        """,
+        (max_rows,),
+    ).fetchall()
+    return [_deserialize_sync_outbox(r) for r in rows]
+
+
+def count_pending_sync_outbox():
+    """Return the count of unsent rows in sync_outbox."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute("SELECT COUNT(*) AS cnt FROM sync_outbox WHERE sent_at IS NULL").fetchone()
+    return int(row["cnt"] if row else 0)
+
+
+def mark_sync_outbox_sent(event_ids, sent_at=None):
+    """Mark sync_outbox rows as sent by setting sent_at."""
+    ids = [str(eid) for eid in (event_ids or []) if eid]
+    if not ids:
+        return 0
+    ensure_init()
+    ts = str(sent_at or datetime.now(timezone.utc).isoformat())
+    placeholders = ", ".join("?" for _ in ids)
+    conn = connect()
+    with conn:
+        cur = conn.execute(
+            f"UPDATE sync_outbox SET sent_at = ? WHERE id IN ({placeholders}) AND sent_at IS NULL",
+            [ts, *ids],
+        )
+        return cur.rowcount
+
+
+def list_all_agent_sessions():
+    """Return all agent_sessions rows for cloud mirror sync."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        f"SELECT {_SESSION_SELECT_COLS} FROM agent_sessions ORDER BY rowid ASC"
+    ).fetchall()
+    return [_deserialize_session(r) for r in rows]
+
+
+def list_all_chat_turns():
+    """Return all legacy chat_turns rows with rowid for cloud mirror sync."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT rowid, agent_id, sender, name, text, ts FROM chat_turns ORDER BY rowid ASC"
+    ).fetchall()
+    return [
+        {
+            "rowid": int(r["rowid"]),
+            "agent_id": r["agent_id"],
+            "sender": r["sender"],
+            "name": r["name"],
+            "text": r["text"],
+            "ts": r["ts"],
+        }
+        for r in rows
+    ]
+
+
+def list_all_content_items():
+    """Return all content_items rows for cloud mirror sync."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute("SELECT * FROM content_items ORDER BY rowid ASC").fetchall()
+    return [_deserialize_content_item(r) for r in rows]
+
+
+def list_all_content_versions():
+    """Return all content_versions rows ordered by content_id and version."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT * FROM content_versions ORDER BY content_id ASC, version ASC, rowid ASC"
+    ).fetchall()
+    return [_deserialize_content_version(r) for r in rows]
+
+
+def list_all_research_notes():
+    """Return all research_notes rows for cloud mirror sync."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT id, title, body, url, source, agent_id, created_at FROM research_notes ORDER BY rowid ASC"
+    ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "title": r["title"],
+            "body": r["body"],
+            "url": r["url"],
+            "source": r["source"],
+            "agent_id": r["agent_id"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
+def list_all_review_comments():
+    """Return all review_comments rows without anchor geometry for cloud mirror sync."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT id, content_id, version, kind, body, author, status, parent_id, created_at, updated_at
+        FROM review_comments
+        ORDER BY rowid ASC
+        """
+    ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "content_id": r["content_id"],
+            "version": int(r["version"]),
+            "kind": r["kind"],
+            "body": r["body"],
+            "author": r["author"],
+            "status": r["status"],
+            "parent_id": r["parent_id"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        }
+        for r in rows
+    ]
+
+
+def list_all_metrics():
+    """Return all metrics rows for cloud mirror sync."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute("SELECT * FROM metrics ORDER BY rowid ASC").fetchall()
+    return [
+        {
+            "id": r["id"],
+            "content_id": r["content_id"],
+            "platform": r["platform"],
+            "metrics": json.loads(r["metrics_json"]) if r["metrics_json"] else {},
+            "source": r["source"],
+            "captured_at": r["captured_at"],
+            "created_by": r["created_by"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
+def list_all_workflow_runs():
+    """Return workflow_runs rows without full state_json for cloud mirror sync."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT id, kind, status, current_step, inputs_json, error, created_at, updated_at
+        FROM workflow_runs
+        ORDER BY rowid ASC
+        """
+    ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "kind": r["kind"],
+            "status": r["status"],
+            "current_step": int(r["current_step"] or 0),
+            "inputs": json.loads(r["inputs_json"]) if r["inputs_json"] else {},
+            "error": r["error"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        }
+        for r in rows
+    ]
+
+
+def list_all_jobs():
+    """Return all jobs rows for cloud mirror sync."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        f"SELECT {_JOB_SELECT_COLS} FROM jobs ORDER BY rowid ASC"
+    ).fetchall()
+    return [_deserialize_job(r) for r in rows]
+
+
+def has_running_jobs():
+    """Return True if any local job currently has status='running'."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute("SELECT 1 FROM jobs WHERE status = 'running' LIMIT 1").fetchone()
+    return row is not None
+
+
+def list_activity_since(last_rowid=0, limit=500):
+    """Return activity rows with rowid > last_rowid ordered ascending."""
+    ensure_init()
+    conn = connect()
+    max_rows = max(1, min(int(limit or 500), 2000))
+    rows = conn.execute(
+        """
+        SELECT rowid, ts, actor, target, task, file
+        FROM activity
+        WHERE rowid > ?
+        ORDER BY rowid ASC
+        LIMIT ?
+        """,
+        (int(last_rowid or 0), max_rows),
+    ).fetchall()
+    return [
+        {
+            "rowid": int(r["rowid"]),
+            "ts": r["ts"],
+            "actor": r["actor"],
+            "target": r["target"],
+            "task": r["task"],
+            "file": r["file"],
+        }
+        for r in rows
+    ]
+
+
+def count_activity_since(last_rowid=0):
+    """Return count of activity rows with rowid > last_rowid."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM activity WHERE rowid > ?",
+        (int(last_rowid or 0),),
+    ).fetchone()
+    return int(row["cnt"] if row else 0)
+
+
+def get_cloud_sync_state(user_id):
+    """Return {(kind, local_id): {hash, synced_at, error}} for user_id."""
+    if not user_id:
+        return {}
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT kind, local_id, hash, synced_at, error
+        FROM cloud_sync_state
+        WHERE user_id = ?
+        """,
+        (str(user_id),),
+    ).fetchall()
+    return {
+        (r["kind"], r["local_id"]): {
+            "hash": r["hash"],
+            "synced_at": r["synced_at"],
+            "error": r["error"],
+        }
+        for r in rows
+    }
+
+
+def get_cloud_sync_value(user_id, kind, local_id):
+    """Return stored hash/value for (user_id, kind, local_id), or None."""
+    if not user_id:
+        return None
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        """
+        SELECT hash FROM cloud_sync_state
+        WHERE user_id = ? AND kind = ? AND local_id = ?
+        """,
+        (str(user_id), str(kind), str(local_id)),
+    ).fetchone()
+    return row["hash"] if row is not None else None
+
+
+def upsert_cloud_sync_state(user_id, entries):
+    """Upsert (kind, local_id, hash, synced_at, error) rows for user_id."""
+    if not user_id or not entries:
+        return 0
+    ensure_init()
+    conn = connect()
+    uid = str(user_id)
+    params = [
+        (uid, str(kind), str(local_id), str(hash_val), str(synced_at), error)
+        for kind, local_id, hash_val, synced_at, error in entries
+    ]
+    with conn:
+        conn.executemany(
+            """
+            INSERT INTO cloud_sync_state (user_id, kind, local_id, hash, synced_at, error)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, kind, local_id) DO UPDATE SET
+                hash = excluded.hash,
+                synced_at = excluded.synced_at,
+                error = excluded.error
+            """,
+            params,
+        )
+    return len(params)

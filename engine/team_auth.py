@@ -359,6 +359,59 @@ def finish_login(query):
     }
 
 
+def get_session_info():
+    """Return non-secret metadata from the locally stored session, or None."""
+    with _session_lock:
+        session = _load_session()
+    if not session:
+        return None
+    uid = session.get("user_id") or _jwt_sub(session.get("access_token"))
+    return {
+        "user_id": str(uid) if uid else "",
+        "email": str(session.get("email") or ""),
+        "expires_at": session.get("expires_at"),
+    }
+
+
+def _refresh_session_locked(cfg, session):
+    refresh_token = session.get("refresh_token") or ""
+    if not refresh_token:
+        _delete_session_file()
+        raise TeamAuthError("Your session expired. Please sign in again.", status=401, code="session_expired")
+
+    refresh_url = f"{cfg['url']}/auth/v1/token?grant_type=refresh_token"
+    try:
+        data = _http_json(
+            "POST",
+            refresh_url,
+            headers={"apikey": cfg["publishable_key"]},
+            body={"refresh_token": refresh_token},
+        )
+    except TeamAuthError as exc:
+        if exc.status in (400, 401):
+            _delete_session_file()
+            raise TeamAuthError(
+                "Your session expired. Please sign in again.",
+                status=401,
+                code="session_expired",
+            ) from exc
+        raise
+
+    updated = _session_from_token_response(data, previous=session)
+    _save_session(updated)
+    return updated["access_token"]
+
+
+def refresh_access_token():
+    """Force-refresh the stored access token using the refresh token."""
+    cfg = _require_config()
+    with _session_lock:
+        session = _load_session()
+        if not session:
+            raise TeamAuthError("Not signed in.", status=401, code="not_signed_in")
+        return _refresh_session_locked(cfg, session)
+
+
 def get_access_token():
     """Return a valid bearer access token, refreshing safely if expiring within 60 seconds."""
     cfg = _require_config()
@@ -371,35 +424,10 @@ def get_access_token():
         if expires_at - time.time() > REFRESH_LEEWAY_S:
             return session["access_token"]
 
-        refresh_token = session.get("refresh_token") or ""
-        if not refresh_token:
-            _delete_session_file()
-            raise TeamAuthError("Your session expired. Please sign in again.", status=401, code="session_expired")
-
-        refresh_url = f"{cfg['url']}/auth/v1/token?grant_type=refresh_token"
-        try:
-            data = _http_json(
-                "POST",
-                refresh_url,
-                headers={"apikey": cfg["publishable_key"]},
-                body={"refresh_token": refresh_token},
-            )
-        except TeamAuthError as exc:
-            if exc.status in (400, 401):
-                _delete_session_file()
-                raise TeamAuthError(
-                    "Your session expired. Please sign in again.",
-                    status=401,
-                    code="session_expired",
-                ) from exc
-            raise
-
-        updated = _session_from_token_response(data, previous=session)
-        _save_session(updated)
-        return updated["access_token"]
+        return _refresh_session_locked(cfg, session)
 
 
-def rest(method, path, body=None, headers=None):
+def rest(method, path, body=None, headers=None, timeout=REQUEST_TIMEOUT_S):
     """Call a Supabase PostgREST endpoint under /rest/v1/ with apikey and user bearer token."""
     cfg = _require_config()
     token = get_access_token()
@@ -411,7 +439,7 @@ def rest(method, path, body=None, headers=None):
     }
     if headers:
         req_headers.update(headers)
-    return _http_json(method, url, headers=req_headers, body=body)
+    return _http_json(method, url, headers=req_headers, body=body, timeout=timeout)
 
 
 def current_account():
@@ -509,6 +537,11 @@ def logout():
                 pass
         _delete_session_file()
     _set_last_error(None)
+    try:
+        import cloud_sync
+        cloud_sync.notify_signed_out()
+    except Exception:
+        pass
 
 
 def _normalize_invite_email(email):

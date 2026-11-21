@@ -36,6 +36,7 @@ import agents
 import ai_gateway
 import assets_manager
 import bakeoff
+import cloud_sync
 import cmo_runtime
 import db
 import events
@@ -298,6 +299,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.send_json(team_auth.current_account())
             elif url.path == "/api/account/invites":
                 self.send_json({"invites": team_auth.list_invites()})
+            elif url.path == "/api/account/sync":
+                self.send_json(cloud_sync.status())
             else:
                 self.send_error(404, "Not Found")
         except team_auth.TeamAuthError as exc:
@@ -328,6 +331,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             elif url.path == "/api/account/invites/revoke":
                 invite = team_auth.revoke_invite(params.get("email"))
                 self.send_json({"invite": invite})
+            elif url.path == "/api/account/sync":
+                cloud_sync.request_sync(immediate=True)
+                self.send_json(cloud_sync.status())
             else:
                 self.send_error(404, "Unknown endpoint")
         except team_auth.TeamAuthError as exc:
@@ -640,6 +646,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 )
             else:
                 self.send_json({"error": "Not found"}, status=404)
+                return
+            cloud_sync.request_sync()
         except ValueError as exc:
             self._send_review_error(exc)
 
@@ -1125,6 +1133,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Text required"}, status=400)
                 return
             replies = team_room.post_message(sender, text, attached_assets=attached_assets)
+            cloud_sync.request_sync()
             self.send_json({"success": True, "replies": replies})
 
         elif url.path == "/api/assets/upload":
@@ -1239,6 +1248,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "agent_id and message required"}, status=400)
                 return
             res = agent_chat.chat_with_agent(agent_id, message, attached_assets=attached_assets)
+            cloud_sync.request_sync()
             self.send_json(res)
 
         elif url.path == "/api/approve":
@@ -1555,6 +1565,7 @@ Hard Rules:
                 title=params.get("title"),
             )
             _SESSION_EXECUTOR.submit(agent_runtime.run_session, session["id"])
+            cloud_sync.request_sync()
             self.send_json({"success": True, "session_id": session["id"]})
 
         elif re.match(r"^/api/sessions/[^/]+/answer$", url.path):
@@ -1570,6 +1581,7 @@ Hard Rules:
                 self.send_json({"error": msg}, status=status)
                 return
             _SESSION_EXECUTOR.submit(agent_runtime.run_session, session_id)
+            cloud_sync.request_sync()
             self.send_json({"success": True, "session_id": session_id, "status": "running"})
 
         elif re.match(r"^/api/sessions/[^/]+/cancel$", url.path):
@@ -1578,6 +1590,7 @@ Hard Rules:
             if sess is None:
                 self.send_json({"error": "Session not found"}, status=404)
                 return
+            cloud_sync.request_sync()
             self.send_json({"success": True, "session": sess})
 
         elif url.path == "/api/workflows/start":
@@ -1593,6 +1606,7 @@ Hard Rules:
             except ValueError as exc:
                 self.send_json({"error": str(exc)}, status=400)
                 return
+            cloud_sync.request_sync()
             self.send_json(run)
 
         elif re.match(r"^/api/workflows/[^/]+/cancel$", url.path):
@@ -1643,6 +1657,7 @@ Hard Rules:
                 self.send_json({"error": msg}, status=status)
                 return
             self.send_json(updated)
+            cloud_sync.request_sync()
 
         elif url.path == "/api/setup/install_browser":
             actor = params.get("actor", "UI")

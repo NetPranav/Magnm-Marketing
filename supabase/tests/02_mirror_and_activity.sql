@@ -44,6 +44,24 @@ begin
   insert into public.mirror_records (kind, local_id, title, data, local_updated_at)
   values ('content_item', 'post-1', 'Member A Post', '{"body":"hello"}'::jsonb, now());
 
+  insert into public.mirror_records (kind, local_id, title, data, local_updated_at)
+  values
+    ('chat_session', 'sess-1', 'Session 1', '{"agent_id":"cmo","messages":[]}'::jsonb, now()),
+    ('team_message', 'msg-1', 'Hello team', '{"sender":"CEO","text":"Hello team"}'::jsonb, now());
+
+  -- Unknown mirror kind is rejected.
+  begin
+    insert into public.mirror_records (kind, local_id, title, data, local_updated_at)
+    values ('unknown_kind', 'bad-1', 'Bad Kind', '{}'::jsonb, now());
+    raise exception 'FAIL: unknown mirror kind was accepted';
+  exception
+    when others then
+      if sqlerrm like 'FAIL:%' then
+        raise;
+      end if;
+      raise notice 'PASS: unknown mirror kind is rejected';
+  end;
+
   -- Member A cannot insert on behalf of Member B.
   begin
     insert into public.mirror_records (owner_id, kind, local_id, title, data, local_updated_at)
@@ -176,8 +194,8 @@ begin
   end if;
 
   select count(*) into v_count from public.mirror_records where owner_id in (v_member_a, v_member_b);
-  if v_count <> 2 then
-    raise exception 'FAIL: admin expected 2 mirror_records rows, got %', v_count;
+  if v_count <> 4 then
+    raise exception 'FAIL: admin expected 4 mirror_records rows, got %', v_count;
   end if;
   raise notice 'PASS: admin can read all activity, device status, and mirror records';
 

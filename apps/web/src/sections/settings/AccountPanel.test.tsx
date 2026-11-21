@@ -288,4 +288,136 @@ describe('AccountPanel', () => {
       expect(screen.queryByRole('button', { name: 'Revoke invite for open@example.com' })).toBeNull();
     });
   });
+
+  it('renders workspace sync states, hint text, Sync now button, and 10s polling', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+
+    let syncMode: 'synced' | 'syncing' | 'offline' | 'error' = 'synced';
+    let syncCalls = 0;
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/account') {
+        return jsonResponse({
+          configured: true,
+          signed_in: true,
+          deactivated: false,
+          user: {
+            id: 'u-1',
+            email: 'member@example.com',
+            display_name: 'Maya',
+            avatar_url: null,
+            role: 'member',
+            active: true,
+          },
+        });
+      }
+      if (url === '/api/account/sync' && (!init?.method || init.method === 'GET')) {
+        syncCalls += 1;
+        if (syncMode === 'synced') {
+          return jsonResponse({
+            enabled: true,
+            signed_in: true,
+            last_sync_at: twoMinutesAgo,
+            last_error: null,
+            pending: 0,
+            synced_count: 128,
+            running: false,
+          });
+        }
+        if (syncMode === 'syncing') {
+          return jsonResponse({
+            enabled: true,
+            signed_in: true,
+            last_sync_at: twoMinutesAgo,
+            last_error: null,
+            pending: 3,
+            synced_count: 128,
+            running: true,
+          });
+        }
+        if (syncMode === 'offline') {
+          return jsonResponse({
+            enabled: true,
+            signed_in: true,
+            last_sync_at: twoMinutesAgo,
+            last_error: 'Waiting for connection',
+            pending: 2,
+            synced_count: 128,
+            running: false,
+          });
+        }
+        return jsonResponse({
+          enabled: true,
+          signed_in: true,
+          last_sync_at: twoMinutesAgo,
+          last_error: 'Supabase HTTP 500',
+          pending: 2,
+          synced_count: 128,
+          running: false,
+        });
+      }
+      if (url === '/api/account/sync' && init?.method === 'POST') {
+        syncMode = 'syncing';
+        return jsonResponse({
+          enabled: true,
+          signed_in: true,
+          last_sync_at: twoMinutesAgo,
+          last_error: null,
+          pending: 3,
+          synced_count: 128,
+          running: true,
+        });
+      }
+      return jsonResponse({});
+    });
+
+    const { unmount } = render(<AccountPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Workspace sync: synced 2 minutes ago · 128 items')).toBeTruthy();
+    });
+    expect(
+      screen.getByText(
+        'Your admin can read a copy of your chats, drafts and research. Confidential chats are not copied.',
+      ),
+    ).toBeTruthy();
+
+    // Clicking Sync now triggers POST /api/account/sync and shows Syncing...
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/account/sync',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      expect(screen.getByText('Workspace sync: Syncing...')).toBeTruthy();
+    });
+
+    // 10s poll picks up Waiting for connection
+    syncMode = 'offline';
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+    await waitFor(() => {
+      expect(screen.getByText('Workspace sync: Waiting for connection')).toBeTruthy();
+    });
+
+    // Next 10s poll picks up error message
+    syncMode = 'error';
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+    await waitFor(() => {
+      expect(screen.getByText('Workspace sync: Supabase HTTP 500')).toBeTruthy();
+    });
+
+    // Unmounting stops the 10s polling
+    const callsBeforeUnmount = syncCalls;
+    unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20000);
+    });
+    expect(syncCalls).toBe(callsBeforeUnmount);
+  });
 });

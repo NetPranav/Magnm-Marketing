@@ -253,12 +253,17 @@ class AgentRuntime:
         return session
 
     def _notify_session_finished(self, session):
-        """Notify workflow engine when a session reaches a terminal state."""
+        """Notify workflow engine and cloud sync when a session reaches a terminal state."""
         if not session:
             return
         try:
             import workflows
             workflows.on_session_finished(session)
+        except Exception:
+            pass
+        try:
+            import cloud_sync
+            cloud_sync.request_sync()
         except Exception:
             pass
 

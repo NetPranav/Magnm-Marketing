@@ -32,6 +32,16 @@ export interface InviteRecord {
   revoked_at: string | null;
 }
 
+export interface SyncStatus {
+  enabled: boolean;
+  signed_in: boolean;
+  last_sync_at: string | null;
+  last_error: string | null;
+  pending: number;
+  synced_count: number;
+  running: boolean;
+}
+
 /** Fetch current Supabase team account configuration and sign-in status. */
 export function getAccount(): Promise<AccountState> {
   return api.get<AccountState>('/api/account');
@@ -77,4 +87,14 @@ export async function revokeInvite(email: string): Promise<InviteRecord> {
     { email },
   );
   return (res.invite ?? res) as InviteRecord;
+}
+
+/** Fetch current workspace cloud sync status. */
+export function getSyncStatus(): Promise<SyncStatus> {
+  return api.get<SyncStatus>('/api/account/sync');
+}
+
+/** Trigger an immediate workspace cloud sync. */
+export function triggerSync(): Promise<SyncStatus> {
+  return api.post<SyncStatus>('/api/account/sync', {});
 }
