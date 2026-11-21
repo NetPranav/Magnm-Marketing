@@ -4441,12 +4441,17 @@ def main():
     db.init_db()
     agent_runtime.recover_stale_sessions()
     jobs.start_worker()
+    # Same as engine/main.py: mirror work, publish live links and pull quote requests in the background.
+    import cloud_sync
+    if cloud_sync.is_enabled():
+        cloud_sync.start()
     print(f"Starting multi-threaded server on http://{HOST}:{PORT}")
     server = ThreadingHTTPServer((HOST, PORT), CommandCenterHandler)
     server.daemon_threads = True
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        cloud_sync.stop(timeout=1.0)
         jobs.stop_worker(timeout=1.0)
         server.server_close()
 
