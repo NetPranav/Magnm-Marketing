@@ -19,8 +19,10 @@ import {
   listSessions,
   listWorkflows,
 } from '../../api/today';
+import { listLearnings } from '../../api/learnings';
 import { listReminders } from '../../api/reminders';
 import { discardResultsProposal, listResultsProposals } from '../../api/results';
+import { generateSummary, listSummaries } from '../../api/summaries';
 import { AddResultsDialog } from '../../components/AddResultsDialog';
 import { useStudioEvents } from '../../events';
 import type {
@@ -29,15 +31,19 @@ import type {
   EngineStatusInfo,
   HealthInfo,
   JobRecord,
+  LearningRecord,
   MetricProposal,
   ProductFact,
   ReminderRecord,
+  WeeklySummaryRecord,
   WorkflowGate,
   WorkflowRun,
 } from '../../types';
 import { formatTimestamp } from '../../ui/format';
+import { LearningsCard } from './LearningsCard';
 import { RemindersCard } from './RemindersCard';
 import { ResultsCard } from './ResultsCard';
+import { WeeklySummaryCard } from './WeeklySummaryCard';
 
 export interface TodaySectionProps {
   health: HealthInfo | null;
@@ -45,6 +51,7 @@ export interface TodaySectionProps {
   jobs: JobRecord[];
   loading: boolean;
   error: string | null;
+  focusParam?: string | null;
   onRefreshSummary?: () => void;
 }
 
@@ -124,6 +131,7 @@ export function TodaySection({
   jobs,
   loading,
   error,
+  focusParam,
   onRefreshSummary,
 }: TodaySectionProps) {
   const [sessions, setSessions] = useState<AgentSession[]>([]);
@@ -132,6 +140,10 @@ export function TodaySection({
   const [contentItems, setContentItems] = useState<ContentItem[]>([]);
   const [reminders, setReminders] = useState<ReminderRecord[]>([]);
   const [proposals, setProposals] = useState<MetricProposal[]>([]);
+  const [summaries, setSummaries] = useState<WeeklySummaryRecord[]>([]);
+  const [selectedSummaryId, setSelectedSummaryId] = useState<string | null>(null);
+  const [generatingSummary, setGeneratingSummary] = useState(false);
+  const [learnings, setLearnings] = useState<LearningRecord[]>([]);
   const [resultsDialog, setResultsDialog] = useState<{
     open: boolean;
     contentId?: string | null;
@@ -144,6 +156,16 @@ export function TodaySection({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [sessionAnswers, setSessionAnswers] = useState<Record<string, string>>({});
   const [gateFeedback, setGateFeedback] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!focusParam) return;
+    if (focusParam.startsWith('summary/')) {
+      const targetId = focusParam.slice('summary/'.length).trim();
+      if (targetId) {
+        setSelectedSummaryId(targetId);
+      }
+    }
+  }, [focusParam]);
 
   const refreshReminders = useCallback(async () => {
     try {
@@ -163,6 +185,24 @@ export function TodaySection({
     }
   }, []);
 
+  const refreshSummaries = useCallback(async () => {
+    try {
+      const next = await listSummaries();
+      setSummaries(next);
+    } catch {
+      // Non-fatal during partial refresh
+    }
+  }, []);
+
+  const refreshLearnings = useCallback(async () => {
+    try {
+      const next = await listLearnings();
+      setLearnings(next);
+    } catch {
+      // Non-fatal during partial refresh
+    }
+  }, []);
+
   const loadWorkItems = useCallback(async () => {
     setAuxError(null);
     const results = await Promise.allSettled([
@@ -172,10 +212,12 @@ export function TodaySection({
       listContent(50),
       listReminders('open'),
       listResultsProposals('pending'),
+      listSummaries(),
+      listLearnings(),
     ]);
 
     let firstErr: string | null = null;
-    const [sessRes, wfRes, factsRes, contentRes, remRes, propRes] = results;
+    const [sessRes, wfRes, factsRes, contentRes, remRes, propRes, sumRes, lrnRes] = results;
 
     if (sessRes.status === 'fulfilled') {
       setSessions(Array.isArray(sessRes.value) ? sessRes.value : []);
@@ -211,6 +253,14 @@ export function TodaySection({
       setProposals(Array.isArray(propRes.value) ? propRes.value : []);
     } else if (propRes.reason instanceof Error) {
       firstErr = firstErr ?? propRes.reason.message;
+    }
+
+    if (sumRes.status === 'fulfilled') {
+      setSummaries(Array.isArray(sumRes.value) ? sumRes.value : []);
+    }
+
+    if (lrnRes.status === 'fulfilled') {
+      setLearnings(Array.isArray(lrnRes.value) ? lrnRes.value : []);
     }
 
     setAuxError(firstErr);
@@ -257,10 +307,15 @@ export function TodaySection({
             void refreshReminders();
           } else if (kind === 'results_pending') {
             void refreshProposals();
+          } else if (kind === 'weekly_summary') {
+            void refreshSummaries();
+            void refreshLearnings();
+          } else if (kind === 'learning_proposed') {
+            void refreshLearnings();
           }
         }
       },
-      [refreshProposals, refreshReminders],
+      [refreshLearnings, refreshProposals, refreshReminders, refreshSummaries],
     ),
   );
 
@@ -366,6 +421,22 @@ export function TodaySection({
       setActionError(err instanceof Error ? err.message : 'Failed to answer gate.');
     } finally {
       setBusyId(null);
+    }
+  };
+
+  const handleGenerateSummary = async () => {
+    setActionError(null);
+    setGeneratingSummary(true);
+    try {
+      const res = await generateSummary();
+      await Promise.all([refreshSummaries(), refreshLearnings()]);
+      if (res?.summary?.id) {
+        setSelectedSummaryId(res.summary.id);
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to generate weekly summary.');
+    } finally {
+      setGeneratingSummary(false);
     }
   };
 
@@ -645,6 +716,33 @@ export function TodaySection({
                 setActionError(err instanceof Error ? err.message : 'Failed to discard results.');
               });
           }}
+        />
+
+        <WeeklySummaryCard
+          summaries={summaries}
+          loading={auxLoading}
+          generating={generatingSummary}
+          selectedSummaryId={selectedSummaryId}
+          onSelectSummary={(id) => setSelectedSummaryId(id)}
+          onGenerateNow={() => void handleGenerateSummary()}
+          onAddResults={(cid, plat) => {
+            const matched = contentItems.find((item) => item.id === cid);
+            setActionError(null);
+            setResultsDialog({
+              open: true,
+              contentId: cid,
+              platform: plat ?? matched?.platform ?? null,
+              proposal: null,
+            });
+          }}
+        />
+
+        <LearningsCard
+          learnings={learnings}
+          contentItems={contentItems}
+          loading={auxLoading}
+          onRefresh={refreshLearnings}
+          onError={(msg) => setActionError(msg)}
         />
       </section>
 

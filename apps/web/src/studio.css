@@ -2255,3 +2255,98 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* Weekly summary & Learnings (Analyst part 2) */
+
+.studio-older-summaries {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.studio-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.studio-summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+
+.studio-summary-table th,
+.studio-summary-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.studio-summary-table th {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.studio-missing-result-row,
+.studio-learning-approved-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  padding: var(--s-2) var(--s-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.studio-missing-result-row:last-child,
+.studio-learning-approved-row:last-child {
+  border-bottom: 0;
+}
+
+.studio-summary-narrative {
+  display: grid;
+  gap: var(--s-2);
+  padding-top: var(--s-2);
+  border-top: 1px solid var(--line);
+}
+
+.studio-summary-narrative-text {
+  display: grid;
+  gap: var(--s-2);
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--fg);
+}
+
+.studio-summary-narrative-text p {
+  margin: 0;
+}
+
+.studio-learning-item {
+  display: grid;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.studio-learning-evidence {
+  display: grid;
+  gap: 2px;
+}
+
+.studio-applies-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+}

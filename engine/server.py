@@ -45,6 +45,7 @@ import db
 import events
 import jobs
 import key_pool
+import learnings
 import media_previews
 import notifications
 import paths
@@ -65,6 +66,7 @@ import team_auth
 import team_knowledge
 import team_room
 import web_ui
+import weekly_summary
 import workflows
 
 ROOT = paths.DATA_ROOT
@@ -722,6 +724,88 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 return
             self.send_json({"error": "Not found"}, status=404)
         except results_extract.ResultsExtractError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+
+    def _handle_summaries_get(self, url):
+        path = url.path.rstrip("/") or "/"
+        qs = urllib.parse.parse_qs(url.query)
+        try:
+            if path == "/api/summaries":
+                try:
+                    limit = int((qs.get("limit") or ["52"])[0])
+                except (TypeError, ValueError):
+                    limit = 52
+                self.send_json({"summaries": weekly_summary.list_summaries(limit=limit)})
+                return
+            raw_rest = url.path[len("/api/summaries/"):].strip("/")
+            parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
+            if len(parts) == 1:
+                self.send_json({"summary": weekly_summary.get_summary(parts[0])})
+                return
+            self.send_json({"error": "Not found"}, status=404)
+        except weekly_summary.WeeklySummaryError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+
+    def _handle_summaries_post(self, url, params):
+        path = url.path.rstrip("/") or "/"
+        try:
+            if path == "/api/summaries/generate":
+                res = weekly_summary.generate_summary(
+                    week_start=params.get("week_start"),
+                    notify=True,
+                )
+                cloud_sync.request_sync()
+                self.send_json(res)
+                return
+            self.send_json({"error": "Not found"}, status=404)
+        except weekly_summary.WeeklySummaryError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+
+    def _handle_learnings_get(self, url):
+        path = url.path.rstrip("/") or "/"
+        if path != "/api/learnings":
+            self.send_json({"error": "Not found"}, status=404)
+            return
+        qs = urllib.parse.parse_qs(url.query)
+        status_filter = (qs.get("status") or [""])[0].strip() or None
+        try:
+            limit = int((qs.get("limit") or ["200"])[0])
+        except (TypeError, ValueError):
+            limit = 200
+        self.send_json({"learnings": learnings.list_learnings(status=status_filter, limit=limit)})
+
+    def _handle_learnings_post(self, url, params):
+        raw_rest = url.path[len("/api/learnings"):].strip("/")
+        parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
+        try:
+            if not parts:
+                lr = learnings.add_manual_learning(
+                    text=params.get("text"),
+                    applies_to=params.get("applies_to"),
+                )
+                cloud_sync.request_sync()
+                self.send_json({"learning": lr})
+                return
+            if len(parts) == 2 and parts[1] == "approve":
+                lr = learnings.approve_learning(
+                    parts[0],
+                    text=params.get("text") if "text" in params else None,
+                )
+                cloud_sync.request_sync()
+                self.send_json({"learning": lr})
+                return
+            if len(parts) == 2 and parts[1] == "reject":
+                lr = learnings.reject_learning(parts[0])
+                cloud_sync.request_sync()
+                self.send_json({"learning": lr})
+                return
+            if len(parts) == 2 and parts[1] == "retire":
+                lr = learnings.retire_learning(parts[0])
+                cloud_sync.request_sync()
+                self.send_json({"learning": lr})
+                return
+            self.send_json({"error": "Not found"}, status=404)
+        except learnings.LearningError as exc:
             self.send_json({"error": exc.message}, status=exc.status)
 
     def _serve_sse(self):
@@ -1427,6 +1511,12 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         elif url.path.startswith("/api/results/"):
             self._handle_results_get(url)
 
+        elif url.path == "/api/summaries" or url.path.startswith("/api/summaries/"):
+            self._handle_summaries_get(url)
+
+        elif url.path == "/api/learnings" or url.path.startswith("/api/learnings/"):
+            self._handle_learnings_get(url)
+
         elif url.path.startswith("/api/asset/"):
             parts = url.path.split("/")[3:]
             if len(parts) >= 2:
@@ -1513,6 +1603,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             or url.path == "/api/reminders"
             or url.path.startswith("/api/reminders/")
             or url.path.startswith("/api/results/")
+            or url.path.startswith("/api/summaries/")
+            or url.path == "/api/learnings"
+            or url.path.startswith("/api/learnings/")
         )
         max_len = MAX_REVIEW_BODY_BYTES if url.path.startswith("/api/review/") else MAX_POST_BYTES
         if content_len > max_len:
@@ -1561,6 +1654,14 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         if url.path.startswith("/api/results/"):
             self._handle_results_post(url, params)
+            return
+
+        if url.path.startswith("/api/summaries/"):
+            self._handle_summaries_post(url, params)
+            return
+
+        if url.path == "/api/learnings" or url.path.startswith("/api/learnings/"):
+            self._handle_learnings_post(url, params)
             return
 
         if url.path == "/api/shutdown":

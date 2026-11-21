@@ -402,4 +402,314 @@ describe('TodaySection', () => {
       );
     });
   });
+
+  it('renders Weekly summary card states (none yet, generate now, generated, skipped narrative, missing results -> Add results) and Learnings (edit+approve, reject, retire, add)', async () => {
+    let summariesState: Array<Record<string, unknown>> = [];
+    let learningsState: Array<Record<string, unknown>> = [
+      {
+        id: 'lrn-pend-1',
+        text: 'LinkedIn carousels got 18 saves vs 6 saves on single images.',
+        evidence: [
+          {
+            content_id: 'cnt-top',
+            metric_id: 'met-top',
+            title: 'Carousel Guide',
+            platform: 'linkedin',
+            metrics: { views: 1200, likes: 45, saves: 18 },
+          },
+          {
+            content_id: 'cnt-bot',
+            metric_id: 'met-bot',
+            title: 'Single Image',
+            platform: 'linkedin',
+            metrics: { views: 600, likes: 15, saves: 6 },
+          },
+        ],
+        applies_to: ['writer', 'designer'],
+        status: 'pending',
+        source_summary_id: 'wsum-1',
+        created_at: '2026-11-22T09:00:00Z',
+        decided_at: null,
+      },
+      {
+        id: 'lrn-pend-2',
+        text: 'Post twice on Sunday nights.',
+        evidence: [
+          { content_id: 'cnt-top', title: 'Carousel Guide', platform: 'linkedin', metrics: { likes: 45 } },
+          { content_id: 'cnt-bot', title: 'Single Image', platform: 'linkedin', metrics: { likes: 15 } },
+        ],
+        applies_to: ['cmo'],
+        status: 'pending',
+        source_summary_id: 'wsum-1',
+        created_at: '2026-11-22T09:01:00Z',
+        decided_at: null,
+      },
+      {
+        id: 'lrn-app-1',
+        text: 'Keep X hooks under 120 chars.',
+        evidence: [],
+        applies_to: ['writer'],
+        status: 'approved',
+        source_summary_id: null,
+        created_at: '2026-11-20T09:00:00Z',
+        decided_at: '2026-11-20T09:00:00Z',
+      },
+    ];
+
+    const generatedSummary = {
+      id: 'wsum-1',
+      week_start: '2026-11-16',
+      created_at: '2026-11-23T03:30:00Z',
+      data: {
+        week_start: '2026-11-16',
+        week_end: '2026-11-22',
+        week_label: '16-22 Nov',
+      },
+      highlights: {
+        platform_rows: [
+          {
+            platform: 'linkedin',
+            posts_count: 3,
+            with_results_count: 2,
+            totals: { views: 1800, likes: 60, comments: 4, shares: 2, saves: 24, engagement: 90 },
+            averages: { views: 900, likes: 30, engagement: 45 },
+            prev_posts_count: 1,
+            prev_totals: { engagement: 45 },
+            wow_change: { engagement: 100.0 },
+          },
+          {
+            platform: 'x',
+            posts_count: 1,
+            with_results_count: 0,
+            totals: { views: 0, likes: 0, comments: 0, shares: 0, saves: 0, engagement: 0 },
+            averages: {},
+            prev_posts_count: 0,
+            prev_totals: {},
+            wow_change: { engagement: 'n/a' },
+          },
+        ],
+        top_post: {
+          content_id: 'cnt-top',
+          title: 'Carousel Guide',
+          platform: 'linkedin',
+          posted_url: 'https://linkedin.com/posts/top',
+          metrics: { views: 1200, likes: 45, saves: 18 },
+          engagement: 63,
+          score: 0.0525,
+          score_unit: 'per_view',
+        },
+        bottom_post: {
+          content_id: 'cnt-bot',
+          title: 'Single Image',
+          platform: 'linkedin',
+          posted_url: 'https://linkedin.com/posts/bot',
+          metrics: { views: 600, likes: 15, saves: 6 },
+          engagement: 21,
+          score: 0.035,
+          score_unit: 'per_view',
+        },
+        missing_results: [
+          {
+            content_id: 'cnt-miss',
+            title: 'Missing X Thread',
+            platform: 'x',
+            posted_at: '2026-11-20T10:00:00Z',
+            posted_url: 'https://x.com/miss',
+          },
+        ],
+        counts: {
+          posts_posted: 4,
+          posts_with_results: 2,
+          posts_missing_results: 1,
+          drafts_created: 5,
+          research_notes_added: 2,
+          reminders_done: 1,
+          reminders_missed: 0,
+        },
+      },
+      narrative: 'During 16-22 Nov, LinkedIn engagement rose 100%.\n1. Focus on carousels.',
+      status: 'ready',
+    };
+
+    const olderSkippedSummary = {
+      ...generatedSummary,
+      id: 'wsum-0',
+      week_start: '2026-11-09',
+      data: { week_start: '2026-11-09', week_end: '2026-11-15', week_label: '9-15 Nov' },
+      narrative: 'Narrative skipped: it mentioned numbers that are not in the data.',
+      status: 'narrative_skipped',
+    };
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('/api/sessions')) return jsonResponse([]);
+      if (url.startsWith('/api/workflows')) return jsonResponse([]);
+      if (url.startsWith('/api/facts')) return jsonResponse([]);
+      if (url.startsWith('/api/content')) {
+        return jsonResponse([
+          {
+            id: 'cnt-miss',
+            type: 'post',
+            platform: 'x',
+            title: 'Missing X Thread',
+            status: 'posted',
+            created_at: '2026-11-20T09:00:00Z',
+            updated_at: '2026-11-20T09:00:00Z',
+          },
+        ]);
+      }
+      if (url.startsWith('/api/reminders')) return jsonResponse({ reminders: [] });
+      if (url.startsWith('/api/results/proposals')) return jsonResponse({ proposals: [] });
+      if (url.startsWith('/api/summaries?') && (!init?.method || init.method === 'GET')) {
+        return jsonResponse({ summaries: summariesState });
+      }
+      if (url === '/api/summaries/generate' && init?.method === 'POST') {
+        summariesState = [generatedSummary, olderSkippedSummary];
+        return jsonResponse({ summary: generatedSummary, learnings: [] });
+      }
+      if (url === '/api/learnings' && (!init?.method || init.method === 'GET')) {
+        return jsonResponse({ learnings: learningsState });
+      }
+      if (url === '/api/learnings/lrn-pend-1/approve' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body || '{}')) as { text?: string };
+        const updated = { ...learningsState[0], status: 'approved', text: body.text || learningsState[0].text };
+        learningsState = [updated, ...learningsState.slice(1)];
+        return jsonResponse({ learning: updated });
+      }
+      if (url === '/api/learnings/lrn-pend-2/reject' && init?.method === 'POST') {
+        const updated = { ...learningsState[1], status: 'rejected' };
+        learningsState = [learningsState[0], updated, learningsState[2]];
+        return jsonResponse({ learning: updated });
+      }
+      if (url === '/api/learnings/lrn-app-1/retire' && init?.method === 'POST') {
+        const updated = { ...learningsState[2], status: 'retired' };
+        learningsState = [learningsState[0], learningsState[1], updated];
+        return jsonResponse({ learning: updated });
+      }
+      if (url === '/api/learnings' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body || '{}')) as { text: string; applies_to: string[] };
+        const created = {
+          id: 'lrn-manual-1',
+          text: body.text,
+          evidence: [],
+          applies_to: body.applies_to,
+          status: 'approved',
+          source_summary_id: null,
+          created_at: '2026-11-22T10:00:00Z',
+          decided_at: '2026-11-22T10:00:00Z',
+        };
+        learningsState = [created, ...learningsState];
+        return jsonResponse({ learning: created });
+      }
+      return jsonResponse({});
+    });
+
+    render(
+      <TodaySection
+        health={{ ok: true }}
+        status={{ env_status: {}, models_matrix: [], activity_log: [] }}
+        jobs={[]}
+        loading={false}
+        error={null}
+      />,
+    );
+
+    // 1. Empty state ("none yet")
+    await waitFor(() => {
+      expect(screen.getByText(/No weekly summary generated yet/i)).toBeTruthy();
+    });
+
+    // 2. Generate now -> displays table, top/bottom post links, missing results, and narrative
+    fireEvent.click(screen.getByRole('button', { name: 'Generate now' }));
+    await waitFor(() => {
+      expect(screen.getByText('Weekly summary · 16-22 Nov')).toBeTruthy();
+    });
+    expect(screen.getByRole('table', { name: 'Per-platform performance' })).toBeTruthy();
+    expect(screen.getByText('+100%')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Carousel Guide' }).getAttribute('href')).toBe(
+      'https://linkedin.com/posts/top',
+    );
+    expect(screen.getByRole('link', { name: 'Single Image' }).getAttribute('href')).toBe(
+      'https://linkedin.com/posts/bot',
+    );
+    expect(screen.getByText(/During 16-22 Nov, LinkedIn engagement rose 100%/)).toBeTruthy();
+
+    // 3. Switch to older summary with AI-skipped narrative note
+    fireEvent.click(screen.getByRole('button', { name: /Older summaries/i }));
+    fireEvent.click(screen.getByRole('button', { name: '9-15 Nov' }));
+    expect(
+      screen.getByText('Narrative skipped: it mentioned numbers that are not in the data.'),
+    ).toBeTruthy();
+
+    // 4. Missing results Add results button opens T5.1 AddResultsDialog pre-selected with cnt-miss
+    const missingList = screen.getByRole('list', { name: 'Posts missing results' });
+    const addResultsBtn = missingList.querySelector('button');
+    expect(addResultsBtn).toBeTruthy();
+    fireEvent.click(addResultsBtn!);
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect((screen.getByLabelText('Post') as HTMLSelectElement).value).toBe('cnt-miss');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    // 5. Learnings: evidence shows post titles & numbers, edit text then approve
+    const pendingLearnings = screen.getByRole('list', { name: 'Pending learnings' });
+    expect(pendingLearnings.textContent).toContain('Carousel Guide (linkedin) — views: 1200, likes: 45, saves: 18');
+
+    const editBox = screen.getByLabelText('Edit learning lrn-pend-1');
+    fireEvent.change(editBox, { target: { value: 'Carousels beat single images on LinkedIn saves.' } });
+    const approveButtons = screen.getAllByRole('button', { name: 'Approve' });
+    fireEvent.click(approveButtons[0]);
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/learnings/lrn-pend-1/approve',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ text: 'Carousels beat single images on LinkedIn saves.' }),
+        }),
+      );
+    });
+
+    // Reject second pending learning
+    const rejectButtons = screen.getAllByRole('button', { name: 'Reject' });
+    fireEvent.click(rejectButtons[0]);
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/learnings/lrn-pend-2/reject',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
+    // Retire the originally approved learning (lrn-app-1)
+    const approvedList = screen.getByRole('list', { name: 'Approved learnings' });
+    const appRow = Array.from(approvedList.querySelectorAll('[role="listitem"]')).find((el) =>
+      el.textContent?.includes('Keep X hooks under 120 chars.'),
+    );
+    expect(appRow).toBeTruthy();
+    const retireBtn = appRow!.querySelector('button');
+    expect(retireBtn).toBeTruthy();
+    fireEvent.click(retireBtn!);
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/learnings/lrn-app-1/retire',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
+    // Add manual learning
+    fireEvent.change(screen.getByLabelText('New learning text'), {
+      target: { value: 'Always include code output in developer posts.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add learning' }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/learnings',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            text: 'Always include code output in developer posts.',
+            applies_to: ['all'],
+          }),
+        }),
+      );
+    });
+  });
 });

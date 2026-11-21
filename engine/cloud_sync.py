@@ -579,6 +579,50 @@ def build_mirror_records(now_iso=None):
             }
         records.append(_make_record("task", rem["id"], cid or None, title, data, ts_val))
 
+    import weekly_summary
+    for s in db.list_all_weekly_summaries():
+        title = weekly_summary.format_week_title(s["week_start"])
+        data = {
+            "kind": "weekly_summary",
+            "week_start": s.get("week_start"),
+            "status": s.get("status"),
+            "highlights": s.get("highlights") or {},
+            "narrative": s.get("narrative") or "",
+            "created_at": s.get("created_at"),
+        }
+        records.append(
+            _make_record(
+                "brief",
+                s["id"],
+                None,
+                title,
+                data,
+                s.get("created_at") or fallback_ts,
+            )
+        )
+
+    for lr in db.list_all_learnings():
+        ts_val = lr.get("decided_at") or lr.get("created_at") or fallback_ts
+        data = {
+            "kind": "learning",
+            "status": lr.get("status"),
+            "applies_to": lr.get("applies_to") or [],
+            "evidence": lr.get("evidence") or [],
+            "source_summary_id": lr.get("source_summary_id"),
+            "created_at": lr.get("created_at"),
+            "decided_at": lr.get("decided_at"),
+        }
+        records.append(
+            _make_record(
+                "research_note",
+                lr["id"],
+                lr.get("source_summary_id") or None,
+                lr.get("text") or "",
+                data,
+                ts_val,
+            )
+        )
+
     return [_stub_if_mentions_confidential(rec, checker) for rec in records]
 
 
@@ -658,6 +702,10 @@ def _stub_if_mentions_confidential(rec, checker):
     stub = {"confidential": True}
     if rec.get("kind") == "task" and data.get("kind") == "reminder":
         stub["kind"] = "reminder"
+    elif rec.get("kind") == "brief" and data.get("kind") == "weekly_summary":
+        stub["kind"] = "weekly_summary"
+    elif rec.get("kind") == "research_note" and data.get("kind") == "learning":
+        stub["kind"] = "learning"
     for key in ("agent_id", "status", "platform", "version", "updated_at", "created_at", "ts"):
         if key in data and not isinstance(data[key], (dict, list)):
             stub[key] = data[key]

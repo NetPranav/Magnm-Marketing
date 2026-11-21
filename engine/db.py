@@ -22,7 +22,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -817,6 +817,39 @@ def _apply_migration_v18(conn):
     )
 
 
+def _apply_migration_v19(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS weekly_summaries (
+            id TEXT PRIMARY KEY,
+            week_start TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            data_json TEXT NOT NULL DEFAULT '{}',
+            highlights_json TEXT NOT NULL DEFAULT '{}',
+            narrative TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'ready'
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_weekly_summaries_week_start
+            ON weekly_summaries(week_start DESC);
+
+        CREATE TABLE IF NOT EXISTS learnings (
+            id TEXT PRIMARY KEY,
+            text TEXT NOT NULL,
+            evidence_json TEXT NOT NULL DEFAULT '[]',
+            applies_to_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'pending',
+            source_summary_id TEXT,
+            created_at TEXT NOT NULL,
+            decided_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_learnings_status_created
+            ON learnings(status, created_at DESC);
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -836,6 +869,7 @@ _MIGRATIONS = (
     (16, _apply_migration_v16),
     (17, _apply_migration_v17),
     (18, _apply_migration_v18),
+    (19, _apply_migration_v19),
 )
 
 
@@ -5472,3 +5506,252 @@ def decide_metric_proposal(
             ),
         )
     return get_metric_proposal(proposal_id)
+
+
+# --- Weekly Summaries ---
+
+def _row_to_weekly_summary(row):
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "week_start": row["week_start"],
+        "created_at": row["created_at"],
+        "data": json.loads(row["data_json"]) if row["data_json"] else {},
+        "highlights": json.loads(row["highlights_json"]) if row["highlights_json"] else {},
+        "narrative": row["narrative"] or "",
+        "status": row["status"] or "ready",
+    }
+
+
+def upsert_weekly_summary(
+    week_start,
+    data,
+    highlights,
+    narrative="",
+    status="ready",
+    summary_id=None,
+    created_at=None,
+):
+    """Insert or replace the weekly summary for week_start (one row per week)."""
+    ensure_init()
+    ws = str(week_start).strip()
+    now = _normalize_utc_iso(created_at) if created_at else datetime.now(timezone.utc).isoformat()
+    conn = connect()
+    with conn:
+        existing = conn.execute(
+            "SELECT id FROM weekly_summaries WHERE week_start = ?",
+            (ws,),
+        ).fetchone()
+        sid = str(summary_id or (existing["id"] if existing is not None else f"wsum_{uuid.uuid4().hex[:12]}"))
+        if existing is not None and existing["id"] != sid:
+            conn.execute("DELETE FROM weekly_summaries WHERE week_start = ?", (ws,))
+        conn.execute(
+            """
+            INSERT INTO weekly_summaries (
+                id, week_start, created_at, data_json, highlights_json, narrative, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(week_start) DO UPDATE SET
+                id = excluded.id,
+                created_at = excluded.created_at,
+                data_json = excluded.data_json,
+                highlights_json = excluded.highlights_json,
+                narrative = excluded.narrative,
+                status = excluded.status
+            """,
+            (
+                sid,
+                ws,
+                now,
+                json.dumps(dict(data or {}), ensure_ascii=False),
+                json.dumps(dict(highlights or {}), ensure_ascii=False),
+                str(narrative or ""),
+                str(status or "ready"),
+            ),
+        )
+    return get_weekly_summary_by_week(ws)
+
+
+def get_weekly_summary(summary_id):
+    """Fetch a single weekly summary by ID, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute("SELECT * FROM weekly_summaries WHERE id = ?", (str(summary_id),)).fetchone()
+    return _row_to_weekly_summary(row)
+
+
+def get_weekly_summary_by_week(week_start):
+    """Fetch the weekly summary for week_start (YYYY-MM-DD), or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM weekly_summaries WHERE week_start = ?",
+        (str(week_start).strip(),),
+    ).fetchone()
+    return _row_to_weekly_summary(row)
+
+
+def list_weekly_summaries(limit=52):
+    """List weekly summaries ordered newest week_start first."""
+    ensure_init()
+    conn = connect()
+    cap = max(1, min(int(limit or 52), 500))
+    rows = conn.execute(
+        "SELECT * FROM weekly_summaries ORDER BY week_start DESC, created_at DESC LIMIT ?",
+        (cap,),
+    ).fetchall()
+    return [_row_to_weekly_summary(r) for r in rows]
+
+
+def list_all_weekly_summaries():
+    """Return all weekly_summaries rows for cloud mirror sync."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT * FROM weekly_summaries ORDER BY week_start ASC, rowid ASC"
+    ).fetchall()
+    return [_row_to_weekly_summary(r) for r in rows]
+
+
+# --- Learnings ---
+
+def _row_to_learning(row):
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "text": row["text"],
+        "evidence": json.loads(row["evidence_json"]) if row["evidence_json"] else [],
+        "applies_to": json.loads(row["applies_to_json"]) if row["applies_to_json"] else [],
+        "status": row["status"],
+        "source_summary_id": row["source_summary_id"],
+        "created_at": row["created_at"],
+        "decided_at": row["decided_at"],
+    }
+
+
+def create_learning(
+    text,
+    evidence=None,
+    applies_to=None,
+    *,
+    status="pending",
+    source_summary_id=None,
+    learning_id=None,
+    created_at=None,
+    decided_at=None,
+):
+    """Insert a learning row and return its dict."""
+    ensure_init()
+    lid = str(learning_id or f"lrn_{uuid.uuid4().hex[:12]}")
+    now = datetime.now(timezone.utc).isoformat()
+    created_ts = _normalize_utc_iso(created_at, fallback=now) if created_at else now
+    decided_ts = _normalize_utc_iso(decided_at) if decided_at else None
+    src_id = str(source_summary_id).strip() if source_summary_id and str(source_summary_id).strip() else None
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO learnings (
+                id, text, evidence_json, applies_to_json, status, source_summary_id, created_at, decided_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                lid,
+                str(text).strip(),
+                json.dumps(list(evidence or []), ensure_ascii=False),
+                json.dumps(list(applies_to or ["all"]), ensure_ascii=False),
+                str(status or "pending"),
+                src_id,
+                created_ts,
+                decided_ts,
+            ),
+        )
+    return get_learning(lid)
+
+
+def get_learning(learning_id):
+    """Return a single learning dict by ID, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute("SELECT * FROM learnings WHERE id = ?", (str(learning_id),)).fetchone()
+    return _row_to_learning(row)
+
+
+def list_learnings(status=None, limit=200):
+    """List learnings optionally filtered by status ('pending'|'approved'|'rejected'|'retired')."""
+    ensure_init()
+    conn = connect()
+    cap = max(1, min(int(limit or 200), 1000))
+    norm = str(status or "").strip().lower()
+    if norm and norm != "all":
+        rows = conn.execute(
+            "SELECT * FROM learnings WHERE status = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (norm, cap),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM learnings ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (cap,),
+        ).fetchall()
+    return [_row_to_learning(r) for r in rows]
+
+
+def list_all_learnings():
+    """Return all learnings rows for cloud mirror sync."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute("SELECT * FROM learnings ORDER BY created_at ASC, rowid ASC").fetchall()
+    return [_row_to_learning(r) for r in rows]
+
+
+def list_approved_learnings(limit=100):
+    """Return approved learnings ordered most recently decided/created first."""
+    ensure_init()
+    conn = connect()
+    cap = max(1, min(int(limit or 100), 500))
+    rows = conn.execute(
+        """
+        SELECT * FROM learnings
+        WHERE status = 'approved'
+        ORDER BY COALESCE(decided_at, created_at) DESC, rowid DESC
+        LIMIT ?
+        """,
+        (cap,),
+    ).fetchall()
+    return [_row_to_learning(r) for r in rows]
+
+
+def update_learning_decision(learning_id, status, *, text=None, decided_at=None):
+    """Update status, optional edited text, and decided_at on a learning row."""
+    ensure_init()
+    existing = get_learning(learning_id)
+    if existing is None:
+        return None
+    ts = _normalize_utc_iso(decided_at) if decided_at else datetime.now(timezone.utc).isoformat()
+    next_text = str(text).strip() if text is not None else existing["text"]
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            UPDATE learnings
+            SET status = ?, text = ?, decided_at = ?
+            WHERE id = ?
+            """,
+            (str(status), next_text, ts, str(learning_id)),
+        )
+    return get_learning(learning_id)
+
+
+def delete_pending_learnings_for_summary(source_summary_id):
+    """Remove un-decided pending learnings tied to source_summary_id before regenerating."""
+    if not source_summary_id or not str(source_summary_id).strip():
+        return 0
+    ensure_init()
+    conn = connect()
+    with conn:
+        cur = conn.execute(
+            "DELETE FROM learnings WHERE source_summary_id = ? AND status = 'pending'",
+            (str(source_summary_id).strip(),),
+        )
+    return int(cur.rowcount or 0)

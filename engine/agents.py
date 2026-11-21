@@ -216,4 +216,12 @@ def build_system_prompt(agent_id):
     if mem:
         blocks.append(f"## Memory\n{mem.strip()}")
 
+    try:
+        import learnings
+        lr_block = learnings.prompt_block(canon_id)
+        if lr_block:
+            blocks.append(lr_block)
+    except Exception:
+        pass
+
     return "\n\n".join(b for b in blocks if b)
