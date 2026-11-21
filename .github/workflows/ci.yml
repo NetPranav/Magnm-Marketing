@@ -109,3 +109,21 @@ jobs:
         run: node --test scripts/pitch_host.test.mjs
       - name: Build
         run: pnpm build
+
+  supabase:
+    name: Supabase schema & privacy tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.122.1
+      - name: Start local Supabase database and auth schema
+        run: supabase start -x studio,imgproxy,vector,logflare,edge-runtime,realtime,storage-api,postgrest,postgres-meta,mailpit,supavisor
+      - name: Reset local database without seed
+        run: supabase db reset --local --no-seed
+      - name: Run SQL privacy and schema guard tests
+        env:
+          DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+        run: supabase/dev.sh test
