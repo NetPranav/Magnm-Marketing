@@ -173,6 +173,70 @@ export interface AdminAuditResponse {
   next_before: string | null;
 }
 
+export interface AdminAiKeyLabel {
+  label: string;
+  last_status: number | null;
+  last_ok_at: string | null;
+  cooldown_until: string | null;
+  last_error: string | null;
+}
+
+export interface AdminAiModel {
+  model: string;
+  enabled: boolean;
+  max_tokens_cap: number;
+  updated_at?: string | null;
+}
+
+export interface AdminAiLimitConfig {
+  daily_requests: number;
+  daily_tokens: number;
+}
+
+export interface AdminAiMemberLimit extends AdminAiLimitConfig {
+  owner_id: string;
+  display_name: string;
+  email?: string | null;
+  updated_at?: string | null;
+}
+
+export interface AdminAiUsageStats {
+  requests: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  tokens: number;
+  rejected: number;
+}
+
+export interface AdminAiMemberUsage {
+  owner_id: string;
+  display_name: string;
+  email?: string | null;
+  active: boolean;
+  today: AdminAiUsageStats;
+  seven_days: AdminAiUsageStats;
+  limit: AdminAiLimitConfig & { is_override: boolean };
+}
+
+export interface AdminAiOverview {
+  keys: AdminAiKeyLabel[];
+  local_key_count?: number;
+  models: AdminAiModel[];
+  default_limit: AdminAiLimitConfig;
+  member_limits: AdminAiMemberLimit[];
+  usage: AdminAiMemberUsage[];
+  today_utc: string;
+}
+
+export interface AdminAiTestResult {
+  ok: boolean;
+  status: number;
+  model: string;
+  reply?: string;
+  error?: string;
+  latency_ms: number;
+}
+
 /** Fetch all team members with presence, devices, running agents, and latest activity. */
 export function getAdminTeam(): Promise<AdminTeamResponse> {
   return api.get<AdminTeamResponse>('/api/admin/team');
@@ -272,4 +336,42 @@ export function setMemberActive(memberId: string, active: boolean): Promise<{ me
     `/api/admin/members/${encodeURIComponent(memberId)}/active`,
     { active },
   );
+}
+
+/** Fetch shared AI key labels/health, limits, per-member usage, and allowed models. */
+export function getAdminAi(): Promise<AdminAiOverview> {
+  return api.get<AdminAiOverview>('/api/admin/ai');
+}
+
+/** Share valid NVIDIA NIM keys from this laptop into Supabase Vault. */
+export function shareLocalAiKeys(): Promise<{ count: number; labels: AdminAiKeyLabel[] }> {
+  return api.post<{ count: number; labels: AdminAiKeyLabel[] }>('/api/admin/ai/share-local-keys', {});
+}
+
+/** Remove all shared AI keys from Supabase Vault. */
+export function clearAdminAiKeys(): Promise<{ count: number }> {
+  return api.post<{ count: number }>('/api/admin/ai/clear-keys', {});
+}
+
+/** Upsert team default or member override daily AI limits, or reset a member override. */
+export function updateAdminAiLimits(
+  payload:
+    | { member_id: string | null; daily_requests: number; daily_tokens: number }
+    | { member_id: string; reset: true },
+): Promise<{ limit?: unknown; ok?: boolean; reset?: boolean }> {
+  return api.post('/api/admin/ai/limits', payload);
+}
+
+/** Update an allowed AI model's enabled flag and max_tokens_cap. */
+export function updateAdminAiModel(payload: {
+  model: string;
+  enabled: boolean;
+  max_tokens_cap: number;
+}): Promise<{ model: AdminAiModel }> {
+  return api.post<{ model: AdminAiModel }>('/api/admin/ai/models', payload);
+}
+
+/** Send one tiny test request through ai-proxy using the admin's token. */
+export function testAdminAiKeys(): Promise<AdminAiTestResult> {
+  return api.post<AdminAiTestResult>('/api/admin/ai/test', {});
 }

@@ -59,6 +59,19 @@ export interface StorageUsage {
   warning: boolean;
 }
 
+export interface AccountAiStatus {
+  mode: 'own_keys' | 'team' | 'none';
+  today: {
+    requests: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+  };
+  limit: {
+    daily_requests: number;
+    daily_tokens: number;
+  };
+}
+
 /** Fetch current Supabase team account configuration and sign-in status. */
 export function getAccount(): Promise<AccountState> {
   return api.get<AccountState>('/api/account');
@@ -132,4 +145,9 @@ export function signMediaPreview(storagePath: string, expiresIn = 3600): Promise
     storage_path: storagePath,
     expires_in: expiresIn,
   });
+}
+
+/** Fetch current AI key mode and today's team AI usage/limit for the signed-in user. */
+export function getAccountAi(): Promise<AccountAiStatus> {
+  return api.get<AccountAiStatus>('/api/account/ai');
 }

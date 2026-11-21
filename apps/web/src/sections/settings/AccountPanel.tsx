@@ -13,6 +13,7 @@ import {
   cancelLogin,
   createInvite,
   getAccount,
+  getAccountAi,
   getMediaStatus,
   getStorageUsage,
   getSyncStatus,
@@ -21,6 +22,7 @@ import {
   revokeInvite,
   startLogin,
   triggerSync,
+  type AccountAiStatus,
   type AccountRole,
   type AccountState,
   type InviteRecord,
@@ -76,6 +78,17 @@ function formatMediaLine(media: MediaPreviewStatus | null): string {
   return failed > 0 ? `${base} · ${failed} failed` : base;
 }
 
+function formatAiLine(ai: AccountAiStatus | null): string {
+  if (!ai || !ai.mode) return 'AI: checking...';
+  if (ai.mode === 'own_keys') return 'AI: using your own keys';
+  if (ai.mode === 'team') {
+    const used = Number(ai.today?.requests ?? 0);
+    const cap = Number(ai.limit?.daily_requests ?? 200);
+    return `AI: using the team's keys · ${used} of ${cap} requests today`;
+  }
+  return 'AI: no AI keys available';
+}
+
 function formatStorageBytes(bytes: number): string {
   const safe = Math.max(0, Number(bytes || 0));
   const gbUnit = 1024 * 1024 * 1024;
@@ -118,6 +131,7 @@ export function AccountPanel() {
   const [confirmRevokeEmail, setConfirmRevokeEmail] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [mediaStatus, setMediaStatus] = useState<MediaPreviewStatus | null>(null);
+  const [aiStatus, setAiStatus] = useState<AccountAiStatus | null>(null);
   const [storageUsage, setStorageUsage] = useState<StorageUsage | null>(null);
 
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -241,6 +255,7 @@ export function AccountPanel() {
       setInvites([]);
       setSyncStatus(null);
       setMediaStatus(null);
+      setAiStatus(null);
       setStorageUsage(null);
       await loadAccount();
       notifyAccountChanged();
@@ -253,12 +268,16 @@ export function AccountPanel() {
 
   const loadSyncStatus = useCallback(async (includeAdminStorage: boolean) => {
     try {
-      const [nextSync, nextMedia] = await Promise.all([
+      const [nextSync, nextMedia, nextAi] = await Promise.all([
         getSyncStatus(),
         getMediaStatus(),
+        getAccountAi().catch(() => null),
       ]);
       setSyncStatus(nextSync);
       setMediaStatus(nextMedia);
+      if (nextAi) {
+        setAiStatus(nextAi);
+      }
     } catch {
       // Keep the previous sync status if a background poll fails transiently.
     }
@@ -336,6 +355,7 @@ export function AccountPanel() {
     if (!showSync) {
       setSyncStatus(null);
       setMediaStatus(null);
+      setAiStatus(null);
       setStorageUsage(null);
       return;
     }
@@ -473,6 +493,7 @@ export function AccountPanel() {
                 </PillButton>
               </div>
               <div className="studio-mono">{formatMediaLine(mediaStatus)}</div>
+              <div className="studio-mono">{formatAiLine(aiStatus)}</div>
               {isAdmin && storageUsage && typeof storageUsage.limit_bytes === 'number' ? (
                 <div className="studio-account-storage">
                   <div className="studio-section-bar">

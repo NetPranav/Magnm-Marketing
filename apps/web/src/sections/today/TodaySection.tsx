@@ -78,7 +78,7 @@ function formatProviderSummary(status: EngineStatusInfo | null): string {
   const env = status?.env_status;
   if (!env) return 'Unknown';
   const configured = Boolean(
-    env.nvidia_nim_global || env.openai || env.anthropic || env.gemini || env.groq,
+    env.nvidia_nim_global || env.team_ai || env.openai || env.anthropic || env.gemini || env.groq,
   );
   return configured ? 'Yes' : 'No';
 }
@@ -317,7 +317,10 @@ export function TodaySection({
   const env = status?.env_status;
   const providerFlags: Array<{ name: string; ready: boolean }> = env
     ? [
-        { name: 'NVIDIA NIM', ready: Boolean(env.nvidia_nim_global) },
+        {
+          name: !env.nvidia_nim_global && env.team_ai ? 'Team AI' : 'NVIDIA NIM',
+          ready: Boolean(env.nvidia_nim_global || env.team_ai),
+        },
         { name: 'OpenAI', ready: Boolean(env.openai) },
         { name: 'Anthropic', ready: Boolean(env.anthropic) },
         { name: 'Gemini', ready: Boolean(env.gemini) },

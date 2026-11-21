@@ -521,4 +521,68 @@ describe('AccountPanel', () => {
       ).toBeTruthy();
     });
   });
+
+  it('shows AI mode line variants (own_keys, team with count/limit, none)', async () => {
+    let aiMode: 'own_keys' | 'team' | 'none' = 'own_keys';
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/account') {
+        return jsonResponse({
+          configured: true,
+          signed_in: true,
+          deactivated: false,
+          user: {
+            id: 'u-1',
+            email: 'member@example.com',
+            display_name: 'Maya',
+            avatar_url: null,
+            role: 'member',
+            active: true,
+          },
+        });
+      }
+      if (url === '/api/account/sync') {
+        return jsonResponse({
+          enabled: true,
+          signed_in: true,
+          last_sync_at: null,
+          last_error: null,
+          pending: 0,
+          synced_count: 0,
+          running: false,
+        });
+      }
+      if (url === '/api/account/media') {
+        return jsonResponse({ ffmpeg: true, uploaded: 0, waiting: 0, failed: 0, last_error: null });
+      }
+      if (url === '/api/account/ai') {
+        return jsonResponse({
+          mode: aiMode,
+          today: { requests: 37, prompt_tokens: 1000, completion_tokens: 200 },
+          limit: { daily_requests: 200, daily_tokens: 400000 },
+        });
+      }
+      return jsonResponse({});
+    });
+
+    const v1 = render(<AccountPanel />);
+    await waitFor(() => {
+      expect(screen.getByText('AI: using your own keys')).toBeTruthy();
+    });
+    v1.unmount();
+
+    aiMode = 'team';
+    const v2 = render(<AccountPanel />);
+    await waitFor(() => {
+      expect(screen.getByText("AI: using the team's keys · 37 of 200 requests today")).toBeTruthy();
+    });
+    v2.unmount();
+
+    aiMode = 'none';
+    render(<AccountPanel />);
+    await waitFor(() => {
+      expect(screen.getByText('AI: no AI keys available')).toBeTruthy();
+    });
+  });
 });

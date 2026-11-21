@@ -12,6 +12,7 @@ export interface SafeEnvStatus {
   nvidia_nim_global?: boolean;
   nvidia_nim_fallback_model?: string;
   nvidia_nim_roles_configured?: number;
+  team_ai?: boolean;
   openai?: boolean;
   anthropic?: boolean;
   gemini?: boolean;

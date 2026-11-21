@@ -691,4 +691,278 @@ describe('AdminSection', () => {
       expect(within(table).getByText('new@example.com')).toBeTruthy();
     });
   });
+
+  it('manages shared AI keys tab: labels, share/remove confirm, test result, limits, usage bars, and models', async () => {
+    let sharedKeys = [
+      {
+        label: 'key-1 (...1234)',
+        last_status: 200,
+        last_ok_at: '2026-11-21T12:00:00Z',
+        cooldown_until: null,
+        last_error: null,
+      },
+      {
+        label: 'key-2 (...5678)',
+        last_status: 429,
+        last_ok_at: null,
+        cooldown_until: new Date(Date.now() + 600_000).toISOString(),
+        last_error: 'HTTP 429',
+      },
+      {
+        label: 'key-3 (...9999)',
+        last_status: null,
+        last_ok_at: null,
+        cooldown_until: null,
+        last_error: null,
+      },
+    ];
+    let defaultLimit = { daily_requests: 200, daily_tokens: 400000 };
+    let memberLimits = [
+      {
+        owner_id: MEMBER_ID,
+        display_name: 'Maya',
+        email: 'maya@example.com',
+        daily_requests: 350,
+        daily_tokens: 700000,
+      },
+    ];
+    let models = [
+      { model: 'google/gemma-4-31b-it', enabled: true, max_tokens_cap: 4096 },
+      { model: 'nvidia/nemotron-3-ultra-550b-a55b', enabled: false, max_tokens_cap: 8000 },
+    ];
+    let testOk = true;
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/admin/team') {
+        return jsonResponse({
+          members: [
+            {
+              id: ADMIN_ID,
+              email: 'admin@example.com',
+              display_name: 'Pranav',
+              avatar_url: null,
+              role: 'admin',
+              active: true,
+              created_at: '2026-11-01T00:00:00Z',
+              last_seen_at: null,
+              device_last_seen_at: null,
+              latest_activity_ts: null,
+              last_active_at: null,
+              app_version: null,
+              presence: 'online',
+              status: 'online',
+              running_agents: [],
+              devices: [],
+            },
+            {
+              id: MEMBER_ID,
+              email: 'maya@example.com',
+              display_name: 'Maya',
+              avatar_url: null,
+              role: 'member',
+              active: true,
+              created_at: '2026-11-02T00:00:00Z',
+              last_seen_at: null,
+              device_last_seen_at: null,
+              latest_activity_ts: null,
+              last_active_at: null,
+              app_version: null,
+              presence: 'online',
+              status: 'online',
+              running_agents: [],
+              devices: [],
+            },
+          ],
+          current_user_id: ADMIN_ID,
+        });
+      }
+      if (url === '/api/admin/ai') {
+        return jsonResponse({
+          keys: sharedKeys,
+          local_key_count: 2,
+          models,
+          default_limit: defaultLimit,
+          member_limits: memberLimits,
+          usage: [
+            {
+              owner_id: MEMBER_ID,
+              display_name: 'Maya',
+              email: 'maya@example.com',
+              active: true,
+              today: { requests: 37, prompt_tokens: 10000, completion_tokens: 2000, tokens: 12000, rejected: 0 },
+              seven_days: { requests: 110, prompt_tokens: 40000, completion_tokens: 10000, tokens: 50000, rejected: 0 },
+              limit: { daily_requests: 350, daily_tokens: 700000, is_override: true },
+            },
+          ],
+          today_utc: '2026-11-22',
+        });
+      }
+      if (url === '/api/admin/ai/share-local-keys' && init?.method === 'POST') {
+        sharedKeys = [
+          {
+            label: 'key-1 (...abcd)',
+            last_status: null,
+            last_ok_at: null,
+            cooldown_until: null,
+            last_error: null,
+          },
+          {
+            label: 'key-2 (...efgh)',
+            last_status: null,
+            last_ok_at: null,
+            cooldown_until: null,
+            last_error: null,
+          },
+        ];
+        return jsonResponse({ count: 2, labels: sharedKeys });
+      }
+      if (url === '/api/admin/ai/clear-keys' && init?.method === 'POST') {
+        sharedKeys = [];
+        return jsonResponse({ count: 0 });
+      }
+      if (url === '/api/admin/ai/test' && init?.method === 'POST') {
+        if (testOk) {
+          return jsonResponse({
+            ok: true,
+            status: 200,
+            model: 'google/gemma-4-31b-it',
+            reply: 'OK',
+            latency_ms: 820,
+          });
+        }
+        return jsonResponse({
+          ok: false,
+          status: 503,
+          model: 'google/gemma-4-31b-it',
+          error: 'The team has no shared AI keys yet. Ask your admin.',
+          latency_ms: 45,
+        });
+      }
+      if (url === '/api/admin/ai/limits' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body || '{}')) as {
+          member_id?: string | null;
+          daily_requests?: number;
+          daily_tokens?: number;
+          reset?: boolean;
+        };
+        if (body.reset && body.member_id) {
+          memberLimits = memberLimits.filter((m) => m.owner_id !== body.member_id);
+          return jsonResponse({ ok: true, reset: true });
+        }
+        if (body.member_id === null) {
+          defaultLimit = {
+            daily_requests: body.daily_requests ?? 200,
+            daily_tokens: body.daily_tokens ?? 400000,
+          };
+          return jsonResponse({ limit: defaultLimit });
+        }
+        return jsonResponse({ ok: true });
+      }
+      if (url === '/api/admin/ai/models' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body || '{}')) as {
+          model: string;
+          enabled: boolean;
+          max_tokens_cap: number;
+        };
+        models = models.map((m) => (m.model === body.model ? body : m));
+        return jsonResponse({ model: body });
+      }
+      return jsonResponse({});
+    });
+
+    render(<AdminSection onOpenSettings={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Pranav')).toBeTruthy();
+    });
+
+    // Verify AI keys tab sits between Storage and Audit log
+    const tabs = screen.getAllByRole('tab').map((t) => t.textContent || '');
+    const storageIdx = tabs.findIndex((t) => t.includes('Storage'));
+    const aiIdx = tabs.findIndex((t) => t.includes('AI keys'));
+    const auditIdx = tabs.findIndex((t) => t.includes('Audit log'));
+    expect(aiIdx).toBe(storageIdx + 1);
+    expect(auditIdx).toBe(aiIdx + 1);
+
+    fireEvent.click(screen.getByRole('tab', { name: /AI keys/ }));
+
+    await waitFor(() => {
+      expect(screen.getByText('key-1 (...1234)')).toBeTruthy();
+      expect(screen.getByText('OK')).toBeTruthy();
+      expect(screen.getByText(/Cooling down until/)).toBeTruthy();
+      expect(screen.getByText('Not used yet')).toBeTruthy();
+      expect(screen.getByText('37 / 350')).toBeTruthy();
+      expect(screen.getByRole('progressbar', { name: 'Maya today requests' })).toBeTruthy();
+      expect(screen.getByText('110 req · 50,000 tok')).toBeTruthy();
+    });
+
+    // Test team keys -> OK line and error line
+    fireEvent.click(screen.getByRole('button', { name: 'Test team keys' }));
+    await waitFor(() => {
+      expect(screen.getByText('OK in 820 ms with google/gemma-4-31b-it')).toBeTruthy();
+    });
+
+    testOk = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Test team keys' }));
+    await waitFor(() => {
+      expect(screen.getByText('The team has no shared AI keys yet. Ask your admin.')).toBeTruthy();
+    });
+
+    // Share keys requires confirmation dialog
+    fireEvent.click(screen.getByRole('button', { name: "Share this laptop's keys" }));
+    const shareDialog = screen.getByRole('dialog');
+    expect(within(shareDialog).getByText(/Replace the team's shared keys with the 2 keys on this laptop\?/)).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/admin/ai/share-local-keys', expect.anything());
+    fireEvent.click(within(shareDialog).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => {
+      expect(screen.getByText('key-1 (...abcd)')).toBeTruthy();
+    });
+
+    // Edit team default limit
+    fireEvent.change(screen.getByLabelText('Default requests / day'), { target: { value: '300' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save default' }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/admin/ai/limits',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ member_id: null, daily_requests: 300, daily_tokens: 400000 }),
+        }),
+      );
+    });
+
+    // Reset member limit override
+    fireEvent.click(screen.getByRole('button', { name: 'Reset limit for Maya' }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/admin/ai/limits',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ member_id: MEMBER_ID, reset: true }),
+        }),
+      );
+    });
+
+    // Toggle model
+    fireEvent.click(screen.getByLabelText('Enable google/gemma-4-31b-it'));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/admin/ai/models',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ model: 'google/gemma-4-31b-it', enabled: false, max_tokens_cap: 4096 }),
+        }),
+      );
+    });
+
+    // Remove all team keys requires confirm dialog
+    fireEvent.click(screen.getByRole('button', { name: 'Remove all team keys' }));
+    const clearDialog = screen.getByRole('dialog');
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/admin/ai/clear-keys', expect.anything());
+    fireEvent.click(within(clearDialog).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/admin/ai/clear-keys', expect.objectContaining({ method: 'POST' }));
+    });
+  });
 });

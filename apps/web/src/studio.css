@@ -1910,6 +1910,10 @@
   line-height: 1.55;
 }
 
+.studio-admin-cap-input {
+  width: 108px;
+}
+
 @media (max-width: 899px) {
   .studio-admin-workspace-grid {
     grid-template-columns: 1fr;

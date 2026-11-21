@@ -2,13 +2,14 @@ import { useCallback, useEffect, useState } from 'react';
 import { NumberedTabs, SheetHeader, type TabItem } from '@magnm/design/react';
 import { getAdminTeam, type AdminMember } from '../../api/admin';
 import { AdminActivityPanel } from './AdminActivityPanel';
+import { AdminAiKeysPanel } from './AdminAiKeysPanel';
 import { AdminAuditPanel } from './AdminAuditPanel';
 import { AdminPitchPanel } from './AdminPitchPanel';
 import { AdminStoragePanel } from './AdminStoragePanel';
 import { AdminTeamPanel } from './AdminTeamPanel';
 import { AdminWorkspacePanel } from './AdminWorkspacePanel';
 
-export type AdminTabId = 'team' | 'activity' | 'workspace' | 'pitch' | 'storage' | 'audit';
+export type AdminTabId = 'team' | 'activity' | 'workspace' | 'pitch' | 'storage' | 'ai' | 'audit';
 
 const ADMIN_TABS: TabItem[] = [
   { id: 'team', label: 'Team' },
@@ -16,6 +17,7 @@ const ADMIN_TABS: TabItem[] = [
   { id: 'workspace', label: 'Workspace' },
   { id: 'pitch', label: 'Pitch' },
   { id: 'storage', label: 'Storage' },
+  { id: 'ai', label: 'AI keys' },
   { id: 'audit', label: 'Audit log' },
 ];
 
@@ -121,6 +123,8 @@ export function AdminSection({ onOpenSettings }: AdminSectionProps) {
       ) : null}
 
       {activeTab === 'storage' ? <AdminStoragePanel /> : null}
+
+      {activeTab === 'ai' ? <AdminAiKeysPanel members={members} /> : null}
 
       {activeTab === 'audit' ? <AdminAuditPanel /> : null}
     </div>

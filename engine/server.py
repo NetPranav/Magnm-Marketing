@@ -308,6 +308,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.send_json(media_previews.status())
             elif url.path == "/api/account/storage":
                 self.send_json(media_previews.storage_usage())
+            elif url.path == "/api/account/ai":
+                self.send_json(ai_gateway.get_account_ai_status())
             else:
                 self.send_error(404, "Not Found")
         except team_auth.TeamAuthError as exc:
@@ -386,6 +388,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             if path == "/api/admin/storage":
                 self.send_json(admin_dashboard.get_storage())
                 return
+            if path == "/api/admin/ai":
+                self.send_json(admin_dashboard.get_ai_overview())
+                return
             if path == "/api/admin/audit":
                 self.send_json(
                     admin_dashboard.get_audit(
@@ -445,6 +450,21 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         path = url.path.rstrip("/") or "/"
         parts = path.split("/")
         try:
+            if path == "/api/admin/ai/share-local-keys":
+                self.send_json(admin_dashboard.share_local_ai_keys())
+                return
+            if path == "/api/admin/ai/clear-keys":
+                self.send_json(admin_dashboard.clear_shared_ai_keys())
+                return
+            if path == "/api/admin/ai/limits":
+                self.send_json(admin_dashboard.update_ai_limits(params))
+                return
+            if path == "/api/admin/ai/models":
+                self.send_json(admin_dashboard.update_ai_model(params))
+                return
+            if path == "/api/admin/ai/test":
+                self.send_json(admin_dashboard.test_shared_ai_keys())
+                return
             if len(parts) == 6 and parts[:4] == ["", "api", "admin", "members"]:
                 member_id = urllib.parse.unquote(parts[4])
                 action = parts[5]
@@ -838,6 +858,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             cfg = ai_gateway.get_config()
             matrix = ai_gateway.get_role_model_matrix()
             roles_ready = sum(1 for m in matrix if m["has_key"])
+            team_ai_active = any(m.get("key_source") == "team" for m in matrix)
 
             state["env_status"] = {
                 "has_env_file": os.path.exists(paths.data(".env")),
@@ -847,6 +868,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 "nvidia_nim_global_masked": ai_gateway._mask_secret(cfg["NVIDIA_NIM_API_KEY"]),
                 "nvidia_nim_fallback_model": cfg["NIM_FALLBACK_MODEL"],
                 "nvidia_nim_roles_configured": roles_ready,
+                "team_ai": team_ai_active,
                 "openai": bool(cfg["OPENAI_API_KEY"]),
                 "anthropic": bool(cfg["ANTHROPIC_API_KEY"]),
                 "gemini": bool(cfg["GEMINI_API_KEY"]),

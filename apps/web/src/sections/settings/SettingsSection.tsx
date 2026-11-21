@@ -518,7 +518,7 @@ export function SettingsSection() {
     [matrix],
   );
 
-  const providerRows = desktopMode
+  const providerRows: Array<{ name: string; configured: boolean; label?: string }> = desktopMode
     ? desktopSecrets.length > 0
       ? [
           {
@@ -547,7 +547,11 @@ export function SettingsSection() {
       : []
     : env
       ? [
-          { name: 'NVIDIA NIM', configured: Boolean(env.nvidia_nim_global) },
+          {
+            name: 'NVIDIA NIM',
+            configured: Boolean(env.nvidia_nim_global || env.team_ai),
+            label: !env.nvidia_nim_global && env.team_ai ? "Using the team's AI keys" : undefined,
+          },
           { name: 'OpenAI', configured: Boolean(env.openai) },
           { name: 'Anthropic', configured: Boolean(env.anthropic) },
           { name: 'Gemini', configured: Boolean(env.gemini) },
@@ -653,7 +657,13 @@ export function SettingsSection() {
                       </div>
                       <StatusDot
                         state={role.has_key ? 'online' : 'off'}
-                        label={role.has_key ? 'Key configured' : 'Key missing'}
+                        label={
+                          role.key_source === 'team'
+                            ? "Using the team's AI keys"
+                            : role.has_key
+                              ? 'Key configured'
+                              : 'Key missing'
+                        }
                       />
                     </div>
 
@@ -734,7 +744,7 @@ export function SettingsSection() {
               <div className="studio-chip-row">
                 {providerRows.map((p) => (
                   <span key={p.name} className="mg-chip">
-                    {p.name}: {p.configured ? 'Configured' : 'Not configured'}
+                    {p.name}: {p.label ?? (p.configured ? 'Configured' : 'Not configured')}
                   </span>
                 ))}
               </div>
@@ -743,7 +753,9 @@ export function SettingsSection() {
         ) : null}
 
         {!desktopMode && keyPool.length === 0 ? (
-          <div className="mg-empty">No NVIDIA NIM keys in pool yet.</div>
+          <div className="mg-empty">
+            {env?.team_ai ? "Using the team's AI keys" : 'No NVIDIA NIM keys in pool yet.'}
+          </div>
         ) : keyPool.length > 0 ? (
           <RowList aria-label="NVIDIA key pool health">
             {keyPool.map((entry) => {

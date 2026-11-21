@@ -61,6 +61,7 @@ Team NVIDIA NIM API keys are stored encrypted in **Supabase Vault** (`vault.secr
   - Accepts `POST` OpenAI-compatible chat requests (`model`, `messages`, `max_tokens`, `temperature`, `top_p`, `stream`, `tools`, `tool_choice`, `stop`), enforces `ai_allowed_models` (`enabled` and `max_tokens_cap`), `<= 200` messages, `<= 200,000` text chars, and `<= 4 MB` total image `data:` URLs.
   - Checks daily quota (`ceil(chars/4) + max_tokens`), rotates through non-cooldown Vault keys (cached 60 s, up to 3 attempts per request, 120 s upstream timeout; cooldowns: 1 h on 401/403, `Retry-After` or 60 s on 429, 30 s on 5xx/timeouts), and proxies both JSON and SSE streaming (`stream_options: {include_usage: true}`) to `NIM_BASE_URL` (default `https://integrate.api.nvidia.com/v1`).
   - Deploy with: `supabase/dev.sh deploy ai-proxy` (optional Edge Function secret `NIM_BASE_URL` if overriding the NVIDIA NIM base URL).
+- **How members use team keys:** When a member's laptop has no local NVIDIA NIM key for a role (and work is not marked confidential, which always uses local Ollama), `engine/ai_gateway.py` automatically routes non-streaming OpenAI-compatible calls through `{supabase_url}/functions/v1/ai-proxy` using the signed-in user's bearer token and logs `runs.provider = 'team'`. Laptops with their own NIM keys keep calling NIM directly. Admins manage shared keys, limits, usage, and allowed models in **Admin > AI keys**, and signed-in members see their mode and daily count in **Settings > Account**.
 
 ## Using `supabase/dev.sh`
 
