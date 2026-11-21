@@ -12,6 +12,7 @@ import base64
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import hmac
+import html
 import importlib.util
 import json
 import mimetypes
@@ -22,6 +23,7 @@ import shutil
 import sys
 import threading
 import urllib.parse
+import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -50,6 +52,7 @@ import review
 import review_studio
 import scheduler
 import setup_check
+import team_auth
 import team_room
 import web_ui
 import workflows
@@ -236,6 +239,100 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_auth_callback_html(self, ok, message, status=200):
+        heading = "Signed in to Magnm Studio" if ok else "Sign-in failed"
+        safe_heading = html.escape(heading, quote=True)
+        safe_message = html.escape(str(message or ""), quote=True)
+        doc = (
+            "<!doctype html>"
+            "<html lang=\"en\">"
+            "<head>"
+            "<meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            f"<title>{safe_heading}</title>"
+            "<style>"
+            "body{margin:0;background:#ffffff;color:#111111;"
+            "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+            "display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;}"
+            "main{max-width:460px;width:100%;border:1px solid #e5e5e5;border-radius:12px;padding:32px;}"
+            "h1{margin:0 0 12px;font-family:Georgia,'Times New Roman',serif;"
+            "font-weight:500;font-size:28px;line-height:1.2;}"
+            "p{margin:0 0 12px;font-size:15px;line-height:1.5;color:#222222;}"
+            ".hint{margin:0;font-size:13px;color:#666666;}"
+            "</style>"
+            "</head>"
+            "<body>"
+            "<main>"
+            f"<h1>{safe_heading}</h1>"
+            f"<p>{safe_message}</p>"
+            "<p class=\"hint\">You can close this tab and go back to Magnm Studio.</p>"
+            "</main>"
+            "</body>"
+            "</html>"
+        ).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Length", str(len(doc)))
+        self.end_headers()
+        self.wfile.write(doc)
+
+    def _handle_auth_callback(self, url):
+        qs = urllib.parse.parse_qs(url.query, keep_blank_values=True)
+        try:
+            res = team_auth.finish_login(qs)
+            email = res.get("email") or ""
+            msg = f"Signed in as {email}." if email else "Your Google account is connected."
+            self._send_auth_callback_html(True, msg, status=200)
+        except team_auth.TeamAuthError as exc:
+            status = exc.status if isinstance(exc.status, int) and 400 <= exc.status < 600 else 400
+            self._send_auth_callback_html(False, exc.message, status=status)
+        except Exception:
+            self._send_auth_callback_html(False, "Sign-in could not be completed.", status=500)
+
+    def _handle_account_get(self, url):
+        try:
+            if url.path == "/api/account":
+                self.send_json(team_auth.current_account())
+            elif url.path == "/api/account/invites":
+                self.send_json({"invites": team_auth.list_invites()})
+            else:
+                self.send_error(404, "Not Found")
+        except team_auth.TeamAuthError as exc:
+            status = exc.status if isinstance(exc.status, int) and 400 <= exc.status < 600 else 502
+            self.send_json({"error": exc.message}, status=status)
+
+    def _handle_account_post(self, url, params):
+        try:
+            if url.path == "/api/account/login/start":
+                open_browser = params.get("open_browser", True)
+                port = self.server.server_address[1] if getattr(self, "server", None) else PORT
+                authorize_url = team_auth.start_login(port)
+                if open_browser:
+                    try:
+                        webbrowser.open(authorize_url)
+                    except Exception:
+                        pass
+                self.send_json({"authorize_url": authorize_url})
+            elif url.path == "/api/account/login/cancel":
+                team_auth.cancel_login()
+                self.send_json({"ok": True})
+            elif url.path == "/api/account/logout":
+                team_auth.logout()
+                self.send_json({"ok": True})
+            elif url.path == "/api/account/invites":
+                invite = team_auth.create_invite(params.get("email"), params.get("role", "member"))
+                self.send_json({"invite": invite})
+            elif url.path == "/api/account/invites/revoke":
+                invite = team_auth.revoke_invite(params.get("email"))
+                self.send_json({"invite": invite})
+            else:
+                self.send_error(404, "Unknown endpoint")
+        except team_auth.TeamAuthError as exc:
+            status = exc.status if isinstance(exc.status, int) and 400 <= exc.status < 600 else 400
+            self.send_json({"error": exc.message}, status=status)
 
     def _serve_sse(self):
         """Stream live Server-Sent Events ('job', 'message', 'ping') to connected clients."""
@@ -579,6 +676,10 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.wfile.write(body)
                 return
 
+        if url.path == "/auth/callback":
+            self._handle_auth_callback(url)
+            return
+
         if not self._is_authorized():
             self.send_json({"error": "unauthorized"}, status=401)
             return
@@ -889,6 +990,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         elif url.path.startswith("/api/pitch/"):
             self._handle_pitch_get(url)
 
+        elif url.path == "/api/account" or url.path.startswith("/api/account/"):
+            self._handle_account_get(url)
+
         elif url.path.startswith("/api/asset/"):
             parts = url.path.split("/")[3:]
             if len(parts) >= 2:
@@ -953,7 +1057,11 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             self._handle_pitch_post_pdf(proposal_id, content_len)
             return
 
-        is_strict_json = url.path.startswith("/api/review/") or url.path.startswith("/api/pitch/")
+        is_strict_json = (
+            url.path.startswith("/api/review/")
+            or url.path.startswith("/api/pitch/")
+            or url.path.startswith("/api/account/")
+        )
         max_len = MAX_REVIEW_BODY_BYTES if url.path.startswith("/api/review/") else MAX_POST_BYTES
         if content_len > max_len:
             self.send_json({"error": "Request body too large"}, status=413)
@@ -977,6 +1085,10 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         if url.path.startswith("/api/pitch/"):
             self._handle_pitch_post(url, params)
+            return
+
+        if url.path.startswith("/api/account/"):
+            self._handle_account_post(url, params)
             return
 
         if url.path == "/api/shutdown":

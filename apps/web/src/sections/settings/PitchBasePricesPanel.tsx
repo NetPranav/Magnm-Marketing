@@ -101,7 +101,7 @@ export function PitchBasePricesPanel() {
     <section className="studio-section" aria-labelledby="settings-pitch-prices-heading">
       <div className="studio-section-bar">
         <div className="studio-settings-head">
-          <span className="studio-settings-num">08</span>
+          <span className="studio-settings-num">09</span>
           <h2 id="settings-pitch-prices-heading" className="studio-section-title">
             Pitch base prices (admin)
           </h2>

@@ -53,3 +53,13 @@ values ('your-admin-email@gmail.com', 'admin');
 ```
 
 When that user signs in with Google, the `auth.users` trigger verifies the open invite, creates their `public.profiles` row with `role = 'admin'`, and marks `accepted_at` on the invite.
+
+## Desktop Sign-In
+
+The desktop engine listens on a random loopback port (`127.0.0.1:<port>`) and handles Google OAuth via PKCE at `GET /auth/callback`. In the Supabase Dashboard under Authentication > URL Configuration, add this pattern to **Redirect URLs**:
+
+```
+http://127.0.0.1:*/auth/callback
+```
+
+Public Supabase settings (`url` and `publishable_key`) live in `config/supabase.json` and may be overridden with `MAGNM_SUPABASE_URL` and `MAGNM_SUPABASE_PUBLISHABLE_KEY`.

@@ -35,6 +35,7 @@ import {
   type SecretStatus,
 } from '../../desktop';
 import { useFallbackPoll, useStudioEvents } from '../../events';
+import { AccountPanel } from './AccountPanel';
 import { PitchBasePricesPanel } from './PitchBasePricesPanel';
 import type {
   BakeoffModelStat,
@@ -572,9 +573,11 @@ export function SettingsSection() {
 
       {notice ? <div className="mg-notice">{notice}</div> : null}
 
+      <AccountPanel />
+
       <section className="studio-section" aria-labelledby="settings-models-heading">
         <div className="studio-settings-head">
-          <span className="studio-settings-num">01</span>
+          <span className="studio-settings-num">02</span>
           <h2 id="settings-models-heading" className="studio-section-title">
             Engines and models
           </h2>
@@ -712,7 +715,7 @@ export function SettingsSection() {
 
       <section className="studio-section" aria-labelledby="settings-keys-heading">
         <div className="studio-settings-head">
-          <span className="studio-settings-num">02</span>
+          <span className="studio-settings-num">03</span>
           <h2 id="settings-keys-heading" className="studio-section-title">
             Keys
           </h2>
@@ -892,7 +895,7 @@ export function SettingsSection() {
       <section className="studio-section" aria-labelledby="settings-setup-heading">
         <div className="studio-section-bar">
           <div className="studio-settings-head">
-            <span className="studio-settings-num">03</span>
+            <span className="studio-settings-num">04</span>
             <h2 id="settings-setup-heading" className="studio-section-title">
               Setup check
             </h2>
@@ -963,7 +966,7 @@ export function SettingsSection() {
 
       <section className="studio-section" aria-labelledby="settings-import-heading">
         <div className="studio-settings-head">
-          <span className="studio-settings-num">04</span>
+          <span className="studio-settings-num">05</span>
           <h2 id="settings-import-heading" className="studio-section-title">
             Import old folder
           </h2>
@@ -1003,7 +1006,7 @@ export function SettingsSection() {
 
       <section className="studio-section" aria-labelledby="settings-bakeoff-heading">
         <div className="studio-settings-head">
-          <span className="studio-settings-num">05</span>
+          <span className="studio-settings-num">06</span>
           <h2 id="settings-bakeoff-heading" className="studio-section-title">
             Bake-off
           </h2>
@@ -1049,7 +1052,7 @@ export function SettingsSection() {
 
       <section className="studio-section" aria-labelledby="settings-appearance-heading">
         <div className="studio-settings-head">
-          <span className="studio-settings-num">06</span>
+          <span className="studio-settings-num">07</span>
           <h2 id="settings-appearance-heading" className="studio-section-title">
             Appearance
           </h2>
@@ -1070,7 +1073,7 @@ export function SettingsSection() {
 
       <section className="studio-section" aria-labelledby="settings-about-heading">
         <div className="studio-settings-head">
-          <span className="studio-settings-num">07</span>
+          <span className="studio-settings-num">08</span>
           <h2 id="settings-about-heading" className="studio-section-title">
             About
           </h2>

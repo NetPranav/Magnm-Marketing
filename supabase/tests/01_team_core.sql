@@ -11,14 +11,22 @@ declare
   v_member2 uuid := '11111111-1111-4111-8111-111111111104';
   v_uninvited uuid := '11111111-1111-4111-8111-111111111199';
   v_revoked uuid := '11111111-1111-4111-8111-111111111198';
+  v_email_provider uuid := '11111111-1111-4111-8111-111111111197';
   v_role text;
   v_email text;
   v_accepted timestamptz;
+  v_revoked_at timestamptz;
+  v_profile_count integer;
 begin
   -- 1. Sign-up without an invite fails.
   begin
-    insert into auth.users (id, email, raw_user_meta_data)
-    values (v_uninvited, 'intruder@example.com', '{"full_name":"Intruder"}'::jsonb);
+    insert into auth.users (id, email, raw_app_meta_data, raw_user_meta_data)
+    values (
+      v_uninvited,
+      'intruder@example.com',
+      '{"provider":"google","providers":["google"]}'::jsonb,
+      '{"full_name":"Intruder"}'::jsonb
+    );
     raise exception 'FAIL: sign-up without invite succeeded';
   exception
     when others then
@@ -33,8 +41,13 @@ begin
   values ('revoked@example.com', 'member', now());
 
   begin
-    insert into auth.users (id, email, raw_user_meta_data)
-    values (v_revoked, 'revoked@example.com', '{"full_name":"Revoked User"}'::jsonb);
+    insert into auth.users (id, email, raw_app_meta_data, raw_user_meta_data)
+    values (
+      v_revoked,
+      'revoked@example.com',
+      '{"provider":"google","providers":["google"]}'::jsonb,
+      '{"full_name":"Revoked User"}'::jsonb
+    );
     raise exception 'FAIL: sign-up with revoked invite succeeded';
   exception
     when others then
@@ -44,12 +57,50 @@ begin
       raise notice 'PASS: sign-up with a revoked invite fails';
   end;
 
+  -- 2b. Invited email signing up with provider "email" is rejected and invite stays open.
+  insert into public.invites (email, role)
+  values ('email.only@example.com', 'member');
+
+  begin
+    insert into auth.users (id, email, raw_app_meta_data, raw_user_meta_data)
+    values (
+      v_email_provider,
+      'email.only@example.com',
+      '{"provider":"email","providers":["email"]}'::jsonb,
+      '{"full_name":"Email Provider"}'::jsonb
+    );
+    raise exception 'FAIL: sign-up with email provider succeeded';
+  exception
+    when others then
+      if sqlerrm like 'FAIL:%' then
+        raise;
+      end if;
+  end;
+
+  select accepted_at, revoked_at into v_accepted, v_revoked_at
+  from public.invites
+  where email = 'email.only@example.com';
+
+  select count(*) into v_profile_count
+  from public.profiles
+  where email = 'email.only@example.com';
+
+  if v_accepted is not null or v_revoked_at is not null or v_profile_count <> 0 then
+    raise exception 'FAIL: rejected email-provider sign-up mutated invite or created profile';
+  end if;
+  raise notice 'PASS: invited email with provider email is rejected and invite stays open';
+
   -- 3. Sign-up with an open invite creates profile with right role (email case ignored).
   insert into public.invites (email, role)
   values ('Admin.One@Example.com', 'admin');
 
-  insert into auth.users (id, email, raw_user_meta_data)
-  values (v_admin1, 'ADMIN.ONE@EXAMPLE.COM', '{"full_name":"Admin One","avatar_url":"https://example.com/a1.png"}'::jsonb);
+  insert into auth.users (id, email, raw_app_meta_data, raw_user_meta_data)
+  values (
+    v_admin1,
+    'ADMIN.ONE@EXAMPLE.COM',
+    '{"provider":"google","providers":["google"]}'::jsonb,
+    '{"full_name":"Admin One","avatar_url":"https://example.com/a1.png"}'::jsonb
+  );
 
   select role, email into v_role, v_email
   from public.profiles
@@ -74,10 +125,20 @@ begin
     ('member.one@example.com', 'member', v_admin1),
     ('member.two@example.com', 'member', v_admin1);
 
-  insert into auth.users (id, email, raw_user_meta_data)
+  insert into auth.users (id, email, raw_app_meta_data, raw_user_meta_data)
   values
-    (v_member1, 'Member.One@example.com', '{"full_name":"Member One","avatar_url":"https://example.com/m1.png"}'::jsonb),
-    (v_member2, 'member.two@example.com', '{"full_name":"Member Two","avatar_url":"https://example.com/m2.png"}'::jsonb);
+    (
+      v_member1,
+      'Member.One@example.com',
+      '{"provider":"google","providers":["google"]}'::jsonb,
+      '{"full_name":"Member One","avatar_url":"https://example.com/m1.png"}'::jsonb
+    ),
+    (
+      v_member2,
+      'member.two@example.com',
+      '{"provider":"google","providers":["google"]}'::jsonb,
+      '{"full_name":"Member Two","avatar_url":"https://example.com/m2.png"}'::jsonb
+    );
 
   select role into v_role from public.profiles where id = v_member1;
   if v_role is distinct from 'member' then

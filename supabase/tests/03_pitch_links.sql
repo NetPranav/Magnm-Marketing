@@ -14,11 +14,11 @@ begin
     ('member.pa@example.com', 'member'),
     ('member.pb@example.com', 'member');
 
-  insert into auth.users (id, email, raw_user_meta_data)
+  insert into auth.users (id, email, raw_app_meta_data, raw_user_meta_data)
   values
-    (v_admin, 'admin.p3@example.com', '{"full_name":"Admin P3"}'::jsonb),
-    (v_member_a, 'member.pa@example.com', '{"full_name":"Member PA"}'::jsonb),
-    (v_member_b, 'member.pb@example.com', '{"full_name":"Member PB"}'::jsonb);
+    (v_admin, 'admin.p3@example.com', '{"provider":"google","providers":["google"]}'::jsonb, '{"full_name":"Admin P3"}'::jsonb),
+    (v_member_a, 'member.pa@example.com', '{"provider":"google","providers":["google"]}'::jsonb, '{"full_name":"Member PA"}'::jsonb),
+    (v_member_b, 'member.pb@example.com', '{"provider":"google","providers":["google"]}'::jsonb, '{"full_name":"Member PB"}'::jsonb);
 end;
 $$;
 
