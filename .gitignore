@@ -33,3 +33,9 @@ _to_delete/
 state/magnm.db
 state/magnm.db-*
 state/model_catalog.json
+
+# Team sign-in and sync state (secrets and per-device data; never commit)
+state/team_session.json
+state/team_session_*.tmp
+state/device_id
+cache/previews/

@@ -2075,7 +2075,7 @@ describe('PitchSection', () => {
             : { configured: true, signed_in: false, user: null },
         );
       }
-      if (url === '/api/pitch/version') return jsonResponse({ ref: '1a5f010', commit: '1a5f010' });
+      if (url === '/api/pitch/version') return jsonResponse({ ref: '1207d19', commit: '1207d19' });
       if (url === '/api/pitch/catalog') return jsonResponse(catalog);
       if (url === '/api/pitch/requests') return jsonResponse({ requests: [], unread_count: 0 });
       if (url.startsWith('/api/pitch/proposals?') || url === '/api/pitch/proposals') {
@@ -2216,7 +2216,7 @@ describe('PitchSection', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url === '/api/account') return jsonResponse({ configured: true, signed_in: false, user: null });
-      if (url === '/api/pitch/version') return jsonResponse({ ref: '1a5f010', commit: '1a5f010' });
+      if (url === '/api/pitch/version') return jsonResponse({ ref: '1207d19', commit: '1207d19' });
       if (url === '/api/pitch/catalog') return jsonResponse(catalog);
       if (url === '/api/pitch/requests') {
         return jsonResponse({ requests: requestsState, unread_count: unreadCount });

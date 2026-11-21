@@ -146,7 +146,7 @@ def sync_pitch(repo_path, ref, output_dir=VENDOR_DIR):
 def main():
     parser = argparse.ArgumentParser(description="Vendor a pinned commit of Magnm-Pitch.")
     parser.add_argument("--repo", required=True, help="Path to local Magnm-Pitch git clone")
-    parser.add_argument("--ref", default="c44b7e2", help="Git ref/commit to export (default: c44b7e2)")
+    parser.add_argument("--ref", default="1207d19", help="Git ref/commit to export (default: 1207d19)")
     args = parser.parse_args()
 
     version_info, catalog = sync_pitch(args.repo, args.ref)
