@@ -108,6 +108,11 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
   - **T4.7 done:** Admin section (admins only): team presence, roles and deactivation, activity timeline and chart,
     read-only member workspaces with previews, members' links and quote requests, storage, audit log. Tested with a
     second Google account as a member (cleaned up afterwards).
+  - **T4.8 + T4.9 done:** shared AI keys. The admin shares this laptop's NVIDIA keys once; they are stored encrypted in
+    Supabase Vault and can't be read back. Laptops without their own keys use the `ai-proxy` Edge Function with their
+    sign-in: daily limits per member (default 200 requests / 400k tokens), usage and key health in Admin, key rotation
+    with cooldowns, a 100 s time budget, and no logging of prompts or keys. Tested live on 2026-11-22 (4 keys shared,
+    test request OK in 3.5 s).
 
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.
