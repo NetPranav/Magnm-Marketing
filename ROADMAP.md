@@ -121,6 +121,11 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
   - Open items carried forward: a production Supabase project (team account, Mumbai) when real client data starts;
     Google brand verification once the team owns a domain; a desktop installer for teammates (Phase 10); a server-side
     scheduled clean-up of expired video previews (the laptop does it today).
+- **Phase 5 done (2026-11-22): Analyst.** Reminders (your own, agents' `set_reminder`, automatic "add results"
+  reminders 1 and 7 days after posting) with notifications; results screenshots read by the vision model become
+  proposals that are saved only after you confirm (the Analyst can't bypass this); a weekly summary every Monday 09:00 IST
+  (tables from real data; the AI narrative is dropped if it cites numbers that aren't in the data); learnings proposed
+  from evidence, approved by you, and given to the agents after the product rules.
 
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.
