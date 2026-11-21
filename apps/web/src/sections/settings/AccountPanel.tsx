@@ -13,6 +13,8 @@ import {
   cancelLogin,
   createInvite,
   getAccount,
+  getMediaStatus,
+  getStorageUsage,
   getSyncStatus,
   listInvites,
   logoutAccount,
@@ -22,6 +24,8 @@ import {
   type AccountRole,
   type AccountState,
   type InviteRecord,
+  type MediaPreviewStatus,
+  type StorageUsage,
   type SyncStatus,
 } from '../../api/account';
 
@@ -56,6 +60,33 @@ function formatSyncLine(sync: SyncStatus | null, syncingManual: boolean): string
   return 'Workspace sync: waiting to sync';
 }
 
+function formatMediaLine(media: MediaPreviewStatus | null): string {
+  if (!media || typeof media.ffmpeg !== 'boolean') return 'Previews: checking...';
+  if (!media.ffmpeg) return 'Install FFmpeg to share previews';
+  const uploaded = Number(media.uploaded || 0);
+  const waiting = Number(media.waiting || 0);
+  const failed = Number(media.failed || 0);
+  const base = `Previews: ${uploaded} uploaded · ${waiting} waiting`;
+  return failed > 0 ? `${base} · ${failed} failed` : base;
+}
+
+function formatStorageBytes(bytes: number): string {
+  const safe = Math.max(0, Number(bytes || 0));
+  const gbUnit = 1024 * 1024 * 1024;
+  const mbUnit = 1024 * 1024;
+  if (safe >= gbUnit) {
+    const gb = safe / gbUnit;
+    return Number.isInteger(gb) ? `${gb} GB` : `${gb.toFixed(1)} GB`;
+  }
+  if (safe >= mbUnit || safe === 0) {
+    return `${Math.round(safe / mbUnit)} MB`;
+  }
+  if (safe >= 1024) {
+    return `${Math.round(safe / 1024)} KB`;
+  }
+  return `${Math.round(safe)} B`;
+}
+
 function formatInviteStatus(invite: InviteRecord): string {
   if (invite.revoked_at) return 'Revoked';
   if (invite.accepted_at) return 'Joined';
@@ -80,6 +111,8 @@ export function AccountPanel() {
   const [inviteRole, setInviteRole] = useState<AccountRole>('member');
   const [confirmRevokeEmail, setConfirmRevokeEmail] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [mediaStatus, setMediaStatus] = useState<MediaPreviewStatus | null>(null);
+  const [storageUsage, setStorageUsage] = useState<StorageUsage | null>(null);
 
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollStartedAtRef = useRef<number>(0);
@@ -200,6 +233,8 @@ export function AccountPanel() {
       await logoutAccount();
       setInvites([]);
       setSyncStatus(null);
+      setMediaStatus(null);
+      setStorageUsage(null);
       await loadAccount();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not sign out.');
@@ -208,12 +243,24 @@ export function AccountPanel() {
     }
   };
 
-  const loadSyncStatus = useCallback(async () => {
+  const loadSyncStatus = useCallback(async (includeAdminStorage: boolean) => {
     try {
-      const next = await getSyncStatus();
-      setSyncStatus(next);
+      const [nextSync, nextMedia] = await Promise.all([
+        getSyncStatus(),
+        getMediaStatus(),
+      ]);
+      setSyncStatus(nextSync);
+      setMediaStatus(nextMedia);
     } catch {
       // Keep the previous sync status if a background poll fails transiently.
+    }
+    if (includeAdminStorage) {
+      try {
+        const nextStorage = await getStorageUsage();
+        setStorageUsage(nextStorage);
+      } catch {
+        // Keep previous storage usage if transiently unavailable.
+      }
     }
   }, []);
 
@@ -222,6 +269,7 @@ export function AccountPanel() {
     try {
       const next = await triggerSync();
       setSyncStatus(next);
+      void loadSyncStatus(isAdmin);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not start sync.');
     } finally {
@@ -279,16 +327,21 @@ export function AccountPanel() {
   useEffect(() => {
     if (!showSync) {
       setSyncStatus(null);
+      setMediaStatus(null);
+      setStorageUsage(null);
       return;
     }
-    void loadSyncStatus();
+    if (!isAdmin) {
+      setStorageUsage(null);
+    }
+    void loadSyncStatus(isAdmin);
     const timer = setInterval(() => {
-      void loadSyncStatus();
+      void loadSyncStatus(isAdmin);
     }, SYNC_POLL_INTERVAL_MS);
     return () => {
       clearInterval(timer);
     };
-  }, [loadSyncStatus, showSync]);
+  }, [isAdmin, loadSyncStatus, showSync]);
 
   return (
     <section className="studio-section" aria-labelledby="settings-account-heading">
@@ -411,6 +464,35 @@ export function AccountPanel() {
                   Sync now
                 </PillButton>
               </div>
+              <div className="studio-mono">{formatMediaLine(mediaStatus)}</div>
+              {isAdmin && storageUsage && typeof storageUsage.limit_bytes === 'number' ? (
+                <div className="studio-account-storage">
+                  <div className="studio-section-bar">
+                    <span className="studio-mono">
+                      Team storage: {formatStorageBytes(storageUsage.bytes)} of {formatStorageBytes(storageUsage.limit_bytes)}
+                    </span>
+                    <span className="studio-mono">{Math.round(storageUsage.percent)}%</span>
+                  </div>
+                  <div
+                    className="studio-progress-track"
+                    role="progressbar"
+                    aria-label="Team storage usage"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.min(100, Math.max(0, Math.round(storageUsage.percent)))}
+                  >
+                    <div
+                      className="studio-progress-fill"
+                      style={{ width: `${Math.min(100, Math.max(0, storageUsage.percent))}%` }}
+                    />
+                  </div>
+                  {storageUsage.warning || storageUsage.percent >= 80 ? (
+                    <div className="mg-notice" role="status">
+                      Storage is almost full. Video previews will move to Backblaze B2.
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="studio-hint">
                 Your admin can read a copy of your chats, drafts and research. Confidential chats are not copied.
               </div>

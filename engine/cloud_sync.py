@@ -284,14 +284,14 @@ def build_mirror_records(now_iso=None):
     records = []
 
     sessions = db.list_all_agent_sessions()
-    inherited = _confidential_session_ids(sessions)
+    content_items = db.list_all_content_items()
+    confidential_sids, confidential_cids, checker = confidential_scope(
+        sessions=sessions,
+        content_items=content_items,
+    )
     for s in sessions:
-        if s["id"] in inherited:
+        if s["id"] in confidential_sids:
             s["confidential"] = True
-    confidential_sids = {s["id"] for s in sessions if s.get("confidential")}
-    confidential_cids = set()
-    for sid in confidential_sids:
-        confidential_cids.update(db.list_content_ids_for_session(sid))
 
     for s in sessions:
         updated_at = s.get("updated_at") or s.get("created_at") or fallback_ts
@@ -361,7 +361,7 @@ def build_mirror_records(now_iso=None):
             )
         )
 
-    for item in db.list_all_content_items():
+    for item in content_items:
         cid = item["id"]
         is_conf = cid in confidential_cids or (item.get("session_id") in confidential_sids)
         if is_conf:
@@ -552,8 +552,34 @@ def build_mirror_records(now_iso=None):
             )
         )
 
-    checker = confidential_checker()
     return [_stub_if_mentions_confidential(rec, checker) for rec in records]
+
+
+def confidential_scope(sessions=None, content_items=None, checker=None):
+    """Return (confidential_session_ids, confidential_content_ids, checker).
+
+    Raises RuntimeError if product rules cannot be read.
+    """
+    if checker is None:
+        checker = confidential_checker()
+    if sessions is None:
+        sessions = db.list_all_agent_sessions()
+    inherited = _confidential_session_ids(sessions)
+    confidential_sids = {
+        s["id"] for s in sessions if s.get("confidential") or s["id"] in inherited
+    }
+    confidential_cids = set()
+    for sid in confidential_sids:
+        confidential_cids.update(db.list_content_ids_for_session(sid))
+    if content_items is None:
+        content_items = db.list_all_content_items()
+    for item in content_items:
+        cid = item["id"]
+        if cid in confidential_cids or item.get("session_id") in confidential_sids:
+            confidential_cids.add(cid)
+        elif _mentions(checker, item.get("title") or "", item.get("product_id") or ""):
+            confidential_cids.add(cid)
+    return confidential_sids, confidential_cids, checker
 
 
 def _confidential_session_ids(sessions):
@@ -1035,6 +1061,17 @@ def sync_once():
             _upload_activity_batches(user_id, expected_gen)
             _upload_outbox_batches(user_id, expected_gen)
 
+            import media_previews
+            try:
+                media_previews.sync_previews(
+                    user_id,
+                    is_signed_out=lambda: _is_signed_out_or_stale(expected_gen),
+                )
+            except media_previews.SignedOutAbort as exc:
+                raise _SignedOutAbort() from exc
+            except Exception as exc:
+                _log_warning(f"media previews sync error: {exc}")
+
             if _is_signed_out_or_stale(expected_gen):
                 raise _SignedOutAbort()
             try:
@@ -1075,6 +1112,11 @@ def notify_signed_out():
         _last_sync_at = None
         _failure_count = 0
         _next_allowed_at = 0.0
+    try:
+        import media_previews
+        media_previews.notify_signed_out()
+    except Exception:
+        pass
     _wake_event.set()
 
 

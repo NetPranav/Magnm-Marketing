@@ -42,6 +42,23 @@ export interface SyncStatus {
   running: boolean;
 }
 
+export interface MediaPreviewStatus {
+  ffmpeg: boolean;
+  uploaded: number;
+  waiting: number;
+  failed: number;
+  last_error: string | null;
+}
+
+export interface StorageUsage {
+  bytes: number;
+  files: number;
+  by_kind: Record<string, { bytes: number; files: number }>;
+  limit_bytes: number;
+  percent: number;
+  warning: boolean;
+}
+
 /** Fetch current Supabase team account configuration and sign-in status. */
 export function getAccount(): Promise<AccountState> {
   return api.get<AccountState>('/api/account');
@@ -97,4 +114,22 @@ export function getSyncStatus(): Promise<SyncStatus> {
 /** Trigger an immediate workspace cloud sync. */
 export function triggerSync(): Promise<SyncStatus> {
   return api.post<SyncStatus>('/api/account/sync', {});
+}
+
+/** Fetch local media preview generation and upload queue status. */
+export function getMediaStatus(): Promise<MediaPreviewStatus> {
+  return api.get<MediaPreviewStatus>('/api/account/media');
+}
+
+/** Fetch team preview storage usage summary from Supabase. */
+export function getStorageUsage(): Promise<StorageUsage> {
+  return api.get<StorageUsage>('/api/account/storage');
+}
+
+/** Request a short-lived signed URL for a preview object in private storage. */
+export function signMediaPreview(storagePath: string, expiresIn = 3600): Promise<{ url: string }> {
+  return api.post<{ url: string }>('/api/account/media/sign', {
+    storage_path: storagePath,
+    expires_in: expiresIn,
+  });
 }

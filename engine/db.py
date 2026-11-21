@@ -22,7 +22,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -680,6 +680,26 @@ def _apply_migration_v13(conn):
     )
 
 
+def _apply_migration_v14(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS media_upload_queue (
+            user_id TEXT NOT NULL,
+            local_source_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            source_hash TEXT NOT NULL,
+            storage_path TEXT NOT NULL,
+            state TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at REAL NOT NULL DEFAULT 0,
+            error TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, local_source_id, kind)
+        );
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -694,6 +714,7 @@ _MIGRATIONS = (
     (11, _apply_migration_v11),
     (12, _apply_migration_v12),
     (13, _apply_migration_v13),
+    (14, _apply_migration_v14),
 )
 
 
@@ -4339,3 +4360,128 @@ def upsert_cloud_sync_state(user_id, entries):
             params,
         )
     return len(params)
+
+
+def get_media_upload_queue(user_id):
+    """Return {(local_source_id, kind): row_dict} for user_id."""
+    if not user_id:
+        return {}
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT user_id, local_source_id, kind, source_hash, storage_path,
+               state, attempts, next_attempt_at, error, updated_at
+        FROM media_upload_queue
+        WHERE user_id = ?
+        ORDER BY rowid ASC
+        """,
+        (str(user_id),),
+    ).fetchall()
+    return {
+        (r["local_source_id"], r["kind"]): {
+            "user_id": r["user_id"],
+            "local_source_id": r["local_source_id"],
+            "kind": r["kind"],
+            "source_hash": r["source_hash"],
+            "storage_path": r["storage_path"],
+            "state": r["state"],
+            "attempts": int(r["attempts"] or 0),
+            "next_attempt_at": float(r["next_attempt_at"] or 0.0),
+            "error": r["error"],
+            "updated_at": r["updated_at"],
+        }
+        for r in rows
+    }
+
+
+def upsert_media_upload_queue(user_id, entries):
+    """Upsert media_upload_queue rows for user_id."""
+    if not user_id or not entries:
+        return 0
+    ensure_init()
+    conn = connect()
+    uid = str(user_id)
+    params = []
+    for e in entries:
+        if isinstance(e, dict):
+            params.append((
+                uid,
+                str(e["local_source_id"]),
+                str(e["kind"]),
+                str(e["source_hash"]),
+                str(e.get("storage_path") or ""),
+                str(e["state"]),
+                int(e.get("attempts") or 0),
+                float(e.get("next_attempt_at") or 0.0),
+                e.get("error"),
+                str(e["updated_at"]),
+            ))
+        else:
+            local_source_id, kind, source_hash, storage_path, state, attempts, next_attempt_at, error, updated_at = e
+            params.append((
+                uid,
+                str(local_source_id),
+                str(kind),
+                str(source_hash),
+                str(storage_path or ""),
+                str(state),
+                int(attempts or 0),
+                float(next_attempt_at or 0.0),
+                error,
+                str(updated_at),
+            ))
+    with conn:
+        conn.executemany(
+            """
+            INSERT INTO media_upload_queue (
+                user_id, local_source_id, kind, source_hash, storage_path,
+                state, attempts, next_attempt_at, error, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, local_source_id, kind) DO UPDATE SET
+                source_hash = excluded.source_hash,
+                storage_path = excluded.storage_path,
+                state = excluded.state,
+                attempts = excluded.attempts,
+                next_attempt_at = excluded.next_attempt_at,
+                error = excluded.error,
+                updated_at = excluded.updated_at
+            """,
+            params,
+        )
+    return len(params)
+
+
+def get_media_queue_summary(user_id):
+    """Return {uploaded, waiting, failed, last_error} counts for user_id."""
+    if not user_id:
+        return {"uploaded": 0, "waiting": 0, "failed": 0, "last_error": None}
+    ensure_init()
+    conn = connect()
+    uid = str(user_id)
+    rows = conn.execute(
+        """
+        SELECT state, COUNT(*) AS cnt
+        FROM media_upload_queue
+        WHERE user_id = ?
+        GROUP BY state
+        """,
+        (uid,),
+    ).fetchall()
+    counts = {r["state"]: int(r["cnt"]) for r in rows}
+    err_row = conn.execute(
+        """
+        SELECT error
+        FROM media_upload_queue
+        WHERE user_id = ? AND error IS NOT NULL AND error <> ''
+        ORDER BY updated_at DESC, rowid DESC
+        LIMIT 1
+        """,
+        (uid,),
+    ).fetchone()
+    return {
+        "uploaded": counts.get("uploaded", 0),
+        "waiting": counts.get("pending", 0),
+        "failed": counts.get("failed", 0),
+        "last_error": err_row["error"] if err_row is not None else None,
+    }

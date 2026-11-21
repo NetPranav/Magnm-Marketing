@@ -420,4 +420,105 @@ describe('AccountPanel', () => {
     });
     expect(syncCalls).toBe(callsBeforeUnmount);
   });
+
+  it('shows media previews status line (including missing FFmpeg) and admin storage meter with 80% notice', async () => {
+    let role: AccountRole = 'member';
+    let hasFfmpeg = true;
+    let storagePercent = 11.2;
+    let storageBytes = 120 * 1024 * 1024;
+    let storageWarning = false;
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/account') {
+        return jsonResponse({
+          configured: true,
+          signed_in: true,
+          deactivated: false,
+          user: {
+            id: 'u-1',
+            email: role === 'admin' ? 'admin@example.com' : 'member@example.com',
+            display_name: role === 'admin' ? 'Admin' : 'Maya',
+            avatar_url: null,
+            role,
+            active: true,
+          },
+        });
+      }
+      if (url === '/api/account/sync') {
+        return jsonResponse({
+          enabled: true,
+          signed_in: true,
+          last_sync_at: null,
+          last_error: null,
+          pending: 0,
+          synced_count: 10,
+          running: false,
+        });
+      }
+      if (url === '/api/account/media') {
+        return jsonResponse({
+          ffmpeg: hasFfmpeg,
+          uploaded: 12,
+          waiting: 3,
+          failed: 0,
+          last_error: hasFfmpeg ? null : 'FFmpeg is not installed',
+        });
+      }
+      if (url === '/api/account/storage') {
+        return jsonResponse({
+          bytes: storageBytes,
+          files: 20,
+          by_kind: {},
+          limit_bytes: 1073741824,
+          percent: storagePercent,
+          warning: storageWarning,
+        });
+      }
+      if (url === '/api/account/invites') {
+        return jsonResponse({ invites: [] });
+      }
+      return jsonResponse({});
+    });
+
+    // Member view: shows previews line, does not request or render team storage.
+    const view1 = render(<AccountPanel />);
+    await waitFor(() => {
+      expect(screen.getByText('Previews: 12 uploaded · 3 waiting')).toBeTruthy();
+    });
+    expect(screen.queryByText(/Team storage:/)).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/account/storage', expect.anything());
+    view1.unmount();
+
+    // Missing FFmpeg state
+    hasFfmpeg = false;
+    const view2 = render(<AccountPanel />);
+    await waitFor(() => {
+      expect(screen.getByText('Install FFmpeg to share previews')).toBeTruthy();
+    });
+    view2.unmount();
+
+    // Admin view under 80%: shows Team storage and progress bar without warning notice
+    role = 'admin';
+    hasFfmpeg = true;
+    const view3 = render(<AccountPanel />);
+    await waitFor(() => {
+      expect(screen.getByText('Team storage: 120 MB of 1 GB')).toBeTruthy();
+    });
+    expect(screen.getByRole('progressbar', { name: 'Team storage usage' })).toBeTruthy();
+    expect(screen.queryByText(/Storage is almost full/)).toBeNull();
+    view3.unmount();
+
+    // Admin view at >= 80%: shows Backblaze B2 notice
+    storageBytes = 860 * 1024 * 1024;
+    storagePercent = 84.0;
+    storageWarning = true;
+    render(<AccountPanel />);
+    await waitFor(() => {
+      expect(screen.getByText('Team storage: 860 MB of 1 GB')).toBeTruthy();
+      expect(
+        screen.getByText('Storage is almost full. Video previews will move to Backblaze B2.'),
+      ).toBeTruthy();
+    });
+  });
 });

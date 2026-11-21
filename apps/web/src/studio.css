@@ -843,6 +843,11 @@
   border-top: 1px solid var(--line);
 }
 
+.studio-account-storage {
+  display: grid;
+  gap: 6px;
+}
+
 .studio-role-card {
   display: grid;
   gap: var(--s-2);

@@ -4,7 +4,7 @@ This directory holds the Postgres 17 migrations and row-level security (RLS) pri
 
 ## Environments
 
-- **Development (`magnm-dev`):** a dedicated cloud Supabase project with no real user data. You can apply migrations, reset it, and run tests against it using `supabase/dev.sh`.
+- **`magnm-dev` (the live project for now):** since 2026-11-21 it holds the team's real data (decided by the team; no client data yet). Never reset it: apply only forward migrations with `supabase/dev.sh push`. SQL tests run inside transactions that roll back. Any live test data must be clearly labelled and deleted right after the test.
 - **Production:** a separate Supabase project that holds real team data and is **never reset**. Only forward migrations (`supabase db push`) are ever applied to production.
 
 ## Tables and Views (`public`)
@@ -23,7 +23,15 @@ Every table in `public` has RLS enabled, and the `anon` role has zero privileges
 | `pitch_base_prices` | Base prices (`item_id`, `price >= 0`) for Magnm-Pitch services. | All active members and admins. | Admins only (`updated_by` and `updated_at` stamped by trigger). |
 | `published_proposals` | Published Pitch links (`share_id`, `owner_id`, `local_proposal_id`, `kind` in `proposal`/`final`/`default_quote`, `payload` up to 512 KB, `status` in `live`/`withdrawn`, `expires_at`). | Owner reads their own rows; admins read all rows. | Owner inserts, updates, and deletes their own rows. Clients read only through `public.get_published_proposal(share_id)`. |
 | `quote_submissions` | Client quote responses (`id`, `share_id`, `owner_id` copied from the proposal, `choices` up to 64 KB, `contact` up to 8 KB, `created_at`, `seen_at`). | Proposal owner reads their own rows; admins read all rows. | Inserted only via `public.submit_quote(share_id, choices, contact)` (rate-limited to 20 per `share_id` per 24 hours). Proposal owner may update only `seen_at`. |
+| `media_previews` | Metadata for compressed thumbnails, image previews, and video previews stored in the private `previews` bucket (`owner_id`, `local_source_id`, `source_kind` in `content_file`/`asset`, `parent_local_id`, `kind` in `thumbnail`/`image_preview`/`video_preview`, `storage_path` prefixed by `<owner_id>/`, `content_type`, `bytes`, dimensions/duration, `expires_at`, `deleted_at`). | Owner reads their own rows; admins read all rows. | Owner inserts, updates, and deletes their own rows (cannot change `owner_id`). Admins cannot modify other members' rows. |
 | `audit_log` | Append-only audit log (`actor_id`, `action`, `target`, `data`, `created_at`) written by security-definer triggers on `invites`, `profiles`, `shared_knowledge`, and `pitch_base_prices`. | Admins only. | Triggers only; nobody can insert directly, update, or delete rows. |
+
+## Private Media Previews Storage (`previews` bucket)
+
+- **Bucket:** `previews` (`public = false`, 15 MB per-object limit, `image/webp` and `video/mp4` only).
+- **Storage policies (`storage.objects`):** Active members may `SELECT`, `INSERT`, `UPDATE`, and `DELETE` only objects whose first path segment is their own user ID (`(storage.foldername(name))[1] = auth.uid()::text`). Admins may `SELECT` all objects in `previews`. `anon` has zero access. Previews are read through short-lived signed URLs (`POST /storage/v1/object/sign/previews/...`).
+- **What is previewed (`engine/media_previews.py`):** Non-confidential content draft media (`content_items.files_json`) and non-confidential uploaded assets (`assets_manager`) using `ffmpeg`/`ffprobe` (320 px WebP thumbnails, up to 1080 px WebP image previews without upscaling, and 480p H.264/AAC MP4 video previews capped at 30 s). Confidential sessions, confidential content items, and assets/content naming confidential products are skipped; if product rules cannot be read, nothing is uploaded.
+- **60-day retention:** `video_preview` objects get `expires_at = now() + 60 days`. Once a day, the engine deletes its own expired video previews from Storage, stamps `deleted_at` on their `media_previews` rows, and prunes uploaded local cache files older than 7 days. `public.storage_usage()` (`security invoker`) reports `{bytes, files, by_kind}` over non-deleted rows visible to the caller.
 
 ## Client RPC Functions
 
@@ -38,7 +46,7 @@ Only two functions in `public` are executable by `anon` (as well as `authenticat
 
 ```bash
 supabase/dev.sh push      # Apply new migrations in supabase/migrations/ to magnm-dev
-supabase/dev.sh reset     # Wipe magnm-dev and re-apply all migrations cleanly
+supabase/dev.sh reset     # Refused: magnm-dev holds the team's real data (since 2026-11-21). Only forward migrations.
 supabase/dev.sh test      # Run all SQL privacy test files in supabase/tests/*.sql
 supabase/dev.sh sql FILE  # Execute a single SQL file against magnm-dev
 ```

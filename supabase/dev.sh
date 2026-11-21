@@ -3,7 +3,7 @@
 # Credentials are read from ~/.config/magnm/supabase-dev.env (or $MAGNM_SUPABASE_ENV) and are never printed.
 #
 #   supabase/dev.sh push      apply new migrations in supabase/migrations
-#   supabase/dev.sh reset     wipe the dev database and re-apply all migrations
+#   supabase/dev.sh reset     REFUSED: magnm-dev now holds real data (needs MAGNM_ALLOW_DEV_RESET=yes-delete-real-data)
 #   supabase/dev.sh test      run supabase/tests/*.sql (each test rolls back its own changes)
 #   supabase/dev.sh sql FILE  run one SQL file
 #
@@ -29,7 +29,13 @@ mask() { sed -E 's#postgres(ql)?://[^ ]+#<db-url>#g'; }
 
 case "${1:-}" in
   push)  $CLI db push --db-url "$DB_URL" --yes 2>&1 | mask ;;
-  reset) $CLI db reset --db-url "$DB_URL" --no-seed --yes 2>&1 | mask ;;
+  reset)
+    # magnm-dev holds the team's real data since 2026-11-21: a reset would delete it.
+    if [ "${MAGNM_ALLOW_DEV_RESET:-}" = "yes-delete-real-data" ]; then
+      $CLI db reset --db-url "$DB_URL" --no-seed --yes 2>&1 | mask
+    else
+      echo "Refusing: magnm-dev holds real team data. Use 'push' for new migrations." >&2; exit 3
+    fi ;;
   test)
     status=0
     for f in supabase/tests/*.sql; do

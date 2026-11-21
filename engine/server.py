@@ -42,6 +42,7 @@ import db
 import events
 import jobs
 import key_pool
+import media_previews
 import paths
 import pitch
 import pitch_host
@@ -301,11 +302,17 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.send_json({"invites": team_auth.list_invites()})
             elif url.path == "/api/account/sync":
                 self.send_json(cloud_sync.status())
+            elif url.path == "/api/account/media":
+                self.send_json(media_previews.status())
+            elif url.path == "/api/account/storage":
+                self.send_json(media_previews.storage_usage())
             else:
                 self.send_error(404, "Not Found")
         except team_auth.TeamAuthError as exc:
             status = exc.status if isinstance(exc.status, int) and 400 <= exc.status < 600 else 502
             self.send_json({"error": exc.message}, status=status)
+        except RuntimeError as exc:
+            self.send_json({"error": str(exc)}, status=500)
 
     def _handle_account_post(self, url, params):
         try:
@@ -334,8 +341,18 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             elif url.path == "/api/account/sync":
                 cloud_sync.request_sync(immediate=True)
                 self.send_json(cloud_sync.status())
+            elif url.path == "/api/account/media/sign":
+                storage_path = params.get("storage_path")
+                expires_in = params.get("expires_in", 3600)
+                if not isinstance(storage_path, str) or not storage_path.strip():
+                    self.send_json({"error": "storage_path is required"}, status=400)
+                    return
+                signed = media_previews.signed_url(storage_path, expires_in=expires_in)
+                self.send_json({"url": signed})
             else:
                 self.send_error(404, "Unknown endpoint")
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
         except team_auth.TeamAuthError as exc:
             status = exc.status if isinstance(exc.status, int) and 400 <= exc.status < 600 else 400
             self.send_json({"error": exc.message}, status=status)
