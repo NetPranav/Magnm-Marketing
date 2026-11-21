@@ -113,6 +113,11 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
     sign-in: daily limits per member (default 200 requests / 400k tokens), usage and key health in Admin, key rotation
     with cooldowns, a 100 s time budget, and no logging of prompts or keys. Tested live on 2026-11-22 (4 keys shared,
     test request OK in 3.5 s).
+  - **T4.10 done:** shared knowledge sync. Admins publish the brand kit, team product rules, agent instructions,
+    templates and Pitch base prices; members' apps apply them automatically (previous versions backed up first, strict
+    file-path checks) and show them as "Managed by your admin". Admins are never overwritten silently.
+  - **T4.11 done:** notifications: in-app bell and list, desktop notifications (app plugin or browser), per-event
+    settings, and a test button. Phone push (FCM) moves to Phase 6 with the Android app.
 
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.
