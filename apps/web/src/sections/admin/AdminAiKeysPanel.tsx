@@ -149,6 +149,8 @@ export function AdminAiKeysPanel({ members }: AdminAiKeysPanelProps) {
     try {
       const res = await testAdminAiKeys();
       setTestResult(res);
+      // The test changes key health and today's usage, so show the fresh values.
+      await loadAi();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Test request failed.');
     } finally {
