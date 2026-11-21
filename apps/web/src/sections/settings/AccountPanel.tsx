@@ -343,8 +343,8 @@ export function AccountPanel() {
               </div>
             ) : null}
 
-            <form className="studio-inline-form" onSubmit={(e) => void handleCreateInvite(e)} noValidate>
-              <Field label="Email" htmlFor="account-invite-email">
+            <form className="studio-inline-form studio-account-invite-form" onSubmit={(e) => void handleCreateInvite(e)} noValidate>
+              <Field label="Email" htmlFor="account-invite-email" className="studio-account-invite-email">
                 <TextInput
                   id="account-invite-email"
                   type="email"
@@ -354,7 +354,7 @@ export function AccountPanel() {
                   onChange={(e) => setInviteEmail(e.target.value)}
                 />
               </Field>
-              <Field label="Role" htmlFor="account-invite-role">
+              <Field label="Role" htmlFor="account-invite-role" className="studio-account-invite-role">
                 <Select
                   id="account-invite-role"
                   aria-label="Invite role"
@@ -365,7 +365,7 @@ export function AccountPanel() {
                   <option value="admin">Admin</option>
                 </Select>
               </Field>
-              <PillButton type="submit" size="sm" disabled={busy === 'invite'}>
+              <PillButton type="submit" disabled={busy === 'invite'}>
                 {busy === 'invite' ? 'Inviting...' : 'Invite'}
               </PillButton>
             </form>

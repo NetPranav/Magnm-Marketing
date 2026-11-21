@@ -1744,3 +1744,17 @@
   color: var(--fg);
   border-color: var(--fg);
 }
+
+/* Invite form: line the button up with the input boxes, not with their labels. */
+.studio-account-invite-form {
+  align-items: flex-end;
+}
+
+.studio-account-invite-email {
+  flex: 1 1 220px;
+}
+
+.studio-account-invite-role {
+  flex: 0 0 auto;
+  min-width: 140px;
+}
