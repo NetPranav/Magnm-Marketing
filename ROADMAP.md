@@ -89,6 +89,12 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
     removed), activity and device status, the workspace mirror (members write their own, the admin reads all), shared
     knowledge and Pitch base prices (admin writes), Pitch links and quote forms (clients reach them only through two
     functions, with size and rate limits), and an audit log. 45 privacy checks run on magnm-dev and in CI.
+  - **T4.2 done:** Google sign-in from the app (system browser, PKCE, back to the app's local address), Settings
+    Account card, admin invites. The database accepts Google sign-ups only. First admin signed in on 2026-11-21.
+  - **T4.3 done:** the engine mirrors each member's work (chats, team room, drafts, research, reviews, metrics, briefs,
+    tasks, posted links), activity and a device heartbeat. Confidential chats, and anything naming a confidential
+    product, upload only as text-free stubs; sync pauses if the product rules can't be read. agy now runs on Gemini 4
+    Hydrogen (High for auth, privacy and sync work).
 
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.
