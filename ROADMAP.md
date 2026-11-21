@@ -83,6 +83,12 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
   - New deliverable categories with their own services, on an existing sheet or as a new page with its own tab.
   - The preview follows the form (scroll and focus), the tab row stays visible with Previous/Next at the end of each tab,
     and the Prices tab shows the live preview with prices updating as you type.
+- **Phase 4 in progress (2026-11-21).** Development uses a cloud Supabase project (`magnm-dev`); the laptop has no room
+  for local Supabase. Production will be a separate project that is never reset.
+  - **T4.1 done:** database tables and privacy rules: invite-only sign-up, profiles and roles (the last admin can't be
+    removed), activity and device status, the workspace mirror (members write their own, the admin reads all), shared
+    knowledge and Pitch base prices (admin writes), Pitch links and quote forms (clients reach them only through two
+    functions, with size and rate limits), and an audit log. 45 privacy checks run on magnm-dev and in CI.
 
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.
