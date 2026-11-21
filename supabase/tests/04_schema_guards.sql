@@ -7,15 +7,15 @@ declare
   v_bad text;
   v_table_count integer;
 begin
-  -- 1. Confirm all 10 expected public tables exist and every table in public has RLS enabled.
+  -- 1. Confirm all 15 expected public tables exist and every table in public has RLS enabled.
   select count(*) into v_table_count
   from pg_class c
   join pg_namespace n on n.oid = c.relnamespace
   where n.nspname = 'public'
     and c.relkind = 'r';
 
-  if v_table_count < 10 then
-    raise exception 'FAIL: expected at least 10 tables in public, found %', v_table_count;
+  if v_table_count < 15 then
+    raise exception 'FAIL: expected at least 15 tables in public, found %', v_table_count;
   end if;
 
   select string_agg(c.relname, ', ')
@@ -69,6 +69,24 @@ begin
     raise exception 'FAIL: anon cannot execute one of the two Pitch RPC functions';
   end if;
   raise notice 'PASS: only get_published_proposal and submit_quote in public are executable by anon';
+
+  -- 3b. Confirm shared AI service-role functions are NOT executable by public, anon, or authenticated.
+  select string_agg(p.proname, ', ')
+  into v_bad
+  from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public'
+    and p.proname in ('ai_get_keys', 'ai_check_and_count', 'ai_record_usage', 'ai_report_key')
+    and (
+      has_function_privilege('public', p.oid, 'EXECUTE')
+      or has_function_privilege('anon', p.oid, 'EXECUTE')
+      or has_function_privilege('authenticated', p.oid, 'EXECUTE')
+    );
+
+  if v_bad is not null then
+    raise exception 'FAIL: non-service role can execute service-only AI functions: %', v_bad;
+  end if;
+  raise notice 'PASS: shared AI service-role functions are executable only by service_role';
 end;
 $$;
 

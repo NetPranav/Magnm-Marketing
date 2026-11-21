@@ -6,6 +6,7 @@
 #   supabase/dev.sh reset     REFUSED: magnm-dev now holds real data (needs MAGNM_ALLOW_DEV_RESET=yes-delete-real-data)
 #   supabase/dev.sh test      run supabase/tests/*.sql (each test rolls back its own changes)
 #   supabase/dev.sh sql FILE  run one SQL file
+#   supabase/dev.sh deploy NAME   deploy supabase/functions/NAME to magnm-dev (bundled server-side, no Docker)
 #
 # With DB_URL set (for example CI's local database), that database is used instead of the dev file.
 set -euo pipefail
@@ -47,6 +48,11 @@ case "${1:-}" in
       fi
     done
     exit $status ;;
+  deploy)
+    [ -n "${2:-}" ] && [ -d "supabase/functions/$2" ] || { echo "usage: supabase/dev.sh deploy NAME (folder supabase/functions/NAME)" >&2; exit 2; }
+    TOKEN="$(grep -E '^SUPABASE_ACCESS_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d "\"'")"
+    [ -n "$TOKEN" ] || { echo "SUPABASE_ACCESS_TOKEN is missing in $ENV_FILE." >&2; exit 2; }
+    SUPABASE_ACCESS_TOKEN="$TOKEN" $CLI functions deploy "$2" --project-ref fetsrthktatspwucwrwk --use-api 2>&1 | sed -E 's#sbp_[A-Za-z0-9]+#<token>#g' ;;
   sql)
     [ -n "${2:-}" ] || { echo "usage: supabase/dev.sh sql FILE" >&2; exit 2; }
     PGCONNECT_TIMEOUT=20 psql "$DB_URL" -X -v ON_ERROR_STOP=1 -f "$2" 2>&1 | mask ;;

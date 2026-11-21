@@ -24,7 +24,11 @@ Every table in `public` has RLS enabled, and the `anon` role has zero privileges
 | `published_proposals` | Published Pitch links (`share_id`, `owner_id`, `local_proposal_id`, `kind` in `proposal`/`final`/`default_quote`, `payload` up to 512 KB, `status` in `live`/`withdrawn`, `expires_at`). | Owner reads their own rows; admins read all rows. | Owner inserts, updates, and deletes their own rows. Clients read only through `public.get_published_proposal(share_id)`. |
 | `quote_submissions` | Client quote responses (`id`, `share_id`, `owner_id` copied from the proposal, `choices` up to 64 KB, `contact` up to 8 KB, `created_at`, `seen_at`). | Proposal owner reads their own rows; admins read all rows. | Inserted only via `public.submit_quote(share_id, choices, contact)` (rate-limited to 20 per `share_id` per 24 hours). Proposal owner may update only `seen_at`. |
 | `media_previews` | Metadata for compressed thumbnails, image previews, and video previews stored in the private `previews` bucket (`owner_id`, `local_source_id`, `source_kind` in `content_file`/`asset`, `parent_local_id`, `kind` in `thumbnail`/`image_preview`/`video_preview`, `storage_path` prefixed by `<owner_id>/`, `content_type`, `bytes`, dimensions/duration, `expires_at`, `deleted_at`). | Owner reads their own rows; admins read all rows. | Owner inserts, updates, and deletes their own rows (cannot change `owner_id`). Admins cannot modify other members' rows. |
-| `audit_log` | Append-only audit log (`actor_id`, `action`, `target`, `data`, `created_at`) written by security-definer triggers on `invites`, `profiles`, `shared_knowledge`, and `pitch_base_prices`. | Admins only. | Triggers only; nobody can insert directly, update, or delete rows. |
+| `ai_allowed_models` | Allowed NVIDIA NIM model IDs, `enabled` flag, and `max_tokens_cap` (`1..32768`), seeded from `config/models.json`. | All active members and admins. | Admins only. |
+| `ai_limits` | Daily AI request/token caps (`daily_requests` default `200`, `daily_tokens` default `400000`). One `owner_id is null` team default row plus optional per-member override rows. | Active members read the team default and their own row; admins read all rows. | Admins only (default row cannot be deleted). |
+| `ai_usage_daily` | Per-member UTC day counters (`requests`, `prompt_tokens`, `completion_tokens`, `rejected`). | Members read their own rows; admins read all rows. | Service-role functions only (`ai_check_and_count`, `ai_record_usage`); nobody writes directly. |
+| `ai_key_health` | Per-key status, last OK timestamp, truncated error (`<= 300` chars), and `cooldown_until` keyed by masked `label`. | Admins only (and via `admin_ai_key_labels()`). | Service-role / admin functions only (`ai_report_key`, `admin_set_ai_keys`). |
+| `audit_log` | Append-only audit log (`actor_id`, `action`, `target`, `data`, `created_at`) written by security-definer triggers on `invites`, `profiles`, `shared_knowledge`, and `pitch_base_prices`, plus `admin_set_ai_keys`. | Admins only. | Triggers / security-definer RPCs only; nobody can insert directly, update, or delete rows. |
 
 ## Private Media Previews Storage (`previews` bucket)
 
@@ -40,15 +44,34 @@ Only two functions in `public` are executable by `anon` (as well as `authenticat
 - `public.get_published_proposal(p_share_id text) returns jsonb` — returns the proposal `payload` and `kind` if the link exists, is `live`, and has not expired; returns `null` otherwise (without revealing whether a link was withdrawn or expired).
 - `public.submit_quote(p_share_id text, p_choices jsonb, p_contact jsonb) returns uuid` — validates payload sizes and rate limit (max 20 submissions per `share_id` in 24 hours) for a `live`, unexpired proposal, copies `owner_id` from the proposal, inserts the row, and returns the new `id`.
 
+## Shared AI Keys & `ai-proxy` Edge Function
+
+Team NVIDIA NIM API keys are stored encrypted in **Supabase Vault** (`vault.secrets` with names `magnm_ai_key_<n>`) instead of being distributed to member machines.
+
+- **Key management:**
+  - `public.admin_set_ai_keys(p_keys text[])` — admin-only security-definer RPC. Validates each key (`^nvapi-[A-Za-z0-9_-]{20,200}$`), deduplicates up to 20 keys, replaces all `magnm_ai_key_<n>` Vault secrets, resets `ai_key_health`, and writes an `audit_log` row containing only the key count (never key values).
+  - `public.admin_ai_key_labels()` — admin-only RPC returning masked labels (`key-<n> (...<last 4 chars>)`) joined with `ai_key_health`. Nobody (not even admins) can read raw keys back from the client API.
+- **Service-role RPCs (revoked from `public`, `anon`, and `authenticated`):**
+  - `public.ai_get_keys()` — returns `(label, api_key)` from `vault.decrypted_secrets` for `ai-proxy`.
+  - `public.ai_check_and_count(p_owner uuid, p_estimated_tokens int)` — locks today's UTC `ai_usage_daily` row, checks per-member override or team default `ai_limits`, increments `requests` when allowed or `rejected` when over limit.
+  - `public.ai_record_usage(p_owner uuid, p_prompt_tokens int, p_completion_tokens int)` — adds prompt and completion tokens to today's UTC usage row.
+  - `public.ai_report_key(p_label text, p_status int, p_error text, p_cooldown_seconds int)` — upserts `ai_key_health`.
+- **Edge Function (`supabase/functions/ai-proxy/`):**
+  - Requires a valid user JWT (`verify_jwt` enabled) and an active `profiles` row (`active = true`).
+  - Accepts `POST` OpenAI-compatible chat requests (`model`, `messages`, `max_tokens`, `temperature`, `top_p`, `stream`, `tools`, `tool_choice`, `stop`), enforces `ai_allowed_models` (`enabled` and `max_tokens_cap`), `<= 200` messages, `<= 200,000` text chars, and `<= 4 MB` total image `data:` URLs.
+  - Checks daily quota (`ceil(chars/4) + max_tokens`), rotates through non-cooldown Vault keys (cached 60 s, up to 3 attempts per request, 120 s upstream timeout; cooldowns: 1 h on 401/403, `Retry-After` or 60 s on 429, 30 s on 5xx/timeouts), and proxies both JSON and SSE streaming (`stream_options: {include_usage: true}`) to `NIM_BASE_URL` (default `https://integrate.api.nvidia.com/v1`).
+  - Deploy with: `supabase/dev.sh deploy ai-proxy` (optional Edge Function secret `NIM_BASE_URL` if overriding the NVIDIA NIM base URL).
+
 ## Using `supabase/dev.sh`
 
 `supabase/dev.sh` reads the dev database credentials from `~/.config/magnm/supabase-dev.env` (or `$DB_URL` in CI) and masks connection strings in output:
 
 ```bash
-supabase/dev.sh push      # Apply new migrations in supabase/migrations/ to magnm-dev
-supabase/dev.sh reset     # Refused: magnm-dev holds the team's real data (since 2026-11-21). Only forward migrations.
-supabase/dev.sh test      # Run all SQL privacy test files in supabase/tests/*.sql
-supabase/dev.sh sql FILE  # Execute a single SQL file against magnm-dev
+supabase/dev.sh push              # Apply new migrations in supabase/migrations/ to magnm-dev
+supabase/dev.sh reset             # Refused: magnm-dev holds the team's real data (since 2026-11-21). Only forward migrations.
+supabase/dev.sh test              # Run all SQL privacy test files in supabase/tests/*.sql
+supabase/dev.sh sql FILE          # Execute a single SQL file against magnm-dev
+supabase/dev.sh deploy ai-proxy   # Deploy the ai-proxy Edge Function to magnm-dev
 ```
 
 ## Bootstrapping the First Admin
