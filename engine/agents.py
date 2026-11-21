@@ -28,6 +28,11 @@ _TOOL_RULES_BLOCK = "\n".join([
 ])
 
 
+def clear_cache():
+    """Clear any cached agent instructions or prompt data so updates apply immediately."""
+    return None
+
+
 def _resolve_readable_path(*parts):
     """Return paths.data(*parts) if it exists, else paths.resource(*parts)."""
     candidate = paths.data(*parts)

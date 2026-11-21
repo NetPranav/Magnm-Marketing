@@ -1052,8 +1052,22 @@ def sync_once():
         user_id = str(user.get("id") or sess.get("user_id") or "").strip()
         if not user_id:
             return False
+        user_role = str(user.get("role") or "member").strip().lower()
 
         try:
+            confidential_checker()
+            import team_knowledge
+            try:
+                team_knowledge.sync(
+                    user_id,
+                    user_role,
+                    is_signed_out=lambda: _is_signed_out_or_stale(expected_gen),
+                )
+            except team_knowledge.SignedOutAbort as exc:
+                raise _SignedOutAbort() from exc
+            except team_auth.TeamAuthError as exc:
+                _handle_rest_error(exc)
+
             pending, _ = _compute_pending_items(user_id)
             if pending:
                 _upload_mirror_batches(user_id, pending, expected_gen)
@@ -1125,6 +1139,11 @@ def notify_signed_out():
     try:
         import media_previews
         media_previews.notify_signed_out()
+    except Exception:
+        pass
+    try:
+        import team_knowledge
+        team_knowledge.notify_signed_out()
     except Exception:
         pass
     _wake_event.set()

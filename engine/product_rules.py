@@ -13,7 +13,26 @@ if _ENGINE_DIR not in sys.path:
 import paths
 
 ROOT = paths.DATA_ROOT
-DEFAULT_RULES_PATH = paths.data("config", "product_rules.json")
+_INITIAL_DEFAULT_RULES_PATH = paths.data("config", "product_rules.json")
+DEFAULT_RULES_PATH = _INITIAL_DEFAULT_RULES_PATH
+
+
+def _resolve_default_rules_path(for_write=False):
+    if DEFAULT_RULES_PATH != _INITIAL_DEFAULT_RULES_PATH:
+        return DEFAULT_RULES_PATH
+    cand = paths.data("config", "product_rules.json")
+    if for_write or os.path.exists(cand):
+        return cand
+    fb = paths.resource("config", "product_rules.json")
+    return fb if os.path.exists(fb) else cand
+
+
+def clear_cache():
+    """Refresh module path defaults after product rules updates on disk."""
+    global ROOT, _INITIAL_DEFAULT_RULES_PATH, DEFAULT_RULES_PATH
+    ROOT = paths.DATA_ROOT
+    _INITIAL_DEFAULT_RULES_PATH = paths.data("config", "product_rules.json")
+    DEFAULT_RULES_PATH = _INITIAL_DEFAULT_RULES_PATH
 
 ALLOWED_STATUSES = ("released", "in_development", "secret")
 ALLOWED_SHOW_LEVELS = ("everything", "text_only", "teasers_only", "nothing")
@@ -64,7 +83,7 @@ def validate_rules(data):
 
 def load_rules(path=None):
     """Load and validate product rules from JSON, raising ValueError on invalid config."""
-    rules_path = path or DEFAULT_RULES_PATH
+    rules_path = path or _resolve_default_rules_path(for_write=False)
     with open(rules_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     return validate_rules(data)
@@ -97,7 +116,7 @@ def save_product_rule(product_id, updates, path=None):
     if not isinstance(updates, dict):
         raise ValueError("updates must be a JSON object")
 
-    rules_path = path or DEFAULT_RULES_PATH
+    rules_path = path or _resolve_default_rules_path(for_write=True)
     if not os.path.exists(rules_path):
         fallback = paths.resource("config", "product_rules.json")
         if os.path.exists(fallback):

@@ -22,7 +22,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -732,6 +732,22 @@ def _apply_migration_v15(conn):
     )
 
 
+def _apply_migration_v16(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS team_knowledge_state (
+            user_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            applied_hash TEXT,
+            applied_remote_updated_at TEXT,
+            published_hash TEXT,
+            published_at TEXT,
+            PRIMARY KEY (user_id, key)
+        );
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -748,6 +764,7 @@ _MIGRATIONS = (
     (13, _apply_migration_v13),
     (14, _apply_migration_v14),
     (15, _apply_migration_v15),
+    (16, _apply_migration_v16),
 )
 
 
@@ -4203,6 +4220,25 @@ def delete_pitch_base_price(item_id):
         return cur.rowcount > 0
 
 
+def replace_pitch_base_prices(items, updated_by="team", updated_at=None):
+    """Atomically replace all pitch_base_prices rows with items [(item_id, price), ...]."""
+    ensure_init()
+    now = str(updated_at or datetime.now(timezone.utc).isoformat())
+    actor = str(updated_by or "team")
+    conn = connect()
+    with conn:
+        conn.execute("DELETE FROM pitch_base_prices")
+        for item_id, price in items:
+            conn.execute(
+                """
+                INSERT INTO pitch_base_prices (item_id, price, updated_by, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (str(item_id), int(price), actor, now),
+            )
+    return list_pitch_base_prices()
+
+
 def _deserialize_sync_outbox(row):
     if row is None:
         return None
@@ -4682,3 +4718,108 @@ def get_media_queue_summary(user_id):
         "failed": counts.get("failed", 0),
         "last_error": err_row["error"] if err_row is not None else None,
     }
+
+
+_TK_UNSET = object()
+
+
+def get_team_knowledge_state(user_id):
+    """Return {key: state_dict} from team_knowledge_state for user_id."""
+    if not user_id:
+        return {}
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT user_id, key, applied_hash, applied_remote_updated_at, published_hash, published_at
+        FROM team_knowledge_state
+        WHERE user_id = ?
+        ORDER BY key ASC
+        """,
+        (str(user_id),),
+    ).fetchall()
+    return {
+        r["key"]: {
+            "user_id": r["user_id"],
+            "key": r["key"],
+            "applied_hash": r["applied_hash"],
+            "applied_remote_updated_at": r["applied_remote_updated_at"],
+            "published_hash": r["published_hash"],
+            "published_at": r["published_at"],
+        }
+        for r in rows
+    }
+
+
+def get_team_knowledge_key_state(user_id, key):
+    """Return a single team_knowledge_state row dict for (user_id, key), or None."""
+    if not user_id or not key:
+        return None
+    ensure_init()
+    conn = connect()
+    r = conn.execute(
+        """
+        SELECT user_id, key, applied_hash, applied_remote_updated_at, published_hash, published_at
+        FROM team_knowledge_state
+        WHERE user_id = ? AND key = ?
+        """,
+        (str(user_id), str(key)),
+    ).fetchone()
+    if r is None:
+        return None
+    return {
+        "user_id": r["user_id"],
+        "key": r["key"],
+        "applied_hash": r["applied_hash"],
+        "applied_remote_updated_at": r["applied_remote_updated_at"],
+        "published_hash": r["published_hash"],
+        "published_at": r["published_at"],
+    }
+
+
+def upsert_team_knowledge_state(
+    user_id,
+    key,
+    *,
+    applied_hash=_TK_UNSET,
+    applied_remote_updated_at=_TK_UNSET,
+    published_hash=_TK_UNSET,
+    published_at=_TK_UNSET,
+):
+    """Upsert team_knowledge_state fields for (user_id, key) without clobbering unset fields."""
+    if not user_id or not key:
+        return None
+    ensure_init()
+    existing = get_team_knowledge_key_state(user_id, key) or {}
+    next_applied_hash = existing.get("applied_hash") if applied_hash is _TK_UNSET else applied_hash
+    next_applied_at = (
+        existing.get("applied_remote_updated_at")
+        if applied_remote_updated_at is _TK_UNSET
+        else applied_remote_updated_at
+    )
+    next_pub_hash = existing.get("published_hash") if published_hash is _TK_UNSET else published_hash
+    next_pub_at = existing.get("published_at") if published_at is _TK_UNSET else published_at
+
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO team_knowledge_state (
+                user_id, key, applied_hash, applied_remote_updated_at, published_hash, published_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, key) DO UPDATE SET
+                applied_hash = excluded.applied_hash,
+                applied_remote_updated_at = excluded.applied_remote_updated_at,
+                published_hash = excluded.published_hash,
+                published_at = excluded.published_at
+            """,
+            (
+                str(user_id),
+                str(key),
+                next_applied_hash,
+                next_applied_at,
+                next_pub_hash,
+                next_pub_at,
+            ),
+        )
+    return get_team_knowledge_key_state(user_id, key)

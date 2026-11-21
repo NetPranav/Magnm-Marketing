@@ -58,7 +58,28 @@ export function App() {
   const [accountLoaded, setAccountLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
   const prevEventsStateRef = useRef<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    if (toastTimerRef.current !== null) {
+      clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 4000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) {
+        clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
 
   const loadAccountState = useCallback(async () => {
     try {
@@ -148,11 +169,19 @@ export function App() {
     };
   }, [sessionEnded, loadAccountState]);
 
-  const handleEvent = useCallback((eventName: string, data: unknown) => {
-    if (eventName === 'job' && isJobRecord(data)) {
-      setJobs((prev) => mergeJobUpdate(prev, data));
-    }
-  }, []);
+  const handleEvent = useCallback(
+    (eventName: string, data: unknown) => {
+      if (eventName === 'job' && isJobRecord(data)) {
+        setJobs((prev) => mergeJobUpdate(prev, data));
+      } else if (eventName === 'team_knowledge.updated' && data && typeof data === 'object') {
+        const payload = data as { label?: string; key?: string; updated_by?: string };
+        const label = payload.label || payload.key || 'Team knowledge';
+        const by = payload.updated_by ? ` by ${payload.updated_by}` : '';
+        showToast(`${label} updated${by}`);
+      }
+    },
+    [showToast],
+  );
 
   const eventBus = useRootEventBus(handleEvent);
   const eventsState = eventBus.state;
@@ -294,6 +323,11 @@ export function App() {
       >
         {renderSection()}
       </StudioShell>
+      {toast ? (
+        <div className="studio-toast" role="status" aria-live="polite">
+          {toast}
+        </div>
+      ) : null}
     </EventsProvider>
   );
 }

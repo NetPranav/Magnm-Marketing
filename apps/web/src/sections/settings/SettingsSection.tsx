@@ -37,6 +37,7 @@ import {
 import { useFallbackPoll, useStudioEvents } from '../../events';
 import { AccountPanel } from './AccountPanel';
 import { PitchBasePricesPanel } from './PitchBasePricesPanel';
+import { TeamKnowledgePanel } from './TeamKnowledgePanel';
 import type {
   BakeoffModelStat,
   BakeoffResult,
@@ -578,6 +579,8 @@ export function SettingsSection() {
       {notice ? <div className="mg-notice">{notice}</div> : null}
 
       <AccountPanel />
+
+      <TeamKnowledgePanel />
 
       <section className="studio-section" aria-labelledby="settings-models-heading">
         <div className="studio-settings-head">

@@ -28,6 +28,7 @@ export const STUDIO_EVENT_NAMES = [
   'review.updated',
   'pitch.updated',
   'pitch.quote_request',
+  'team_knowledge.updated',
   'repo_synced',
   'research_digest',
   'browser_frame',

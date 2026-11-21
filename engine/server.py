@@ -57,6 +57,7 @@ import review_studio
 import scheduler
 import setup_check
 import team_auth
+import team_knowledge
 import team_room
 import web_ui
 import workflows
@@ -361,6 +362,43 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             status = exc.status if isinstance(exc.status, int) and 400 <= exc.status < 600 else 400
             self.send_json({"error": exc.message}, status=status)
 
+    def _handle_team_get(self, url):
+        path = url.path.rstrip("/") or "/"
+        try:
+            if path == "/api/team/knowledge":
+                self.send_json(team_knowledge.status(refresh=True))
+                return
+            self.send_json({"error": "Not found"}, status=404)
+        except team_knowledge.TeamKnowledgeError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+        except team_auth.TeamAuthError as exc:
+            status = exc.status if isinstance(exc.status, int) and 400 <= exc.status < 600 else 502
+            self.send_json({"error": exc.message}, status=status)
+
+    def _handle_team_post(self, url, params):
+        path = url.path.rstrip("/") or "/"
+        parts = [urllib.parse.unquote(p) for p in path.split("/") if p]
+        try:
+            if len(parts) == 5 and parts[:3] == ["api", "team", "knowledge"]:
+                key = parts[3]
+                action = parts[4]
+                if action == "publish":
+                    item = team_knowledge.publish(key)
+                    self.send_json({"ok": True, "item": item, "status": team_knowledge.status(refresh=False)})
+                    return
+                if action == "apply":
+                    item = team_knowledge.apply(key)
+                    self.send_json({"ok": True, "item": item, "status": team_knowledge.status(refresh=False)})
+                    return
+            self.send_json({"error": "Not found"}, status=404)
+        except team_knowledge.TeamKnowledgeError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+        except team_auth.TeamAuthError as exc:
+            status = 502 if exc.status in (0, None) or exc.status >= 500 else (
+                exc.status if isinstance(exc.status, int) and 400 <= exc.status < 500 else 502
+            )
+            self.send_json({"error": exc.message}, status=status)
+
     def _handle_admin_get(self, url):
         qs = urllib.parse.parse_qs(url.query, keep_blank_values=True)
         path = url.path.rstrip("/") or "/"
@@ -554,6 +592,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         elif isinstance(exc, pitch_links.PitchLinkError):
             status = exc.status if isinstance(exc.status, int) and 400 <= exc.status < 600 else 400
             self.send_json({"error": str(exc)}, status=status)
+        elif isinstance(exc, team_knowledge.TeamKnowledgeError):
+            status = exc.status if isinstance(exc.status, int) and 400 <= exc.status < 600 else 400
+            self.send_json({"error": exc.message}, status=status)
         else:
             self.send_json({"error": str(exc)}, status=400)
 
@@ -606,26 +647,30 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
         try:
             if parts == ["base_prices"]:
+                write_role = team_knowledge.check_write_access()
                 if "item_id" not in params or "price" not in params:
                     self.send_json({"error": "item_id and price are required"}, status=400)
                     return
-                self.send_json(
-                    pitch.set_base_price(
-                        params.get("item_id"),
-                        params.get("price"),
-                        actor=params.get("actor") or "admin",
-                    )
+                res = pitch.set_base_price(
+                    params.get("item_id"),
+                    params.get("price"),
+                    actor=params.get("actor") or "admin",
                 )
+                if write_role == "admin":
+                    team_knowledge.queue_auto_publish("pitch_base_prices")
+                self.send_json(res)
             elif parts == ["base_prices", "reset"]:
+                write_role = team_knowledge.check_write_access()
                 if "item_id" not in params:
                     self.send_json({"error": "item_id is required"}, status=400)
                     return
-                self.send_json(
-                    pitch.reset_base_price(
-                        params.get("item_id"),
-                        actor=params.get("actor") or "admin",
-                    )
+                res = pitch.reset_base_price(
+                    params.get("item_id"),
+                    actor=params.get("actor") or "admin",
                 )
+                if write_role == "admin":
+                    team_knowledge.queue_auto_publish("pitch_base_prices")
+                self.send_json(res)
             elif parts == ["preview_payload"]:
                 self.send_json(pitch.preview_payload(params))
             elif parts == ["proposals"]:
@@ -1153,6 +1198,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         elif url.path == "/api/account" or url.path.startswith("/api/account/"):
             self._handle_account_get(url)
 
+        elif url.path.startswith("/api/team/"):
+            self._handle_team_get(url)
+
         elif url.path.startswith("/api/admin/"):
             self._handle_admin_get(url)
 
@@ -1224,6 +1272,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             url.path.startswith("/api/review/")
             or url.path.startswith("/api/pitch/")
             or url.path.startswith("/api/account/")
+            or url.path.startswith("/api/team/")
             or url.path.startswith("/api/admin/")
         )
         max_len = MAX_REVIEW_BODY_BYTES if url.path.startswith("/api/review/") else MAX_POST_BYTES
@@ -1253,6 +1302,10 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         if url.path.startswith("/api/account/"):
             self._handle_account_post(url, params)
+            return
+
+        if url.path.startswith("/api/team/"):
+            self._handle_team_post(url, params)
             return
 
         if url.path.startswith("/api/admin/"):
@@ -1647,14 +1700,19 @@ Hard Rules:
                 self.send_json({"error": str(e)}, status=500)
 
         elif url.path == "/api/product_rules":
-            product_id = params.get("product_id") or params.get("id")
             try:
+                write_role = team_knowledge.check_write_access()
+                product_id = params.get("product_id") or params.get("id")
                 updated_prod, rules_data = product_rules.save_product_rule(product_id, params)
+                if write_role == "admin":
+                    team_knowledge.queue_auto_publish("product_rules")
                 self.send_json({
                     "success": True,
                     "product": updated_prod,
                     "rules": rules_data,
                 })
+            except team_knowledge.TeamKnowledgeError as exc:
+                self.send_json({"error": exc.message}, status=exc.status)
             except ValueError as exc:
                 msg = str(exc)
                 status = 404 if "not found" in msg.lower() else 400

@@ -12,6 +12,7 @@ import {
   TextArea,
   TextInput,
 } from '@magnm/design/react';
+import { getAccount, type AccountState } from '../../api/account';
 import {
   addRepo,
   createFact,
@@ -93,6 +94,16 @@ export function ReposSection() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [account, setAccount] = useState<AccountState | null>(null);
+
+  const loadAccount = useCallback(async () => {
+    try {
+      const acct = await getAccount();
+      setAccount(acct);
+    } catch {
+      setAccount(null);
+    }
+  }, []);
 
   const loadAll = useCallback(async () => {
     setError(null);
@@ -144,17 +155,32 @@ export function ReposSection() {
 
   useEffect(() => {
     void loadAll();
-  }, [loadAll]);
+    void loadAccount();
+    const onAccountChanged = () => {
+      void loadAccount();
+    };
+    window.addEventListener('magnm:account-changed', onAccountChanged);
+    return () => {
+      window.removeEventListener('magnm:account-changed', onAccountChanged);
+    };
+  }, [loadAccount, loadAll]);
 
   useStudioEvents(
     useCallback(
       (eventName) => {
-        if (eventName === 'repo_synced') {
+        if (eventName === 'repo_synced' || eventName === 'team_knowledge.updated') {
           void loadAll();
         }
       },
       [loadAll],
     ),
+  );
+
+  const isMember = Boolean(
+    account?.configured &&
+      account?.signed_in &&
+      !account?.deactivated &&
+      account?.user?.role === 'member',
   );
 
   const shippedByRepo = useMemo(() => {
@@ -301,6 +327,7 @@ export function ReposSection() {
   };
 
   const openEditRule = (rule: ProductRule) => {
+    if (isMember) return;
     setEditingRule(rule);
     setRuleStatus(rule.status);
     setRuleShow(rule.show);
@@ -641,6 +668,12 @@ export function ReposSection() {
           Product rules
         </h2>
 
+        {isMember ? (
+          <div className="mg-notice" role="note">
+            Managed by your admin
+          </div>
+        ) : null}
+
         {loading && products.length === 0 ? (
           <div className="mg-empty">Loading product rules.</div>
         ) : products.length === 0 ? (
@@ -668,13 +701,15 @@ export function ReposSection() {
                         <span className="studio-hint">{showLevels[rule.show]}</span>
                       ) : null}
                     </div>
-                    <PillButton
-                      variant="outline"
-                      size="sm"
-                      onClick={() => openEditRule(rule)}
-                    >
-                      Edit rules
-                    </PillButton>
+                    {!isMember ? (
+                      <PillButton
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openEditRule(rule)}
+                      >
+                        Edit rules
+                      </PillButton>
+                    ) : null}
                   </div>
 
                   <div className="studio-mono-wrap">

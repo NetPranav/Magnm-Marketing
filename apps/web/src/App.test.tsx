@@ -336,4 +336,27 @@ describe('Studio shell and Today screen', () => {
       expect(screen.getByText('Admins only.')).toBeTruthy();
     });
   });
+
+  it('shows toast on team_knowledge.updated SSE event', async () => {
+    mockEngineFetch();
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('daily_cycle')).toBeTruthy();
+    });
+
+    const es = MockEventSource.instances[0];
+    expect(es).toBeDefined();
+    act(() => {
+      es.open();
+      es.emit('team_knowledge.updated', {
+        key: 'brand_kit',
+        label: 'Brand kit',
+        updated_by: 'Founder',
+        updated_at: '2026-11-22T02:00:00Z',
+      });
+    });
+
+    expect(screen.getByText('Brand kit updated by Founder')).toBeTruthy();
+  });
 });
