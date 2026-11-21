@@ -357,10 +357,12 @@ class MediaPreviewsTests(unittest.TestCase):
             patch("team_auth.urllib.request.urlopen", side_effect=fake_urlopen),
         ):
             self.assertFalse(media_previews.sync_previews("user-1"))
+            # status() checks for ffmpeg itself, so read it while ffmpeg is still faked (CI has no ffmpeg).
+            last_error = media_previews.status()["last_error"]
 
         self.assertEqual(requests, [])
         self.assertEqual(cmds, [])
-        self.assertIn("product rules", media_previews.status()["last_error"])
+        self.assertIn("product rules", last_error)
 
     def test_05_unchanged_not_reprocessed_and_changed_deletes_old_after_success(self):
         """Unchanged files skip ffmpeg/upload; changed files re-upload and delete the old object after success."""
