@@ -44,6 +44,7 @@ import events
 import jobs
 import key_pool
 import media_previews
+import notifications
 import paths
 import pitch
 import pitch_host
@@ -515,6 +516,48 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             admin_dashboard.require_admin()
             self.send_json({"error": "Unknown endpoint"}, status=404)
         except admin_dashboard.AdminDashboardError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+
+    def _handle_notifications_get(self, url):
+        qs = urllib.parse.parse_qs(url.query)
+        path = url.path.rstrip("/") or "/"
+        if path == "/api/notifications":
+            try:
+                limit = int((qs.get("limit") or ["50"])[0])
+            except (TypeError, ValueError):
+                limit = 50
+            limit = max(1, min(limit, 200))
+            self.send_json(notifications.list_notifications(limit=limit))
+            return
+        if path == "/api/notifications/settings":
+            self.send_json(notifications.get_settings())
+            return
+        self.send_json({"error": "Not found"}, status=404)
+
+    def _handle_notifications_post(self, url, params):
+        path = url.path.rstrip("/") or "/"
+        try:
+            if path == "/api/notifications/read":
+                self.send_json(
+                    notifications.mark_read(
+                        ids=params.get("ids"),
+                        mark_all=bool(params.get("all") is True),
+                    )
+                )
+                return
+            if path == "/api/notifications/test":
+                self.send_json({"notification": notifications.send_test()})
+                return
+            if path == "/api/notifications/settings":
+                self.send_json(
+                    notifications.update_setting(
+                        params.get("kind"),
+                        params.get("enabled"),
+                    )
+                )
+                return
+            self.send_json({"error": "Not found"}, status=404)
+        except notifications.NotificationError as exc:
             self.send_json({"error": exc.message}, status=exc.status)
 
     def _serve_sse(self):
@@ -1204,6 +1247,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         elif url.path.startswith("/api/admin/"):
             self._handle_admin_get(url)
 
+        elif url.path == "/api/notifications" or url.path.startswith("/api/notifications/"):
+            self._handle_notifications_get(url)
+
         elif url.path.startswith("/api/asset/"):
             parts = url.path.split("/")[3:]
             if len(parts) >= 2:
@@ -1274,6 +1320,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             or url.path.startswith("/api/account/")
             or url.path.startswith("/api/team/")
             or url.path.startswith("/api/admin/")
+            or url.path.startswith("/api/notifications/")
         )
         max_len = MAX_REVIEW_BODY_BYTES if url.path.startswith("/api/review/") else MAX_POST_BYTES
         if content_len > max_len:
@@ -1310,6 +1357,10 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         if url.path.startswith("/api/admin/"):
             self._handle_admin_post(url, params)
+            return
+
+        if url.path.startswith("/api/notifications/"):
+            self._handle_notifications_post(url, params)
             return
 
         if url.path == "/api/shutdown":

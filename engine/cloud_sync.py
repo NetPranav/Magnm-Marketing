@@ -1013,6 +1013,11 @@ def _set_failure_backoff(err_msg):
         idx = min(_failure_count - 1, len(BACKOFF_STEPS_S) - 1)
         _last_error = str(err_msg)
         _next_allowed_at = time.monotonic() + BACKOFF_STEPS_S[idx]
+    try:
+        import notifications
+        notifications.record_sync_failure(err_msg)
+    except Exception:
+        pass
 
 
 def sync_once():
@@ -1105,6 +1110,22 @@ def sync_once():
                     _handle_rest_error(exc)
                 _log_warning(f"device_status rejected ({exc.status}): {exc.message}")
 
+            import notifications
+            notifications.record_sync_success()
+            try:
+                notifications.run_sync_checks(
+                    user_id,
+                    user_role,
+                    is_signed_out=lambda: _is_signed_out_or_stale(expected_gen),
+                )
+            except team_auth.TeamAuthError as exc:
+                if exc.status == 401:
+                    raise _SignedOutAbort() from exc
+            except _SignedOutAbort:
+                raise
+            except Exception as exc:
+                _log_warning(f"notifications sync check error: {exc}")
+
             with _lock:
                 _failure_count = 0
                 _last_error = None
@@ -1144,6 +1165,11 @@ def notify_signed_out():
     try:
         import team_knowledge
         team_knowledge.notify_signed_out()
+    except Exception:
+        pass
+    try:
+        import notifications
+        notifications.record_sync_success()
     except Exception:
         pass
     _wake_event.set()

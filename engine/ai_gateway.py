@@ -418,11 +418,17 @@ def get_account_ai_status():
             except team_auth.TeamAuthError:
                 pass
 
-    return {
+    result = {
         "mode": mode,
         "today": today_out,
         "limit": limit_out,
     }
+    try:
+        import notifications
+        notifications.evaluate_ai_limit(result)
+    except Exception:
+        pass
+    return result
 
 
 def get_role_model_matrix():
@@ -1432,6 +1438,11 @@ def _complete_team_proxy_messages(
                 or "limit" in err_msg.lower()
             )
             if is_quota:
+                try:
+                    import notifications
+                    notifications.notify_ai_limit_100(err_msg)
+                except Exception:
+                    pass
                 raise AINotConnected(err_msg) from err
             return f"HTTP 429: {err_msg}"
         if err.code == 503:

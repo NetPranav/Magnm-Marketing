@@ -2,12 +2,21 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { StatusState } from '@magnm/design/react';
 import { ApiError, api, onUnauthorized } from './api';
 import { getAccount, type AccountState } from './api/account';
+import {
+  listNotifications,
+  markNotificationsRead,
+  type NotificationRecord,
+} from './api/notifications';
+import { NotificationBell } from './components/NotificationBell';
 import { StudioShell } from './components/StudioShell';
+import { listenDesktopNotificationClick } from './desktop';
 import { EventsProvider, useRootEventBus } from './events';
+import { showSystemNotification } from './notifications';
 import {
   ADMIN_SECTION,
   SECTIONS,
   getVisibleSections,
+  parseHash,
   parsePitchParam,
   useRoute,
   type SectionId,
@@ -47,6 +56,17 @@ function isJobRecord(value: unknown): value is JobRecord {
   );
 }
 
+function isNotificationRecord(value: unknown): value is NotificationRecord {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<NotificationRecord>;
+  return (
+    typeof candidate.id === 'string' &&
+    typeof candidate.kind === 'string' &&
+    typeof candidate.title === 'string' &&
+    typeof candidate.route === 'string'
+  );
+}
+
 /** Root Studio application shell, routing, API data loading, and live SSE wiring. */
 export function App() {
   const { section, param, navigate } = useRoute();
@@ -56,11 +76,43 @@ export function App() {
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [account, setAccount] = useState<AccountState | null>(null);
   const [accountLoaded, setAccountLoaded] = useState(false);
+  const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const prevEventsStateRef = useRef<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const notifMutationSeqRef = useRef(0);
+
+  const navigateToRoute = useCallback(
+    (routeStr: string) => {
+      const parsed = parseHash(routeStr);
+      navigate(parsed.section, parsed.param);
+    },
+    [navigate],
+  );
+
+  const loadNotifications = useCallback(async () => {
+    const seq = notifMutationSeqRef.current;
+    try {
+      const res = await listNotifications(50);
+      if (res && Array.isArray(res.notifications)) {
+        if (seq === notifMutationSeqRef.current) {
+          setNotifications(res.notifications);
+          setUnreadCount(Number(res.unread_count ?? 0));
+        } else {
+          setNotifications((prev) => {
+            const seen = new Set(res.notifications.map((n) => n.id));
+            const extra = prev.filter((n) => !seen.has(n.id));
+            return [...extra, ...res.notifications].slice(0, 200);
+          });
+        }
+      }
+    } catch {
+      // Non-fatal if notifications endpoint is unavailable in isolated tests.
+    }
+  }, []);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -154,8 +206,15 @@ export function App() {
   useEffect(() => {
     if (!sessionEnded) {
       void loadSummary();
+      void loadNotifications();
     }
-  }, [sessionEnded, loadSummary]);
+  }, [sessionEnded, loadSummary, loadNotifications]);
+
+  useEffect(() => {
+    return listenDesktopNotificationClick((routeStr) => {
+      navigateToRoute(routeStr);
+    });
+  }, [navigateToRoute]);
 
   useEffect(() => {
     const onAccountChanged = () => {
@@ -178,9 +237,25 @@ export function App() {
         const label = payload.label || payload.key || 'Team knowledge';
         const by = payload.updated_by ? ` by ${payload.updated_by}` : '';
         showToast(`${label} updated${by}`);
+      } else if (eventName === 'notification' && isNotificationRecord(data)) {
+        notifMutationSeqRef.current += 1;
+        let addedUnread = false;
+        setNotifications((prev) => {
+          if (prev.some((item) => item.id === data.id)) {
+            return prev;
+          }
+          if (!data.read_at) {
+            addedUnread = true;
+          }
+          return [data, ...prev].slice(0, 200);
+        });
+        if (addedUnread || !data.read_at) {
+          setUnreadCount((prev) => prev + 1);
+        }
+        void showSystemNotification(data, navigateToRoute);
       }
     },
-    [showToast],
+    [navigateToRoute, showToast],
   );
 
   const eventBus = useRootEventBus(handleEvent);
@@ -191,8 +266,45 @@ export function App() {
     prevEventsStateRef.current = eventsState;
     if (prev !== null && prev !== 'open' && eventsState === 'open' && !sessionEnded) {
       void loadSummary();
+      void loadNotifications();
     }
-  }, [eventsState, sessionEnded, loadSummary]);
+  }, [eventsState, sessionEnded, loadSummary, loadNotifications]);
+
+  const handleSelectNotification = useCallback(
+    (item: NotificationRecord) => {
+      if (!item.read_at) {
+        notifMutationSeqRef.current += 1;
+        const nowIso = new Date().toISOString();
+        setNotifications((prev) =>
+          prev.map((entry) => (entry.id === item.id ? { ...entry, read_at: nowIso } : entry)),
+        );
+        setUnreadCount((prev) => Math.max(0, prev - 1));
+        void markNotificationsRead({ ids: [item.id] })
+          .then((res) => {
+            if (typeof res?.unread_count === 'number') {
+              setUnreadCount(res.unread_count);
+            }
+          })
+          .catch(() => {});
+      }
+      navigateToRoute(item.route);
+    },
+    [navigateToRoute],
+  );
+
+  const handleMarkAllRead = useCallback(() => {
+    notifMutationSeqRef.current += 1;
+    const nowIso = new Date().toISOString();
+    setNotifications((prev) => prev.map((entry) => (entry.read_at ? entry : { ...entry, read_at: nowIso })));
+    setUnreadCount(0);
+    void markNotificationsRead({ all: true })
+      .then((res) => {
+        if (typeof res?.unread_count === 'number') {
+          setUnreadCount(res.unread_count);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   if (sessionEnded) {
     return <SessionEndedScreen />;
@@ -320,6 +432,14 @@ export function App() {
         layout={currentSpec.layout}
         engineState={engineState}
         engineLabel={engineLabel}
+        notificationBell={
+          <NotificationBell
+            notifications={notifications}
+            unreadCount={unreadCount}
+            onSelectNotification={handleSelectNotification}
+            onMarkAllRead={handleMarkAllRead}
+          />
+        }
       >
         {renderSection()}
       </StudioShell>

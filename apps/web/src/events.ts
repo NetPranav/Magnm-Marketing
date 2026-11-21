@@ -32,6 +32,7 @@ export const STUDIO_EVENT_NAMES = [
   'repo_synced',
   'research_digest',
   'browser_frame',
+  'notification',
 ] as const;
 
 export type StudioEventHandler = (eventName: string, data: unknown) => void;

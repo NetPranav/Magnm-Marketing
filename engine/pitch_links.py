@@ -16,6 +16,7 @@ if _ENGINE_DIR not in sys.path:
 import cloud_sync
 import db
 import events
+import notifications
 import paths
 import pitch
 import pitch_host
@@ -324,8 +325,8 @@ def sync_live_links(user_id, is_signed_out=None):
 
         hydrated = pitch._hydrate_proposal(prop)
         ensure_share_id(hydrated)
-        payload = public_payload(hydrated)
         try:
+            payload = public_payload(hydrated)
             _upsert_remote_proposal(
                 hydrated,
                 user_id,
@@ -333,8 +334,22 @@ def sync_live_links(user_id, is_signed_out=None):
                 rest_fn=cloud_sync._rest_with_auth_retry,
             )
         except team_auth.TeamAuthError as exc:
+            if exc.status != 401:
+                notifications.record_link_republish_failure(
+                    hydrated["id"],
+                    _proposal_title(hydrated, hydrated.get("share_id")),
+                    exc.message,
+                )
             cloud_sync._handle_rest_error(exc)
+        except Exception as exc:
+            notifications.record_link_republish_failure(
+                hydrated["id"],
+                _proposal_title(hydrated, hydrated.get("share_id")),
+                str(exc),
+            )
+            raise
 
+        notifications.record_link_republish_success(hydrated["id"])
         now_iso = _now_iso()
         db.set_pitch_link_state(
             hydrated["id"],
@@ -540,6 +555,7 @@ def poll_quote_requests(user_id, is_signed_out=None):
             }
             enriched = _enrich_quote_request(stored_row, prop=prop)
             events.publish("pitch.quote_request", enriched)
+            notifications.notify_quote_request(enriched)
             client_label = (contact.get("business") or contact.get("name") or "Client").strip() or "Client"
             db.log_activity(
                 "Pitch",

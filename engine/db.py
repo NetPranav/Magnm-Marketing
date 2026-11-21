@@ -22,7 +22,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -748,6 +748,34 @@ def _apply_migration_v16(conn):
     )
 
 
+def _apply_migration_v17(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS notifications (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            route TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            read_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_notifications_created
+            ON notifications(created_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_notifications_read
+            ON notifications(read_at, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS notification_settings (
+            kind TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -765,6 +793,7 @@ _MIGRATIONS = (
     (14, _apply_migration_v14),
     (15, _apply_migration_v15),
     (16, _apply_migration_v16),
+    (17, _apply_migration_v17),
 )
 
 
@@ -4823,3 +4852,162 @@ def upsert_team_knowledge_state(
             ),
         )
     return get_team_knowledge_key_state(user_id, key)
+
+
+def get_meta(key, default=None):
+    """Return a value from the meta key/value table, or default if missing."""
+    if not key:
+        return default
+    ensure_init()
+    conn = connect()
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (str(key),)).fetchone()
+    if row is None:
+        return default
+    return row["value"]
+
+
+def set_meta(key, value):
+    """Store a string value in the meta key/value table."""
+    if not key:
+        return
+    ensure_init()
+    conn = connect()
+    with conn:
+        if value is None:
+            conn.execute("DELETE FROM meta WHERE key = ?", (str(key),))
+        else:
+            conn.execute(
+                """
+                INSERT INTO meta (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (str(key), str(value)),
+            )
+
+
+def delete_meta(key):
+    """Delete a key from the meta key/value table."""
+    if not key:
+        return
+    ensure_init()
+    conn = connect()
+    with conn:
+        conn.execute("DELETE FROM meta WHERE key = ?", (str(key),))
+
+
+def _row_to_notification(row):
+    return {
+        "id": row["id"],
+        "kind": row["kind"],
+        "title": row["title"],
+        "body": row["body"],
+        "route": row["route"],
+        "created_at": row["created_at"],
+        "read_at": row["read_at"],
+    }
+
+
+def insert_notification(notif_id, kind, title, body, route, created_at, max_keep=200):
+    """Insert a notification row and trim older rows beyond max_keep."""
+    ensure_init()
+    conn = connect()
+    cap = max(1, int(max_keep or 200))
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO notifications (id, kind, title, body, route, created_at, read_at)
+            VALUES (?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (str(notif_id), str(kind), str(title), str(body), str(route), str(created_at)),
+        )
+        conn.execute(
+            """
+            DELETE FROM notifications
+            WHERE rowid NOT IN (
+                SELECT rowid
+                FROM notifications
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ?
+            )
+            """,
+            (cap,),
+        )
+    row = conn.execute(
+        "SELECT id, kind, title, body, route, created_at, read_at FROM notifications WHERE id = ?",
+        (str(notif_id),),
+    ).fetchone()
+    return _row_to_notification(row) if row is not None else None
+
+
+def list_notifications(limit=50):
+    """Return newest-first notification rows up to limit."""
+    ensure_init()
+    conn = connect()
+    cap = max(1, min(int(limit or 50), 200))
+    rows = conn.execute(
+        """
+        SELECT id, kind, title, body, route, created_at, read_at
+        FROM notifications
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT ?
+        """,
+        (cap,),
+    ).fetchall()
+    return [_row_to_notification(r) for r in rows]
+
+
+def count_unread_notifications():
+    """Return total count of unread notifications."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute("SELECT COUNT(*) AS cnt FROM notifications WHERE read_at IS NULL").fetchone()
+    return int(row["cnt"] if row else 0)
+
+
+def mark_notifications_read(ids=None, mark_all=False, read_at=None):
+    """Mark specific notification ids or all unread notifications as read, returning unread count."""
+    ensure_init()
+    conn = connect()
+    ts = str(read_at or datetime.now(timezone.utc).isoformat())
+    with conn:
+        if mark_all:
+            conn.execute(
+                "UPDATE notifications SET read_at = ? WHERE read_at IS NULL",
+                (ts,),
+            )
+        elif ids:
+            clean_ids = [str(i).strip() for i in ids if isinstance(i, str) and str(i).strip()]
+            if clean_ids:
+                placeholders = ",".join("?" for _ in clean_ids)
+                conn.execute(
+                    f"UPDATE notifications SET read_at = ? WHERE read_at IS NULL AND id IN ({placeholders})",
+                    [ts, *clean_ids],
+                )
+    return count_unread_notifications()
+
+
+def get_notification_settings():
+    """Return {kind: enabled_bool} map from notification_settings."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute("SELECT kind, enabled FROM notification_settings").fetchall()
+    return {r["kind"]: bool(r["enabled"]) for r in rows}
+
+
+def set_notification_setting(kind, enabled, updated_at=None):
+    """Upsert a per-kind enabled boolean in notification_settings."""
+    ensure_init()
+    conn = connect()
+    ts = str(updated_at or datetime.now(timezone.utc).isoformat())
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO notification_settings (kind, enabled, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(kind) DO UPDATE SET
+                enabled = excluded.enabled,
+                updated_at = excluded.updated_at
+            """,
+            (str(kind), 1 if enabled else 0, ts),
+        )
+    return {"kind": str(kind), "enabled": bool(enabled), "updated_at": ts}

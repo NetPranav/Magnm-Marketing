@@ -742,7 +742,7 @@ def publish(key):
     return _status_item(norm_key, uid, "admin")
 
 
-def _emit_updated_event(key, updated_by_name, updated_at):
+def _emit_updated_event(key, updated_by_name, updated_at, notify_member=False):
     events.publish(
         "team_knowledge.updated",
         {
@@ -754,6 +754,12 @@ def _emit_updated_event(key, updated_by_name, updated_at):
     )
     if key == BASE_PRICES_KEY:
         events.publish("pitch.updated", {"proposal_id": None, "what": "base_prices.synced"})
+    if notify_member:
+        try:
+            import notifications
+            notifications.notify_team_knowledge_updated(LABELS[key], updated_by_name or "Admin")
+        except Exception:
+            pass
 
 
 def apply(key):
@@ -792,7 +798,7 @@ def apply(key):
             empty_remote=(len(parsed["prices"]) == 0),
         )
         _set_error(norm_key, None)
-        _emit_updated_event(norm_key, by_name, remote_at)
+        _emit_updated_event(norm_key, by_name, remote_at, notify_member=(role == "member"))
         return _status_item(norm_key, uid, role)
 
     q_key = urllib.parse.quote(norm_key, safe="")
@@ -831,7 +837,7 @@ def apply(key):
         valid=True,
     )
     _set_error(norm_key, None)
-    _emit_updated_event(norm_key, by_name, remote_at)
+    _emit_updated_event(norm_key, by_name, remote_at, notify_member=(role == "member"))
     return _status_item(norm_key, uid, role)
 
 
@@ -906,7 +912,7 @@ def _refresh_remote_metadata(user_id, role, is_signed_out=None, apply_for_member
                 if curr_hash != remote_hash:
                     backup_local(key)
                     write_local(key, validated, updated_by=by_name or "team", updated_at=remote_at)
-                    _emit_updated_event(key, by_name, remote_at)
+                    _emit_updated_event(key, by_name, remote_at, notify_member=True)
                 db.upsert_team_knowledge_state(
                     user_id,
                     key,
@@ -959,7 +965,7 @@ def _refresh_remote_metadata(user_id, role, is_signed_out=None, apply_for_member
             if curr_hash != bp_hash:
                 backup_local(BASE_PRICES_KEY)
                 write_local(BASE_PRICES_KEY, bp_data, updated_by=bp_by_name or "team", updated_at=effective_at)
-                _emit_updated_event(BASE_PRICES_KEY, bp_by_name or "Admin", effective_at)
+                _emit_updated_event(BASE_PRICES_KEY, bp_by_name or "Admin", effective_at, notify_member=True)
             db.upsert_team_knowledge_state(
                 user_id,
                 BASE_PRICES_KEY,
