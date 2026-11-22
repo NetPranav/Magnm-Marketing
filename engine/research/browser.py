@@ -19,7 +19,7 @@ if _ENGINE_DIR not in sys.path:
 
 import events
 import paths
-from research import USER_AGENT
+from research import USER_AGENT, egress
 from research.fetch import (
     MAX_TEXT_CHARS,
     FetchError,
@@ -123,7 +123,7 @@ def _open_context():
         raise BrowserNotInstalledError(INSTALL_ERROR_MSG) from exc
 
     profile = _profile_dir()
-    with _browser_lock:
+    with _browser_lock, egress.GuardProxy() as proxy:
         try:
             pw_cm = sync_playwright()
             pw = pw_cm.__enter__()
@@ -139,6 +139,11 @@ def _open_context():
                     accept_downloads=False,
                     viewport=VIEWPORT,
                     user_agent=USER_AGENT,
+                    # Every connection, including redirects and WebSockets, goes through the guard.
+                    # "<-loopback>" removes Chromium's built-in proxy bypass for loopback addresses.
+                    proxy={"server": proxy.url, "bypass": "<-loopback>"},
+                    service_workers="block",
+                    args=["--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--disable-quic"],
                 )
             except Exception as exc:
                 msg = str(exc)

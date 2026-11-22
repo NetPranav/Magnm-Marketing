@@ -17,6 +17,7 @@ import agents
 import cloud_sync
 import db
 import paths
+import private_files
 import product_rules
 import reminders
 import repos
@@ -281,6 +282,8 @@ def read_repo_file(ctx, repo_id, path):
         inside = False
     if not inside or candidate == repo_root:
         return {"error": "Invalid path: target escapes repository root"}
+    if private_files.is_private(candidate, repo_root):
+        return {"error": "That file may hold secrets, so agents can't read it"}
     if not os.path.isfile(candidate):
         return {"error": f"File not found: {raw_path}"}
 
