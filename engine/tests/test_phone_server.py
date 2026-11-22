@@ -83,7 +83,7 @@ class PhoneServerTests(unittest.TestCase):
         # Ensure tests never leak threads.
         self.addCleanup(self._cleanup_threads)
 
-        # Default product rules: add a confidential product alongside LazyLayout & Cero.
+        # Default product rules: add a confidential product alongside TeaserApp & Cero.
         rules = {
             "version": 1,
             "show_levels": {
@@ -102,11 +102,11 @@ class PhoneServerTests(unittest.TestCase):
                     "confidential": False,
                 },
                 {
-                    "id": "lazylayout",
-                    "name": "LazyLayout",
+                    "id": "teaserapp",
+                    "name": "TeaserApp",
                     "status": "in_development",
                     "show": "teasers_only",
-                    "blocked_terms": ["keyframe", "timeline"],
+                    "blocked_terms": ["sparkle", "ribbon"],
                     "confidential": False,
                 },
                 {
@@ -855,8 +855,8 @@ class PhoneServerTests(unittest.TestCase):
                 {
                     "client_id": "cid-draft-1",
                     "kind": "draft",
-                    "title": "LazyLayout keyframe preview",
-                    "body": "Watch our LazyLayout keyframe demo today!",
+                    "title": "TeaserApp sparkle preview",
+                    "body": "Watch our TeaserApp sparkle demo today!",
                     "platform": "linkedin",
                 },
                 {
