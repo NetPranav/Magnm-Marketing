@@ -42,10 +42,59 @@ def _discover_hidden_imports(engine_dir):
         if stem == "__init__":
             continue
         modules.append(stem)
-    for pil_mod in ("PIL", "PIL.Image", "PIL.ImageDraw", "PIL.ImageFont"):
-        if pil_mod not in modules:
-            modules.append(pil_mod)
+    for extra_mod in (
+        "PIL",
+        "PIL.Image",
+        "PIL.ImageDraw",
+        "PIL.ImageFont",
+        "cryptography",
+        "cryptography.x509",
+        "cryptography.hazmat.primitives.ciphers.aead",
+        "keyring",
+        "keyring.backends",
+        "keyring.backends.SecretService",
+        "keyring.backends.libsecret",
+        "keyring.backends.kwallet",
+        "keyring.backends.macOS",
+        "keyring.backends.Windows",
+        "keyring.backends.chainer",
+        "keyring.backends.fail",
+        "keyring.backends.null",
+    ):
+        if extra_mod not in modules:
+            modules.append(extra_mod)
     return modules
+
+
+def build_pyinstaller_command(vpy, engine_dir, dist_dir, work_dir, pyi_root, data_specs):
+    """Build the PyInstaller CLI argument list including hidden imports and collected packages."""
+    hidden_imports = _discover_hidden_imports(engine_dir)
+    cmd = [
+        vpy,
+        "-m",
+        "PyInstaller",
+        "--onefile",
+        "--name",
+        "magnm-engine",
+        "--noconfirm",
+        "--clean",
+        "--paths",
+        engine_dir,
+        "--distpath",
+        dist_dir,
+        "--workpath",
+        work_dir,
+        "--specpath",
+        pyi_root,
+    ]
+    for mod in hidden_imports:
+        cmd.extend(["--hidden-import", mod])
+    for pkg in ("ddgs", "playwright", "keyring", "cryptography"):
+        cmd.extend(["--collect-all", pkg])
+    for src, dest in data_specs:
+        cmd.extend(["--add-data", f"{src}{os.pathsep}{dest}"])
+    cmd.append(os.path.join(engine_dir, "main.py"))
+    return cmd
 
 
 def _ensure_web_dist(root):
@@ -105,7 +154,6 @@ def main():
     work_dir = os.path.join(pyi_root, "build")
     os.makedirs(pyi_root, exist_ok=True)
 
-    hidden_imports = _discover_hidden_imports(engine_dir)
     data_specs = [
         (os.path.join(root, "config"), "config"),
         (os.path.join(root, "agents"), "agents"),
@@ -122,31 +170,7 @@ def main():
         if not os.path.exists(src):
             raise FileNotFoundError(f"Required bundle asset missing: {src}")
 
-    cmd = [
-        vpy,
-        "-m",
-        "PyInstaller",
-        "--onefile",
-        "--name",
-        "magnm-engine",
-        "--noconfirm",
-        "--clean",
-        "--paths",
-        engine_dir,
-        "--distpath",
-        dist_dir,
-        "--workpath",
-        work_dir,
-        "--specpath",
-        pyi_root,
-    ]
-    for mod in hidden_imports:
-        cmd.extend(["--hidden-import", mod])
-    for pkg in ("ddgs", "playwright"):
-        cmd.extend(["--collect-all", pkg])
-    for src, dest in data_specs:
-        cmd.extend(["--add-data", f"{src}{os.pathsep}{dest}"])
-    cmd.append(os.path.join(engine_dir, "main.py"))
+    cmd = build_pyinstaller_command(vpy, engine_dir, dist_dir, work_dir, pyi_root, data_specs)
 
     print("Running PyInstaller ...")
     subprocess.run(cmd, cwd=root, check=True)

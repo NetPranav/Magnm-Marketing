@@ -313,3 +313,4 @@ from . import design  # noqa: E402, F401
 from . import delegation  # noqa: E402, F401
 from . import pitch  # noqa: E402, F401
 from . import research  # noqa: E402, F401
+from . import social  # noqa: E402, F401

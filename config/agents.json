@@ -60,6 +60,7 @@
         "web_search",
         "read_page",
         "screenshot_page",
+        "social_research",
         "save_research_note",
         "ask_user",
         "recall_memory",
