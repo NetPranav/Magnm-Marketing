@@ -1,6 +1,7 @@
 import { App } from '@capacitor/app';
 import {
   CapacitorBarcodeScanner,
+  CapacitorBarcodeScannerAndroidScanningLibrary,
   CapacitorBarcodeScannerTypeHint,
 } from '@capacitor/barcode-scanner';
 import { Browser } from '@capacitor/browser';
@@ -268,6 +269,8 @@ export function createCapacitorNativeBridge(): NativeBridge {
     async scanQrCode(): Promise<string | null> {
       const res = await CapacitorBarcodeScanner.scanBarcode({
         hint: CapacitorBarcodeScannerTypeHint.QR_CODE,
+        // ZXing decodes on the phone and reports nothing.
+        android: { scanningLibrary: CapacitorBarcodeScannerAndroidScanningLibrary.ZXING },
       });
       const text = typeof res?.ScanResult === 'string' ? res.ScanResult.trim() : '';
       return text || null;

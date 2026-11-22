@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "android:sync": "cap sync android",
+    "android:debug": "pnpm build && pnpm android:sync && cd android && ./gradlew --no-daemon --max-workers=2 assembleDebug"
   },
   "dependencies": {
     "@capacitor/app": "8.1.2",

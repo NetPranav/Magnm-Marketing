@@ -1,4 +1,69 @@
-# apps/mobile
+# Magnm Studio Mobile (`apps/mobile`)
 
-Capacitor Android app with native Google sign-in, Tailscale laptop pairing, Phone Lite mode, and offline Pitch presentation.
-Populated in ROADMAP.md Phase 6 (Android app).
+Capacitor Android shell and React app for Magnm Studio: Google PKCE sign-in in the system browser, Tailscale laptop pairing, light review, Phone Lite, an offline inbox, share-in and voice dictation.
+
+## Prerequisites
+
+- Node.js 22 and pnpm (`corepack enable` or `pnpm` 12.x)
+- JDK 21 (`JAVA_HOME=/usr/lib/jvm/java-21-openjdk`)
+- Android SDK with platform `android-36` and `ANDROID_HOME` configured
+
+## Build and test
+
+From `apps/mobile`:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm android:sync
+```
+
+Run the Android JVM unit tests, lint checks, and debug APK build with memory-bounded Gradle flags:
+
+```bash
+cd android
+./gradlew --no-daemon --max-workers=2 testDebugUnitTest lintDebug assembleDebug
+```
+
+Or build the web bundle, sync, and assemble the debug APK in one command:
+
+```bash
+pnpm android:debug
+```
+
+The debug APK is written to:
+
+`apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk`
+
+## Install on a phone
+
+Enable USB debugging on the Android device (or transfer the APK directly) and install the debug APK:
+
+```bash
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+## Security and cleartext trade-off
+
+- Android's `network_security_config.xml` cannot express an IPv4 CIDR such as `100.64.0.0/10` (Tailscale CGNAT) for paired laptops discovered at runtime via QR code.
+- Because `HttpURLConnection` obeys Android's network security policy, `res/xml/network_security_config.xml` sets `cleartextTrafficPermitted="true"` on `<base-config>` (with system-only trust anchors) while explicitly setting `cleartextTrafficPermitted="false"` for `supabase.co` and `nvidia.com`.
+- To contain that trade-off:
+  - WebView keeps `allowMixedContent: false`, `webContentsDebuggingEnabled: false`, `loggingBehavior: 'none'`, and the strict `index.html` Content-Security-Policy (`connect-src 'self'`).
+  - Both JS (`src/net.ts`) and native Java (`NativeUrlPolicy.java`) enforce an independent allowlist: `http://` is permitted only to strict dotted-quad IPv4 addresses inside `100.64.0.0/10` with an explicit port and `/phone/v1/` path; `https://` is permitted only to the build-time Supabase origin from `config/supabase.json` (on `/auth/v1/`, `/rest/v1/`, `/functions/v1/ai-proxy`) and `https://integrate.api.nvidia.com/v1/`.
+
+## Debug builds
+
+The debug APK is debuggable and signed with a throwaway key: anyone with USB debugging access to the phone can read its
+app data. Use it for testing only, and use a signed release build for daily use.
+
+## Owner setup checklist
+
+Before distributing or using this build end-to-end on real devices, the repo owner must configure:
+
+1. **Supabase Auth redirect URL**: Add `com.magnm.studio://auth/callback**` (covering `com.magnm.studio://auth/callback`) to the Redirect URLs allowlist in Supabase Dashboard -> Authentication -> URL Configuration.
+2. **Tailscale sign-in**: Install and sign into Tailscale on both the phone and the host laptop running the Magnm engine so the phone can reach the paired `100.64.0.0/10` endpoint.
+3. **Release signing key**: Generate and store a release keystore outside the repository (never committed; `*.jks`, `*.keystore`, and `keystore.properties` are gitignored) and configure release signing when ready to publish.
+4. **Firebase push notifications (optional)**: Place `google-services.json` in `apps/mobile/android/app/` (gitignored) and wire FCM if push delivery is enabled later.
+5. **Physical device testing**: This workspace only runs unit tests, Android lint, and APK assembly; sign-in, QR pairing, share-in, speech recognition, and share-out must be verified on a real Android phone.
