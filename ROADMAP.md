@@ -133,8 +133,22 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
   - Codex, Antigravity and Gemini CLI are detected but not enabled, and there is no ACP client: these tools can't yet be
     confined to a workspace. This departs from the plan and needs a decision before they are switched on.
   - Magnm MCP server: read-only by default, hides confidential records, write tools behind a Settings switch.
+- **Phase 6 built (2026-11-22), not yet tried on a phone: Android app.**
+  - T6.1: phone API on the laptop. Off by default, Tailscale only, one-time code plus approval, confidential items stay
+    stubs.
+  - T6.2: the app. Today, light review, chat with the laptop's agents, Phone Lite for writing when the laptop is away,
+    offline inbox, share-in, voice briefs.
+  - T6.3: Android shell with Keystore storage and allowlisted networking; CI builds a debug APK.
+  - T6.4: Pitch present mode offline, quotation PDF and media share-out (Reels), Send to my phone.
+  - Tested with unit and contract tests, an offline Chromium run of the bundled Pitch, and an APK build. No emulator or
+    phone was available, so nothing native was exercised.
+  - Changes from the plan: Google sign-in uses the system browser, not the native SDK; same-Wi-Fi pairing is off
+    (plain HTTP on shared networks needs a decision); the saved Pitch copy expires after 14 days.
+  - Needs the owner: Supabase redirect for the app, Tailscale, a phone test, release key and GitHub Release, Firebase
+    for push, real app icons.
 - **2026-11-22 hardening:** local engine request checks (PR #8), tests isolated from real data (PR #9), safer file
-  serving (PR #10). Open: a token for engines started with `engine/server.py`.
+  serving (PR #10), agent tool boundaries (PR #12), confidential names found in serialized text (PR #13), no dropped
+  workflow resumes (PR #14). Open: a token for engines started with `engine/server.py`.
 
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.
