@@ -1435,6 +1435,7 @@ def _execute_run(run_id):
             if mode == "read_only" and (full_answer or outcome == "done"):
                 _write_read_only_answer(workspace, full_answer or summary or "")
 
+            _remove_repo_copies(workspace)  # Before the run is reported finished.
             out_files = list_out_files(workspace)
 
             if outcome == "cancelled" or cancel_ev.is_set():
@@ -1465,6 +1466,7 @@ def _execute_run(run_id):
     except Exception as exc:
         if log_writer is not None:
             log_writer.write_line(f"[magnm error] {exc}")
+        _remove_repo_copies(workspace)
         out_files = list_out_files(workspace) if os.path.isdir(workspace) else []
         failed = db.update_coding_run(
             run_id,
@@ -1478,20 +1480,47 @@ def _execute_run(run_id):
         if log_writer is not None:
             log_writer.close()
         _unregister_active_run(run_id)
-        repos_dir = os.path.join(workspace, "repos")
-        if os.path.isdir(repos_dir):
-            _restore_tree_writable_and_remove(repos_dir)
+        _remove_repo_copies(workspace)
 
 
 def _engine_worker_loop(engine):
+    """Run queued runs one after another, then exit; _ensure_engine_worker starts a new worker when needed."""
     wake_ev = _engine_wake_events[engine]
-    while True:
-        next_run = db.get_next_queued_coding_run(engine)
-        if next_run is not None:
-            _execute_run(next_run["id"])
-            continue
-        wake_ev.wait(timeout=0.5)
-        wake_ev.clear()
+    me = threading.current_thread()
+    try:
+        while True:
+            wake_ev.clear()
+            next_run = db.get_next_queued_coding_run(engine)
+            if next_run is not None:
+                _execute_run(next_run["id"])
+                continue
+            with _workers_lock:
+                if wake_ev.is_set():
+                    continue  # Work was queued while we looked.
+                _engine_workers.pop(engine, None)
+                return
+    finally:
+        with _workers_lock:
+            if _engine_workers.get(engine) is me:
+                del _engine_workers[engine]
+
+
+def wait_for_workers(timeout=10.0):
+    """Wait until no coding worker is running (used on test teardown)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with _workers_lock:
+            threads = [t for t in _engine_workers.values() if t.is_alive()]
+        if not threads:
+            return True
+        threads[0].join(0.1)
+    return False
+
+
+def _remove_repo_copies(workspace):
+    repos_dir = os.path.join(workspace, "repos")
+    if os.path.isdir(repos_dir) and not os.path.islink(repos_dir):
+        _restore_tree_writable_and_remove(repos_dir)
 
 
 def _ensure_engine_worker(engine):
@@ -1870,8 +1899,17 @@ def attach_out_file_to_content(run_id, filename, content_id):
 
 
 def recover_stale_runs():
-    """Mark any coding runs left in 'running' state after a crash/restart as failed."""
+    """After a restart: fail interrupted runs, delete their repo copies, and don't start approved-but-unstarted runs."""
     recovered = db.fail_stale_running_coding_runs(_now_iso(), error="engine restarted")
+    for item in db.list_coding_runs(limit=500, status="queued"):
+        recovered.append(db.update_coding_run(
+            item["id"], status="cancelled", finished_at=_now_iso(),
+            error="engine restarted before this run started; start it again if you still want it",
+        ))
     for item in recovered:
+        try:
+            _remove_repo_copies(validate_workspace_path(item["workspace"]) or item["workspace"])
+        except ValueError:
+            pass  # Not a workspace we created: leave it alone.
         _publish_run_status(item)
     return recovered

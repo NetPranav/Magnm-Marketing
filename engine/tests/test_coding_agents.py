@@ -188,6 +188,7 @@ class CodingAgentsTests(unittest.TestCase):
             self._httpd.server_close()
             self._httpd = None
         server.ENGINE_TOKEN = self._prev_token
+        self.assertTrue(coding_agents.wait_for_workers(), "coding worker outlived its test")
         coding_agents.clear_detect_cache()
         db.reset_connections()
         db.set_db_path(None)
@@ -652,6 +653,19 @@ class CodingAgentsTests(unittest.TestCase):
         self.assertEqual(cancelled["status"], "cancelled")
         with self.assertRaises(ValueError):
             coding_agents.approve_run(pending2["id"], expected_hash=pending2["approval_hash"])
+
+    def test_restart_cancels_unstarted_runs_and_removes_repo_copies(self):
+        """A restart never starts paid runs unattended and leaves no repo copies behind."""
+        self._write_fake_cli("claude", _FAKE_CLAUDE_BODY)
+        coding_agents.detect(refresh=True)
+        for status, expected in (("queued", "cancelled"), ("running", "failed")):
+            created = coding_agents.request_run("claude", f"left {status}", repo_ids=[], mode="read_only")
+            db.update_coding_run(created["id"], status=status)
+            copy = os.path.join(created["workspace"], "repos", "r")
+            os.makedirs(copy)
+            coding_agents.recover_stale_runs()
+            self.assertEqual(coding_agents.get_run(created["id"])["status"], expected)
+            self.assertFalse(os.path.exists(copy))
 
     # --- E. Confidential repos ---
 

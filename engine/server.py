@@ -5177,6 +5177,7 @@ def main():
     print("============================================================")
     db.init_db()
     agent_runtime.recover_stale_sessions()
+    coding_agents.recover_stale_runs()
     jobs.start_worker()
     # Same as engine/main.py: mirror work, publish live links and pull quote requests in the background.
     import cloud_sync
