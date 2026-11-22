@@ -786,6 +786,7 @@ def _run_nim_with_pool(pool, role, model, fallback_model, call_fn):
                     if maybe is not None:
                         api_key, key_label = maybe
                     continue
+                pool.notify_if_all_cooling()
                 fallback_reason = f"HTTP 429: {err_body or e.reason}"
                 break
             pool.report(key_label, "error")

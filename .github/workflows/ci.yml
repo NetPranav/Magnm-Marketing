@@ -172,3 +172,39 @@ jobs:
           name: magnm-studio-android-debug
           path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 14
+
+  engine-smoke:
+    name: Engine smoke test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - name: Build magnm-engine sidecar binary
+        run: python scripts/build_engine.py
+      - name: Run engine smoke test on frozen binary
+        shell: bash
+        run: |
+          TRIPLE=$(rustc -vV | sed -n 's/^host: //p')
+          BIN="apps/desktop/src-tauri/binaries/magnm-engine-${TRIPLE}"
+          if [ -f "${BIN}.exe" ]; then
+            BIN="${BIN}.exe"
+          fi
+          python scripts/smoke_test.py --engine-bin "${BIN}"

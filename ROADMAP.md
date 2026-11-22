@@ -171,6 +171,20 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
   - The click is enforced by the app. Protection from other programs on the same laptop depends on the open token
     decision below.
   - Needs the owner: developer apps, tokens, `pip install -r engine/requirements.txt`, a first real post for each platform.
+- **Phase 10 built (2026-11-22), nothing released: distribution, security, reliability.**
+  - Alerts: a rejected local key, all local keys cooling down, a configured model leaving or returning to the NIM catalog.
+    Team limits and shared-key failures already alerted.
+  - `scripts/smoke_test.py` starts the engine on a throwaway data folder. CI runs it on the packaged engine for Linux,
+    Windows and macOS, and the release workflow runs it before bundling.
+  - Guides: `docs/INSTALL.md`, key backup in `apps/desktop/RELEASING.md` and `apps/mobile/README.md`.
+  - Release workflow: current macOS runners, pnpm 12, stops early without signing configuration.
+  - The smoke test's first run found that the engine never started on Windows (no timezone database). Fixed.
+  - Not tested: installers, the updater, a release build, real key and catalog failures.
+  - Needs the owner: both signing keys and their backups, GitHub secrets, the updater public key, the first release.
+- **2026-11-22 correction to Phase 5:** reminders and the Monday summary never ran on engines started with
+  `engine/server.py` (only `engine/main.py` started the scheduler). Fixed with Phase 10: `engine/server.py` now runs
+  those two. The daily CMO cycle, market scan, repo sync and watch topics still run by themselves only with
+  `engine/main.py`; switching them on is the owner's decision.
 - **2026-11-22 hardening:** local engine request checks (PR #8), tests isolated from real data (PR #9), safer file
   serving (PR #10), agent tool boundaries (PR #12), confidential names found in serialized text (PR #13), no dropped
   workflow resumes (PR #14). Open: a token for engines started with `engine/server.py`.

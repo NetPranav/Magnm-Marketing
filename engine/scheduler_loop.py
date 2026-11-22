@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 import os
 import sys
 import threading
-from zoneinfo import ZoneInfo
 
 _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _ENGINE_DIR not in sys.path:
@@ -13,11 +12,13 @@ if _ENGINE_DIR not in sys.path:
 
 import cmo_runtime
 import db
+from ist import IST
 import jobs
 import reminders
 
 CHECK_INTERVAL_S = 60
-IST = ZoneInfo("Asia/Kolkata")
+# What engine/server.py runs. The other schedules act on their own, so only engine/main.py starts them.
+ANALYST_COMMANDS = ("weekly_summary",)
 
 DEFAULT_SCHEDULES = [
     {
@@ -181,22 +182,23 @@ def is_due(schedule, now=None):
     return (now_utc - last_run_utc).total_seconds() >= interval_s
 
 
-def ensure_default_schedules():
-    """Seed DEFAULT_SCHEDULES if missing from the schedules table."""
+def ensure_default_schedules(commands=None):
+    """Seed missing DEFAULT_SCHEDULES, limited to `commands` when given."""
+    wanted = [s for s in DEFAULT_SCHEDULES if commands is None or s["command"] in commands]
     existing = db.load_schedules()
     if not existing:
-        db.save_schedules([dict(s) for s in DEFAULT_SCHEDULES])
+        db.save_schedules([dict(s) for s in wanted])
         return db.load_schedules()
     existing_ids = {s.get("id") for s in existing if isinstance(s, dict)}
-    added = [dict(s) for s in DEFAULT_SCHEDULES if s["id"] not in existing_ids]
+    added = [dict(s) for s in wanted if s["id"] not in existing_ids]
     if added:
         db.save_schedules(list(existing) + added)
         return db.load_schedules()
     return existing
 
 
-def tick(now=None):
-    """Evaluate all schedules and due reminders at `now`, enqueueing due jobs without duplicates."""
+def tick(now=None, commands=None):
+    """Evaluate schedules (only `commands` when given) and due reminders at `now`, enqueueing due jobs without duplicates."""
     now_utc = _as_utc(now)
     reminders.check_due_reminders(now=now_utc)
     schedules = db.load_schedules()
@@ -208,6 +210,8 @@ def tick(now=None):
     for sched in schedules:
         cmd = sched.get("command")
         if not cmd or cmd not in cmo_runtime.ALLOWED_JOBS:
+            continue
+        if commands is not None and cmd not in commands:
             continue
         if not is_due(sched, now_utc):
             continue
@@ -266,7 +270,7 @@ def check_missed_weekly_summary(now=None):
     return enqueued
 
 
-def _loop(interval_s):
+def _loop(interval_s, commands=None):
     try:
         reminders.check_due_reminders()
     except Exception:
@@ -288,15 +292,15 @@ def _loop(interval_s):
                 pass
     while not _stop_event.is_set():
         try:
-            tick()
+            tick(commands=commands)
         except Exception:
             pass
         if _stop_event.wait(interval_s):
             break
 
 
-def start(interval_s=CHECK_INTERVAL_S, seed_defaults=True):
-    """Idempotently start the background scheduler daemon thread."""
+def start(interval_s=CHECK_INTERVAL_S, seed_defaults=True, commands=None):
+    """Idempotently start the scheduler thread: reminders, plus every schedule or only `commands`."""
     global _thread
     if is_disabled():
         return None
@@ -305,13 +309,13 @@ def start(interval_s=CHECK_INTERVAL_S, seed_defaults=True):
             return _thread
         if seed_defaults:
             try:
-                ensure_default_schedules()
+                ensure_default_schedules(commands=commands)
             except Exception:
                 pass
         _stop_event.clear()
         _thread = threading.Thread(
             target=_loop,
-            args=(max(1.0, float(interval_s)),),
+            args=(max(1.0, float(interval_s)), commands),
             name="magnm-scheduler-loop",
             daemon=True,
         )

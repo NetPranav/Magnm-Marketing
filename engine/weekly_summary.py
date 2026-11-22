@@ -6,7 +6,6 @@ import math
 import os
 import re
 import sys
-from zoneinfo import ZoneInfo
 
 _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _ENGINE_DIR not in sys.path:
@@ -15,12 +14,12 @@ if _ENGINE_DIR not in sys.path:
 import ai_gateway
 import cloud_sync
 import db
+from ist import IST
 import notifications
 import paths
 import platforms
 import product_rules
 
-IST = ZoneInfo("Asia/Kolkata")
 NARRATIVE_SKIPPED_NOTE = "Narrative skipped: it mentioned numbers that are not in the data."
 
 _CORE_METRIC_KEYS = (

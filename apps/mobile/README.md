@@ -55,8 +55,24 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 
 ## Debug builds
 
-The debug APK is debuggable and signed with a throwaway key: anyone with USB debugging access to the phone can read its
-app data. Use it for testing only, and use a signed release build for daily use.
+The debug APK is debuggable and signed with a throwaway key: anyone with USB debugging access to the phone can read its app data. Use it for testing only, and use a signed release build for daily use. Never disable Android Play Protect or device security checks as the normal path for team builds.
+
+## Release keystore backup and recovery
+
+When creating a release signing keystore for `com.magnm.studio`:
+
+1. **Generate outside the repository**: Store the keystore file outside git (for example `~/magnm-release.jks`). Never commit `*.jks`, `*.keystore`, or `keystore.properties` (all are gitignored).
+   ```bash
+   keytool -genkeypair -v -keystore ~/magnm-release.jks -alias magnm-studio -keyalg RSA -keysize 2048 -validity 10000
+   ```
+2. **Two offline copies**: Back up the `.jks`/`.keystore` file and its key alias metadata to two separate offline locations (for example, two encrypted USB drives stored separately).
+3. **Password stored separately**: Store the keystore password and key password in a password manager or separate offline note, never alongside the `.jks` backup.
+4. **Test a restore**: Copy one backup keystore to a temporary directory and verify it opens with your stored password:
+   ```bash
+   keytool -list -v -keystore /tmp/test-restore.jks
+   ```
+   Remove the temporary copy immediately afterward.
+5. **What is lost without it**: Android binds an app's package identity (`com.magnm.studio`) to its signing certificate. If the release keystore or its password is lost, you cannot install updates over existing release builds (or publish updates under the same app signing key) — every teammate would have to uninstall the app (wiping local Phone Lite drafts, offline inbox items, and pairing secrets on the phone) and reinstall fresh with a new keystore.
 
 ## Owner setup checklist
 
@@ -64,6 +80,6 @@ Before distributing or using this build end-to-end on real devices, the repo own
 
 1. **Supabase Auth redirect URL**: Add `com.magnm.studio://auth/callback**` (covering `com.magnm.studio://auth/callback`) to the Redirect URLs allowlist in Supabase Dashboard -> Authentication -> URL Configuration.
 2. **Tailscale sign-in**: Install and sign into Tailscale on both the phone and the host laptop running the Magnm engine so the phone can reach the paired `100.64.0.0/10` endpoint.
-3. **Release signing key**: Generate and store a release keystore outside the repository (never committed; `*.jks`, `*.keystore`, and `keystore.properties` are gitignored) and configure release signing when ready to publish.
+3. **Release signing key**: Generate, back up (see above), and configure a release keystore outside the repository when ready to publish signed release APKs.
 4. **Firebase push notifications (optional)**: Place `google-services.json` in `apps/mobile/android/app/` (gitignored) and wire FCM if push delivery is enabled later.
 5. **Physical device testing**: This workspace only runs unit tests, Android lint, and APK assembly; sign-in, QR pairing, share-in, speech recognition, and share-out must be verified on a real Android phone.

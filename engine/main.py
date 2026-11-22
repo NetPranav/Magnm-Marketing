@@ -136,6 +136,9 @@ def main(argv=None):
     if cloud_sync.is_enabled():
         cloud_sync.start()
 
+    import model_registry
+    model_registry.start_catalog_monitor()
+
     import phone_server
     phone_server.start_if_enabled()
 
@@ -163,6 +166,10 @@ def main(argv=None):
             pass
         try:
             cloud_sync.stop(timeout=1.0)
+        except Exception:
+            pass
+        try:
+            model_registry.stop_catalog_monitor(timeout=1.0)
         except Exception:
             pass
         try:
@@ -213,11 +220,23 @@ def main(argv=None):
         stop_event.set()
         if not shutdown_started.is_set():
             try:
+                scheduler_loop.stop(timeout=1.0)
+            except Exception:
+                pass
+            try:
                 cloud_sync.stop(timeout=1.0)
             except Exception:
                 pass
             try:
+                model_registry.stop_catalog_monitor(timeout=1.0)
+            except Exception:
+                pass
+            try:
                 phone_server.stop(timeout=1.0)
+            except Exception:
+                pass
+            try:
+                jobs.stop_worker(timeout=1.0)
             except Exception:
                 pass
         try:

@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import threading
+import time
 import urllib.request
 
 _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -18,7 +19,14 @@ ROOT = paths.DATA_ROOT
 MODELS_CONFIG_PATH = paths.data("config", "models.json")
 CATALOG_CACHE_PATH = paths.data("state", "model_catalog.json")
 
+CATALOG_CHECK_INTERVAL_S = 24 * 60 * 60
+CATALOG_MONITOR_INITIAL_DELAY_S = 5.0
+CATALOG_MONITOR_POLL_S = 60 * 60
+
 _catalog_state = threading.local()
+_monitor_lock = threading.Lock()
+_monitor_thread = None
+_monitor_stop = threading.Event()
 
 
 def get_last_catalog_error():
@@ -118,17 +126,34 @@ def get_catalog(api_key=None, base_url=None, force=False, cache_path=None, ttl_h
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
-        items = []
         if isinstance(payload, dict):
-            items = payload.get("data") or payload.get("models") or []
+            if isinstance(payload.get("data"), list):
+                items = payload["data"]
+            elif isinstance(payload.get("models"), list):
+                items = payload["models"]
+            else:
+                raise ValueError("Malformed NIM catalog response: missing model list")
         elif isinstance(payload, list):
             items = payload
+        else:
+            raise ValueError("Malformed NIM catalog response: unexpected JSON type")
+
         model_ids = set()
         for item in items:
             if isinstance(item, dict) and item.get("id"):
                 model_ids.add(str(item["id"]).strip())
             elif isinstance(item, str) and item.strip():
                 model_ids.add(item.strip())
+
+        if not model_ids:
+            raise ValueError("Empty NIM catalog response")
+        if cached_models is not None and len(cached_models) >= 8:
+            min_expected = max(5, len(cached_models) // 4)
+            if len(model_ids) < min_expected:
+                raise ValueError(
+                    f"Suspiciously tiny NIM catalog ({len(model_ids)} models vs {len(cached_models)} cached)"
+                )
+
         _write_cached_catalog(cache_file, model_ids)
         return model_ids
     except Exception as exc:
@@ -242,3 +267,101 @@ def is_vision_model(model_id, cfg=None):
     models_cfg = cfg if (isinstance(cfg, dict) and "vision_models" in cfg) else load_models_config()
     vision_set = {str(m).strip().lower() for m in models_cfg.get("vision_models", [])}
     return str(model_id).strip().lower() in vision_set
+
+
+def _is_scheduler_disabled():
+    return os.environ.get("MAGNM_DISABLE_SCHEDULER", "").strip().lower() in ("1", "true", "yes")
+
+
+def check_catalog_once(now_ts=None, force=True, catalog_fn=None):
+    """Run at most one daily NIM catalog check if a local key exists, emitting models_changed alerts."""
+    if _is_scheduler_disabled():
+        return None
+    try:
+        import key_pool
+        pool = key_pool.get_pool()
+        if not pool.has_any_keys():
+            return None
+        api_key = pool.peek_healthy_key()
+        if not api_key:
+            return None
+    except Exception:
+        return None
+
+    import db
+    now = float(time.time() if now_ts is None else now_ts)
+    meta_key = "nim_catalog_last_check_at"
+    raw_last = db.get_meta(meta_key)
+    if raw_last:
+        try:
+            if (now - float(raw_last)) < CATALOG_CHECK_INTERVAL_S:
+                return None
+        except (TypeError, ValueError):
+            pass
+
+    db.set_meta(meta_key, str(now))
+    _catalog_state.last_error = None
+    try:
+        if catalog_fn is not None:
+            catalog = catalog_fn()
+        else:
+            try:
+                import ai_gateway
+                base_url = ai_gateway.get_config().get("NVIDIA_NIM_BASE_URL")
+            except Exception:
+                base_url = None
+            catalog = get_catalog(api_key=api_key, base_url=base_url, force=force)
+    except Exception:
+        return None
+
+    if get_last_catalog_error() is not None or not catalog:
+        return None
+
+    import notifications
+    return notifications.evaluate_nim_catalog_changes(catalog)
+
+
+def _catalog_monitor_loop(initial_delay_s, poll_interval_s):
+    if initial_delay_s > 0 and _monitor_stop.wait(initial_delay_s):
+        return
+    while not _monitor_stop.is_set():
+        try:
+            check_catalog_once()
+        except Exception:
+            pass
+        if _monitor_stop.wait(poll_interval_s):
+            break
+
+
+def start_catalog_monitor(
+    initial_delay_s=CATALOG_MONITOR_INITIAL_DELAY_S,
+    poll_interval_s=CATALOG_MONITOR_POLL_S,
+):
+    """Idempotently start the daily NIM catalog monitor thread unless scheduler is disabled."""
+    global _monitor_thread
+    if _is_scheduler_disabled():
+        return None
+    with _monitor_lock:
+        if _monitor_thread is not None and _monitor_thread.is_alive():
+            return _monitor_thread
+        _monitor_stop.clear()
+        _monitor_thread = threading.Thread(
+            target=_catalog_monitor_loop,
+            args=(max(0.0, float(initial_delay_s)), max(1.0, float(poll_interval_s))),
+            name="magnm-catalog-monitor",
+            daemon=True,
+        )
+        _monitor_thread.start()
+        return _monitor_thread
+
+
+def stop_catalog_monitor(timeout=2.0):
+    """Signal the NIM catalog monitor thread to stop and wait up to timeout seconds."""
+    global _monitor_thread
+    with _monitor_lock:
+        t = _monitor_thread
+        _monitor_stop.set()
+    if t is not None and t.is_alive():
+        t.join(timeout=timeout)
+    with _monitor_lock:
+        _monitor_thread = None

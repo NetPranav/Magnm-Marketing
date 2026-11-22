@@ -5585,6 +5585,10 @@ def main():
     import cloud_sync
     if cloud_sync.is_enabled():
         cloud_sync.start()
+    import model_registry
+    model_registry.start_catalog_monitor()
+    import scheduler_loop
+    scheduler_loop.start(commands=scheduler_loop.ANALYST_COMMANDS)
     phone_server.start_if_enabled()
     print(f"Starting multi-threaded server on http://{HOST}:{PORT}")
     server = ThreadingHTTPServer((HOST, PORT), CommandCenterHandler)
@@ -5608,6 +5612,14 @@ def main():
     finally:
         try:
             phone_server.stop(timeout=1.0)
+        except Exception:
+            pass
+        try:
+            model_registry.stop_catalog_monitor(timeout=1.0)
+        except Exception:
+            pass
+        try:
+            scheduler_loop.stop(timeout=1.0)
         except Exception:
             pass
         try:
