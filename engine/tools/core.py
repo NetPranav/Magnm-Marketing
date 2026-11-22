@@ -86,7 +86,7 @@ def _format_single_product_rule(product_id):
         "properties": {
             "product_id": {
                 "type": "string",
-                "description": "Optional product ID (e.g. 'cero') to filter approved facts and rules.",
+                "description": "Optional product ID (e.g. 'my-product') to filter approved facts and rules.",
             }
         },
         "required": [],
@@ -210,7 +210,7 @@ def _may_list_confidential(ctx):
         "properties": {
             "repo_id": {
                 "type": "string",
-                "description": "Optional repository ID (e.g. 'cero').",
+                "description": "Optional repository ID (e.g. 'my-product').",
             },
             "limit": {
                 "type": "integer",
@@ -461,7 +461,7 @@ def draft_repo_facts(ctx, repo_id):
     parameters_schema={
         "type": "object",
         "properties": {
-            "product_id": {"type": "string", "description": "Product ID (e.g. 'cero')."},
+            "product_id": {"type": "string", "description": "Product ID (e.g. 'my-product')."},
             "text": {"type": "string", "description": "Concise factual statement grounded in repo sources."},
             "source_url": {"type": ["string", "null"], "description": "Source URL or file/commit reference."},
             "source_kind": {

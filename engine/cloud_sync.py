@@ -1112,6 +1112,7 @@ def sync_once():
         cfg = team_auth.get_config()
         sess = team_auth.get_session_info()
         if not cfg.get("configured") or not sess:
+            _clear_team_repos()
             return False
 
         try:
@@ -1127,6 +1128,8 @@ def sync_once():
                 _set_failure_backoff(exc.message)
             return False
 
+        if acct.get("signed_in") and acct.get("deactivated"):
+            _clear_team_repos()
         if not acct.get("signed_in") or acct.get("deactivated"):
             return False
 
@@ -1138,6 +1141,7 @@ def sync_once():
 
         try:
             confidential_checker()
+            _pull_team_repos(user_id, user_role, expected_gen)
             import team_knowledge
             try:
                 team_knowledge.sync(
@@ -1225,6 +1229,28 @@ def sync_once():
         _cycle_lock.release()
 
 
+def _clear_team_repos():
+    """Drop the cached global repos (signed out or deactivated). Never raises."""
+    try:
+        import team_repos
+        team_repos.clear()
+    except Exception as exc:
+        _log_warning(f"team repos clear error: {exc}")
+
+
+def _pull_team_repos(user_id, role, expected_gen):
+    """Every member gets the admin's global repos on the normal sync cycle. A failed pull keeps the last list."""
+    import team_repos
+    try:
+        team_repos.sync(user_id, role, is_signed_out=lambda: _is_signed_out_or_stale(expected_gen))
+    except team_repos.SignedOutAbort as exc:
+        raise _SignedOutAbort() from exc
+    except team_repos.TeamReposError as exc:
+        if exc.status == 401:
+            raise _SignedOutAbort() from exc
+        _log_warning(f"team repos pull failed: {exc.message}")
+
+
 def notify_signed_out():
     """Immediately halt active sync state when the user signs out."""
     global _auth_generation, _last_error, _last_sync_at, _failure_count, _next_allowed_at
@@ -1244,6 +1270,7 @@ def notify_signed_out():
         team_knowledge.notify_signed_out()
     except Exception:
         pass
+    _clear_team_repos()
     try:
         import notifications
         notifications.record_sync_success()

@@ -11,6 +11,7 @@ export function startWeeklyPlan(inputs: {
   platforms: string[];
   posts_per_week: number;
   week_start?: string;
+  repo_id?: string;
 }): Promise<WorkflowRun> {
   return api.post<WorkflowRun>('/api/workflows/start', {
     kind: 'weekly_plan',

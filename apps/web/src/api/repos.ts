@@ -27,6 +27,33 @@ export function addRepo(payload: {
   return api.post<{ success: boolean; repo: RepoRecord }>('/api/repos', payload);
 }
 
+/** Admin: add a GitHub repository for the whole team. Every member gets it on their next sync. */
+export function addTeamRepo(payload: {
+  github: string;
+  name?: string;
+  product_id?: string;
+  branch?: string;
+  status?: string;
+  confidential?: boolean;
+}): Promise<{ success: boolean; repo: RepoRecord }> {
+  return api.post<{ success: boolean; repo: RepoRecord }>('/api/team/repos', payload);
+}
+
+/** Admin: share one of your own GitHub repositories with the whole team. */
+export function promoteRepo(repoId: string): Promise<{ success: boolean; repo: RepoRecord }> {
+  return api.post<{ success: boolean; repo: RepoRecord }>('/api/team/repos/promote', {
+    repo_id: repoId,
+  });
+}
+
+/** Admin: stop sharing a team repository with everyone. */
+export function removeTeamRepo(teamRepoId: string): Promise<{ success: boolean; id: string }> {
+  return api.post<{ success: boolean; id: string }>(
+    `/api/team/repos/${encodeURIComponent(teamRepoId)}/remove`,
+    {},
+  );
+}
+
 /** Sync a connected repository immediately. */
 export function syncRepo(repoId: string): Promise<{ success: boolean; repo: RepoRecord }> {
   return api.post<{ success: boolean; repo: RepoRecord }>(

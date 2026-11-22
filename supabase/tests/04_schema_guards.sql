@@ -7,15 +7,15 @@ declare
   v_bad text;
   v_table_count integer;
 begin
-  -- 1. Confirm all 15 expected public tables exist and every table in public has RLS enabled.
+  -- 1. Confirm all 16 expected public tables exist (including team_repos) and every table in public has RLS enabled.
   select count(*) into v_table_count
   from pg_class c
   join pg_namespace n on n.oid = c.relnamespace
   where n.nspname = 'public'
     and c.relkind = 'r';
 
-  if v_table_count < 15 then
-    raise exception 'FAIL: expected at least 15 tables in public, found %', v_table_count;
+  if v_table_count < 16 then
+    raise exception 'FAIL: expected at least 16 tables in public, found %', v_table_count;
   end if;
 
   select string_agg(c.relname, ', ')
@@ -69,6 +69,12 @@ begin
     raise exception 'FAIL: anon cannot execute one of the two Pitch RPC functions';
   end if;
   raise notice 'PASS: only get_published_proposal and submit_quote in public are executable by anon';
+
+  -- 3a. team_repos is members-read, admins-write: anon has nothing and the table has RLS (checked above).
+  if has_table_privilege('anon', 'public.team_repos', 'SELECT') or has_table_privilege('anon', 'public.team_repos', 'INSERT') then
+    raise exception 'FAIL: anon has privileges on public.team_repos';
+  end if;
+  raise notice 'PASS: team_repos exists and anon has no access to it';
 
   -- 3b. Confirm shared AI service-role functions are NOT executable by public, anon, or authenticated.
   select string_agg(p.proname, ', ')

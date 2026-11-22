@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -23,6 +24,8 @@ import db
 import events
 import paths
 import product_rules
+import retired_repos
+import team_repos
 
 _MEDIA_EXTENSIONS = {".mp4", ".gif", ".png", ".jpg", ".webm"}
 _MEDIA_MAX_FILES = 30
@@ -50,11 +53,8 @@ def _slugify(text):
 
 
 def _repos_config_read_path():
-    data_path = paths.data("config", "repos.json")
-    if os.path.exists(data_path):
-        return data_path
-    res_path = paths.resource("config", "repos.json")
-    return res_path if os.path.exists(res_path) else data_path
+    """The user's own repos file. It is per-user data: there is no shipped copy to fall back to."""
+    return paths.data("config", "repos.json")
 
 
 def _repos_config_write_path():
@@ -187,6 +187,78 @@ def _write_repos_config(repos_list, path=None):
     os.replace(tmp_path, cfg_path)
 
 
+_SEED_FLAG = "repos_seed_removed_v1"
+
+
+def _seeded_repos():
+    """(id, github slug) of the repos older versions shipped, from config/legacy_seeded_repos.json. None if unreadable."""
+    path = paths.resource("config", "legacy_seeded_repos.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            rows = json.load(f).get("repositories") or []
+    except (OSError, ValueError, AttributeError):
+        return None
+    return [(str(r.get("id") or "").lower(), str(r.get("github") or "").lower()) for r in rows if isinstance(r, dict)]
+
+
+def _is_seeded_entry(entry, seeded):
+    if not isinstance(entry, dict):
+        return False
+    rid = str(entry.get("id") or "").strip().lower()
+    slug = (parse_github_slug(entry.get("github")) or parse_github_slug(entry.get("remote_url")) or "").lower()
+    return (rid, slug) in seeded
+
+
+def remove_seeded_repos():
+    """One time: take the two repos older versions shipped out of an existing repos.json, after a backup.
+
+    Every other entry stays untouched, a repo added again later stays (the flag is set), and an unreadable file
+    is left alone. Returns the removed ids.
+    """
+    if db.get_meta(_SEED_FLAG):
+        return []
+    seeded = _seeded_repos()
+    if seeded is None:
+        return []
+    path = _repos_config_write_path()
+    if not os.path.exists(path):
+        db.set_meta(_SEED_FLAG, "1")
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        is_dict = isinstance(data, dict)
+        entries = data.get("repositories") if is_dict else data
+        if not isinstance(entries, list):
+            return []
+    except (OSError, ValueError):
+        return []
+    kept = [e for e in entries if not _is_seeded_entry(e, seeded)]
+    removed = [str(e.get("id")) for e in entries if _is_seeded_entry(e, seeded)]
+    if removed:
+        stamp = _now_utc().strftime("%Y%m%dT%H%M%SZ")
+        backup_dir = paths.data("state", "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        shutil.copy2(path, os.path.join(backup_dir, f"repos-{stamp}.json"))
+        retired_repos.remember([migrate_repo_entry(e) for e in entries if _is_seeded_entry(e, seeded)], strict=True)
+        if is_dict:
+            data["repositories"] = kept
+            _write_json_atomic(path, data)
+        else:
+            _write_json_atomic(path, kept)
+        if os.path.exists(paths.data("research", "repo-sync.json")):
+            _write_repo_sync_outputs()
+    db.set_meta(_SEED_FLAG, "1")
+    return removed
+
+
+def _write_json_atomic(path, payload):
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    os.replace(tmp_path, path)
+
+
 def migrate_repos_config(path=None):
     """Migrate repos.json entries in-place to the canonical schema and return them."""
     read_path = path or _repos_config_read_path()
@@ -199,22 +271,104 @@ def migrate_repos_config(path=None):
     return migrated
 
 
-def list_repos():
-    """Return all configured repositories (migrated to canonical schema)."""
+def _personal_entries():
+    """The user's own repos as stored (canonical schema, no scope). A missing file is an empty list."""
     raw_list = _read_raw_repos_config()
     conf_ids = _confidential_product_ids()
     return [migrate_repo_entry(r, confidential_ids=conf_ids) for r in raw_list]
 
 
+def list_personal_repos():
+    """Only the user's own repositories, marked scope 'personal'."""
+    return [{**r, "scope": "personal"} for r in _personal_entries()]
+
+
+def _unique_global_id(wanted, taken, reserved):
+    """An id for a global repo that never shadows a personal repo or another global one."""
+    if wanted.lower() not in taken:
+        return wanted
+    base, n = f"team-{wanted}"[:62].strip("-"), 1
+    candidate = base
+    while candidate.lower() in taken or candidate.lower() in reserved:
+        n += 1
+        suffix = f"-{n}"
+        candidate = f"{base[:63 - len(suffix)]}{suffix}"
+    return candidate
+
+
+def merge_global_repos(personal, globals_):
+    """Own repos plus the team's. Same GitHub slug is one entry; ids never shadow; confidential if either says so.
+
+    A merged entry keeps the user's local_path and id (and so their snapshots) but takes the admin's name,
+    product, status and branch, and counts as global so members cannot edit or remove it.
+    """
+    result = [{**r, "scope": "personal"} for r in personal]
+    taken = {(r.get("id") or "").lower() for r in result}
+    reserved = {(g.get("id") or "").lower() for g in globals_}
+    for g in globals_:
+        slug = (g.get("github") or "").lower()
+        idx = next(
+            (i for i, r in enumerate(result)
+             if r.get("scope") == "personal" and (r.get("github") or "").lower() == slug),
+            None,
+        )
+        if idx is not None:
+            mine = result[idx]
+            merged = {
+                **mine,
+                "name": g["name"],
+                "product_id": g["product_id"],
+                "github": g["github"],
+                "status": g["status"],
+                "confidential": bool(mine.get("confidential")) or bool(g.get("confidential")),
+                "scope": "global",
+                "global_id": g["id"],
+            }
+            if g.get("branch"):
+                merged["branch"] = g["branch"]
+            result[idx] = merged
+            continue
+        gid = _unique_global_id(g["id"], taken, reserved)
+        taken.add(gid.lower())
+        entry = {
+            "id": gid,
+            "name": g["name"],
+            "product_id": g["product_id"],
+            "kind": "github",
+            "confidential": bool(g.get("confidential")),
+            "status": g["status"],
+            "github": g["github"],
+            "scope": "global",
+            "global_id": g["id"],
+        }
+        if g.get("branch"):
+            entry["branch"] = g["branch"]
+        result.append(entry)
+    return result
+
+
+def list_repos():
+    """Own repos plus the team's global repos, each with scope 'personal' or 'global'.
+
+    No repos.json is an empty list. An unreadable repos.json or global cache raises, so callers fail closed.
+    """
+    return merge_global_repos(_personal_entries(), team_repos.cached())
+
+
 def get_repo(repo_id):
-    """Return a single repository config dict by id or product_id, or None."""
+    """Return a single repository config dict by id or product_id, or None.
+
+    An exact id wins. Several repos on one product: a confidential one is preferred, so a look-alike never hides it.
+    """
     target = str(repo_id or "").strip().lower()
     if not target:
         return None
-    for r in list_repos():
-        if (r.get("id") or "").lower() == target or (r.get("product_id") or "").lower() == target:
+    all_repos = list_repos()
+    for r in all_repos:
+        if (r.get("id") or "").lower() == target:
             return r
-    return None
+    by_product = [r for r in all_repos if (r.get("product_id") or "").lower() == target]
+    return next((r for r in by_product if r.get("confidential")), by_product[0] if by_product else None)
 
 
 def _get_github_token():
@@ -324,10 +478,13 @@ def add_repo(spec):
         raise ValueError("Repository name is required")
 
     repo_id = _slugify(name)
-    existing = list_repos()
+    existing = _personal_entries()
     for r in existing:
         if (r.get("id") or "").lower() == repo_id:
             raise ValueError(f"Duplicate repository id '{repo_id}'")
+    for g in team_repos.cached():
+        if g["id"] == repo_id and (g.get("github") or "").lower() != (github_slug or "").lower():
+            raise ValueError(f"'{repo_id}' is already a team repository. Pick another name.")
 
     branch = (spec.get("branch") or "").strip() or None
     local_path = None
@@ -411,12 +568,25 @@ def add_repo(spec):
 
 
 def remove_repo(repo_id):
-    """Remove a repository from config/repos.json by id. Return True if removed."""
+    """Remove one of the user's own repositories from config/repos.json by id. Return True if removed.
+
+    Team repos are not in that file and are never removed here. A removed confidential repo keeps its names
+    guarded, so removing it never declassifies what was saved from it.
+    """
     target = str(repo_id or "").strip().lower()
-    existing = list_repos()
+    existing = _personal_entries()
     kept = [r for r in existing if (r.get("id") or "").lower() != target]
     if len(kept) == len(existing):
         return False
+    conf_ids = {str(c).lower() for c in _confidential_product_ids()}
+    removed = [r for r in existing if (r.get("id") or "").lower() == target]
+    retired_repos.remember(
+        [
+            {**r, "confidential": bool(r.get("confidential")) or (r.get("product_id") or r.get("id") or "").lower() in conf_ids}
+            for r in removed
+        ],
+        strict=True,
+    )
     _write_repos_config(kept)
     return True
 
@@ -984,7 +1154,8 @@ def shipped(repo_id=None, days=7, now=None):
 
     if repo_id:
         r = get_repo(repo_id)
-        target_repos = [r] if r else [{"id": repo_id}]
+        # An unknown or removed repo id has no shipped items: its old snapshots stay out of reach.
+        target_repos = [r] if r else []
     else:
         target_repos = list_repos()
 

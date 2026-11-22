@@ -214,4 +214,78 @@ describe('CreateSection', () => {
     });
     expect(screen.getByText(/No workflow runs yet/i)).toBeTruthy();
   });
+
+  describe('repository picker', () => {
+    function mockCreate(calls: Array<{ url: string; init?: RequestInit }>, repos: unknown[]) {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        calls.push({ url, init });
+        if (url === '/api/repos') return jsonResponse(repos);
+        if (url === '/api/product_rules') return jsonResponse({ version: 1, show_levels: {}, products: [] });
+        if (url === '/api/workflows/start' && init?.method === 'POST') {
+          return jsonResponse({ id: 'wf-1', kind: 'post', status: 'queued', current_step: 0, inputs: {}, state: {}, gates: [], content_ids: [] });
+        }
+        return jsonResponse([]);
+      });
+    }
+
+    const REPOS = [
+      { id: 'open', name: 'OpenRepo', kind: 'github', confidential: false, scope: 'personal' },
+      { id: 'team-secret', name: 'SecretRepo', kind: 'github', confidential: true, scope: 'global' },
+    ];
+
+    it('lists own and team repos, labels a confidential one before starting, and sends repo_id', async () => {
+      const calls: Array<{ url: string; init?: RequestInit }> = [];
+      mockCreate(calls, REPOS);
+      render(<CreateSection />);
+      const picker = (await screen.findByLabelText(/Repository/)) as HTMLSelectElement;
+      await waitFor(() => expect(picker.options.length).toBe(3));
+      expect(Array.from(picker.options).map((o) => o.textContent)).toEqual([
+        'No repository',
+        'OpenRepo',
+        'SecretRepo (team) (confidential)',
+      ]);
+      expect(screen.queryByText('CONFIDENTIAL REPOSITORY')).toBeNull();
+
+      fireEvent.change(picker, { target: { value: 'team-secret' } });
+      expect(screen.getByText('CONFIDENTIAL REPOSITORY')).toBeTruthy();
+      expect(screen.getByText(/local AI only, from the first step/i)).toBeTruthy();
+
+      fireEvent.change(screen.getByLabelText('Brief'), { target: { value: 'A calm update' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Start workflow' }));
+      await waitFor(() => {
+        const post = calls.find((c) => c.url === '/api/workflows/start');
+        expect(JSON.parse(String(post?.init?.body)).inputs.repo_id).toBe('team-secret');
+      });
+    });
+
+    it('sends no repo_id when none is picked and hints at adding one when there are none', async () => {
+      const calls: Array<{ url: string; init?: RequestInit }> = [];
+      mockCreate(calls, []);
+      render(<CreateSection />);
+      await screen.findByLabelText(/Repository/);
+      expect(screen.getByText(/Add a repository in Repos/i)).toBeTruthy();
+      fireEvent.change(screen.getByLabelText('Brief'), { target: { value: 'A calm update' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Start workflow' }));
+      await waitFor(() => {
+        const post = calls.find((c) => c.url === '/api/workflows/start');
+        expect(JSON.parse(String(post?.init?.body)).inputs.repo_id).toBeUndefined();
+      });
+    });
+
+    it('offers the picker for blog, video and weekly plan but not repurpose, and starts with no product-named defaults', async () => {
+      const calls: Array<{ url: string; init?: RequestInit }> = [];
+      mockCreate(calls, REPOS);
+      render(<CreateSection />);
+      await screen.findByLabelText(/Repository/);
+      for (const title of ['Blog article', 'Video script', 'Weekly plan']) {
+        fireEvent.click(screen.getByText(title));
+        expect(screen.getByLabelText(/Repository/)).toBeTruthy();
+      }
+      fireEvent.click(screen.getByText('Repurpose content'));
+      expect(screen.queryByLabelText(/Repository/)).toBeNull();
+      fireEvent.click(screen.getByText('Visual card'));
+      expect((screen.getByLabelText(/Top kicker/i) as HTMLInputElement).value).toBe('');
+    });
+  });
 });

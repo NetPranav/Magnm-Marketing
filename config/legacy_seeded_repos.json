@@ -1,0 +1,13 @@
+{
+  "note": "Repositories that older versions shipped in config/repos.json. A one-time cleanup removes only these two from an existing install (after a backup).",
+  "repositories": [
+    {
+      "id": "cero",
+      "github": "NetPranav/Cero-Terminal"
+    },
+    {
+      "id": "lazylayout",
+      "github": "NetPranav/LazyLayout"
+    }
+  ]
+}

@@ -75,6 +75,7 @@ import setup_check
 from social import SocialError as _SocialError
 from social import service as social_service
 import team_auth
+import team_repos
 import team_knowledge
 import team_room
 import web_ui
@@ -372,6 +373,11 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         qs = urllib.parse.parse_qs(url.query, keep_blank_values=True)
         try:
             res = team_auth.finish_login(qs)
+            # Pull the team's shared repos and knowledge right away, without waiting for the next cycle.
+            try:
+                cloud_sync.request_sync(immediate=True)
+            except Exception:
+                pass
             email = res.get("email") or ""
             msg = f"Signed in as {email}." if email else "Your Google account is connected."
             self._send_auth_callback_html(True, msg, status=200)
@@ -463,6 +469,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         path = url.path.rstrip("/") or "/"
         parts = [urllib.parse.unquote(p) for p in path.split("/") if p]
         try:
+            if parts[:3] == ["api", "team", "repos"]:
+                self._handle_team_repos_post(parts, params)
+                return
             if len(parts) == 5 and parts[:3] == ["api", "team", "knowledge"]:
                 key = parts[3]
                 action = parts[4]
@@ -475,6 +484,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                     self.send_json({"ok": True, "item": item, "status": team_knowledge.status(refresh=False)})
                     return
             self.send_json({"error": "Not found"}, status=404)
+        except team_repos.TeamReposError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
         except team_knowledge.TeamKnowledgeError as exc:
             self.send_json({"error": exc.message}, status=exc.status)
         except team_auth.TeamAuthError as exc:
@@ -482,6 +493,27 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 exc.status if isinstance(exc.status, int) and 400 <= exc.status < 500 else 502
             )
             self.send_json({"error": exc.message}, status=status)
+
+    def _handle_team_repos_post(self, parts, params):
+        """Admin actions on global repos: add, promote one of their own, remove. The engine re-checks admin."""
+        if len(parts) == 3:
+            repo = team_repos.add(params)
+            self.send_json({"success": True, "repo": repo})
+        elif parts == ["api", "team", "repos", "promote"]:
+            repo = team_repos.promote(params.get("repo_id"))
+            self.send_json({"success": True, "repo": repo})
+        elif len(parts) == 5 and parts[4] == "remove":
+            self.send_json({"success": True, "id": team_repos.remove(parts[3])})
+        else:
+            self.send_json({"error": "Not found"}, status=404)
+
+    def _refuse_global_repo(self, repo_id):
+        """True (after sending 403) when the id is a team repo: members cannot edit or remove those."""
+        repo = repos.get_repo(repo_id)
+        if repo is not None and repo.get("scope") == "global":
+            self.send_json({"error": "Managed by your admin"}, status=403)
+            return True
+        return False
 
     def _handle_admin_get(self, url):
         qs = urllib.parse.parse_qs(url.query, keep_blank_values=True)
@@ -2111,6 +2143,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         if re.match(r"^/api/repos/[^/]+$", url.path):
             repo_id = urllib.parse.unquote(url.path.split("/")[3])
+            if self._refuse_global_repo(repo_id):
+                return
             if not repos.remove_repo(repo_id):
                 self.send_json({"error": "Repository not found"}, status=404)
                 return
@@ -2336,6 +2370,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         elif re.match(r"^/api/repos/[^/]+/remove$", url.path):
             repo_id = urllib.parse.unquote(url.path.split("/")[3])
+            if self._refuse_global_repo(repo_id):
+                return
             if not repos.remove_repo(repo_id):
                 self.send_json({"error": "Repository not found"}, status=404)
                 return
@@ -2487,7 +2523,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             raw_post_id = params.get("post_id", "custom-card").strip()
             post_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", raw_post_id).strip("-") or "custom-card"
             field = params.get("field", "sky")
-            kicker = params.get("kicker", "CERO")
+            kicker = params.get("kicker", "")
             big_lines = params.get("big", ["ASKS", "FIRST."])
             if isinstance(big_lines, str):
                 big_lines = [ln.strip() for ln in big_lines.splitlines() if ln.strip()]
@@ -3766,7 +3802,7 @@ Hard Rules:
           </div>
           <div id="pendingFactsContainer" style="display:flex; flex-direction:column; gap:10px;"></div>
           <div style="border-top:1px solid var(--border); padding-top:12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-            <input type="text" id="manualFactProductId" placeholder="product_id (e.g. cero)" style="width:150px;">
+            <input type="text" id="manualFactProductId" placeholder="product_id" style="width:150px;">
             <input type="text" id="manualFactText" placeholder="Add verified product fact..." style="flex:1; min-width:220px;">
             <input type="text" id="manualFactUrl" placeholder="source URL (optional)" style="width:200px;">
             <button class="btn btn-lime btn-sm" onclick="addManualFact()">Add Fact</button>
@@ -3798,7 +3834,7 @@ Hard Rules:
             <div class="grid-2" style="gap:10px;">
               <div>
                 <label class="field-label">Campaign / Post Slug ID</label>
-                <input type="text" id="cardPostId" value="20261115-cero-release">
+                <input type="text" id="cardPostId" value="custom-card">
               </div>
               <div>
                 <label class="field-label">Palette v3 Field Color</label>
@@ -3817,7 +3853,7 @@ Hard Rules:
             <div class="grid-2" style="gap:10px;">
               <div>
                 <label class="field-label">Top Kicker Label</label>
-                <input type="text" id="cardKicker" value="CERO TERMINAL v2.2.3">
+                <input type="text" id="cardKicker" value="">
               </div>
               <div>
                 <label class="field-label">Optional Screenshot Asset</label>
@@ -3869,7 +3905,7 @@ FIRST.</textarea>
                 </div>
                 <div>
                   <label class="field-label">Product ID (optional)</label>
-                  <input type="text" id="wfProductId" placeholder="cero">
+                  <input type="text" id="wfProductId" placeholder="product id">
                 </div>
               </div>
               <div>
@@ -4011,7 +4047,7 @@ FIRST.</textarea>
               <select id="roomAssetSelect" style="width:220px; padding:8px;">
                 <option value="">Attach Asset (None)</option>
               </select>
-              <input type="text" id="globalMsgInput" placeholder="Message the agency room or assign a task (e.g. '@cmo plan Cero v2.2.3 PR rollout')..." onkeydown="if(event.key==='Enter') sendGlobalMessage()">
+              <input type="text" id="globalMsgInput" placeholder="Message the agency room or assign a task (e.g. '@cmo plan this month's release announcement')..." onkeydown="if(event.key==='Enter') sendGlobalMessage()">
               <button class="btn btn-lime" onclick="sendGlobalMessage()">
                 <svg class="icon"><use href="#icon-send"/></svg> Send
               </button>
@@ -4174,7 +4210,7 @@ FIRST.</textarea>
             </button>
           </div>
           <p style="font-size:12px; color:var(--muted);">
-            Upload real Cero screenshots, screen recordings, brand logos, or press brief documents. Attach them directly in Global Team Room, 1-on-1 Specialist Chats, or Card Studio.
+            Upload real product screenshots, screen recordings, brand logos, or press brief documents. Attach them directly in Global Team Room, 1-on-1 Specialist Chats, or Card Studio.
           </p>
           <div class="grid-4" id="assetsGrid"></div>
         </div>
@@ -4235,7 +4271,7 @@ FIRST.</textarea>
       <div>
         <label class="field-label">Category</label>
         <select id="assetCategory">
-          <option value="cero">Cero Product Media</option>
+          <option value="product">Product Media</option>
           <option value="brand">Brand Logo &amp; Identity</option>
           <option value="screenshot">Product UI Screenshot</option>
           <option value="recording">Terminal / Screen Recording</option>
@@ -4244,7 +4280,7 @@ FIRST.</textarea>
       </div>
       <div>
         <label class="field-label">Description &amp; Usage Notes</label>
-        <textarea id="assetDesc" rows="2" placeholder="e.g. Cero v2.2.3 asks-first confirmation screenshot"></textarea>
+        <textarea id="assetDesc" rows="2" placeholder="e.g. Settings screen of the latest release"></textarea>
       </div>
       <div style="display:flex; justify-content:flex-end; gap:10px;">
         <button class="btn" onclick="closeUploadModal()">Cancel</button>
@@ -4267,7 +4303,7 @@ FIRST.</textarea>
         </div>
         <div>
           <label class="field-label">Project Name</label>
-          <input type="text" id="newRepoName" placeholder="e.g. Cero Terminal">
+          <input type="text" id="newRepoName" placeholder="e.g. My project">
         </div>
       </div>
       <div id="newRepoLocalGroup">
@@ -4869,7 +4905,7 @@ FIRST.</textarea>
     async function pitchOpportunityToCmo(encTitle, encUrl, score) {
       const title = decodeURIComponent(encTitle);
       const url = decodeURIComponent(encUrl);
-      const msg = `@cmo Opportunity Radar hit (${score}/625): "${title}" (${url}). Evaluate Cero v2.2.3 positioning and delegate response or post tasks if worth pursuing.`;
+      const msg = `@cmo Opportunity Radar hit (${score}/625): "${title}" (${url}). Evaluate our product positioning and delegate response or post tasks if worth pursuing.`;
       switchTab('tab-room');
       const box = document.getElementById('globalMessagesBox');
       box.innerHTML += `<div class="panel-meta" style="color:var(--lime);">Escalating opportunity to @cmo...</div>`;
@@ -5578,6 +5614,10 @@ def main():
     print("MAGNM PR & SOCIAL AGENCY COMMAND CENTER (v5 - NVIDIA NIM)")
     print("============================================================")
     db.init_db()
+    try:
+        repos.remove_seeded_repos()
+    except Exception as exc:
+        print(f"Could not clean up old default repos: {exc}")
     agent_runtime.recover_stale_sessions()
     coding_agents.recover_stale_runs()
     social_service.recover_stale_runs()

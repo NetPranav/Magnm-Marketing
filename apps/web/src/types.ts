@@ -269,6 +269,10 @@ export interface RepoRecord {
   recent_commits?: RepoCommit[];
   rate_limited?: boolean;
   rate_limit_message?: string | null;
+  /** 'global' repos come from an admin and are managed by them; 'personal' are the user's own. */
+  scope?: 'personal' | 'global';
+  /** The team's id for a global repo (the id above can differ when it merged with the user's own copy). */
+  global_id?: string;
 }
 
 export interface ShippedItem {

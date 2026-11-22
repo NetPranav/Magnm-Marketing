@@ -27,6 +27,7 @@ import posting_kit
 import private_files
 import product_rules
 import repos
+import retired_repos
 import review
 import review_studio
 from posting import PLATFORMS, PostingError, http_client, instagram, linkedin, normalize_platform, vault as vault_mod, x_provider
@@ -116,6 +117,9 @@ def _confidential_patterns():
                 txt = str(term or "").strip()
                 if txt:
                     patterns.append(product_rules._word_pattern(txt))
+        # Removed or no longer shared confidential repos stay guarded.
+        for txt in retired_repos.terms():
+            patterns.append(product_rules._word_pattern(txt))
     except Exception as exc:
         raise PostingError(
             "Connected repositories could not be read; refusing API posting.",

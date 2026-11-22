@@ -15,13 +15,16 @@ import {
 import { getAccount, type AccountState } from '../../api/account';
 import {
   addRepo,
+  addTeamRepo,
   createFact,
   decideFact,
   getProductRules,
   listFacts,
   listRepos,
   listShipped,
+  promoteRepo,
   removeRepo,
+  removeTeamRepo,
   saveProductRule,
   syncRepo,
 } from '../../api/repos';
@@ -61,12 +64,14 @@ export function ReposSection() {
   const [rulesConfig, setRulesConfig] = useState<ProductRulesConfig | null>(null);
 
   const [factEdits, setFactEdits] = useState<Record<string, string>>({});
-  const [manualProductId, setManualProductId] = useState('cero');
+  const [manualProductId, setManualProductId] = useState('');
   const [manualFactText, setManualFactText] = useState('');
   const [manualFactUrl, setManualFactUrl] = useState('');
 
   // Add repo dialog state
   const [addOpen, setAddOpen] = useState(false);
+  // True when an admin adds the repository for the whole team (GitHub only).
+  const [teamAdd, setTeamAdd] = useState(false);
   const [repoKind, setRepoKind] = useState<'local' | 'github'>('local');
   const [repoName, setRepoName] = useState('');
   const [repoLocalPath, setRepoLocalPath] = useState('');
@@ -183,6 +188,13 @@ export function ReposSection() {
       account?.user?.role === 'member',
   );
 
+  const isAdmin = Boolean(
+    account?.configured &&
+      account?.signed_in &&
+      !account?.deactivated &&
+      account?.user?.role === 'admin',
+  );
+
   const shippedByRepo = useMemo(() => {
     const groups = new Map<string, ShippedItem[]>();
     for (const r of repos) {
@@ -228,12 +240,34 @@ export function ReposSection() {
     setBusyId(`remove-${target.id}`);
     setError(null);
     try {
+      if (target.scope === 'global') {
+        await removeTeamRepo(target.global_id || target.id);
+        await loadAll();
+        setConfirmRemove(null);
+        setNotice(`Removed ${target.name} for the whole team.`);
+        return;
+      }
       await removeRepo(target.id);
       setRepos((prev) => prev.filter((r) => r.id !== target.id));
       setConfirmRemove(null);
       setNotice(`Removed ${target.name}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to remove repository.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handlePromoteRepo = async (repo: RepoRecord) => {
+    setError(null);
+    setNotice(null);
+    setBusyId(`share-${repo.id}`);
+    try {
+      await promoteRepo(repo.id);
+      await loadAll();
+      setNotice(`${repo.name} is now shared with the whole team.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to share repository.');
     } finally {
       setBusyId(null);
     }
@@ -256,6 +290,22 @@ export function ReposSection() {
     setAddError(null);
     setBusyId('add-repo');
     try {
+      if (teamAdd) {
+        const teamPayload: Parameters<typeof addTeamRepo>[0] = {
+          github: repoGithub.trim(),
+          status: repoStatus,
+          confidential: repoConfidential,
+        };
+        if (repoName.trim()) teamPayload.name = repoName.trim();
+        if (repoProductId.trim()) teamPayload.product_id = repoProductId.trim();
+        if (repoBranch.trim()) teamPayload.branch = repoBranch.trim();
+        const shared = await addTeamRepo(teamPayload);
+        setAddOpen(false);
+        resetAddForm();
+        await loadAll();
+        setNotice(`Added ${shared.repo?.name || 'repository'} for the whole team.`);
+        return;
+      }
       const payload: Parameters<typeof addRepo>[0] = {
         kind: repoKind,
         name: repoName.trim(),
@@ -407,15 +457,32 @@ export function ReposSection() {
           <h2 id="repos-connected-heading" className="studio-section-title">
             Connected repos ({repos.length})
           </h2>
-          <PillButton
-            size="sm"
-            onClick={() => {
-              resetAddForm();
-              setAddOpen(true);
-            }}
-          >
-            Add repo
-          </PillButton>
+          <div className="studio-row-actions">
+            {isAdmin ? (
+              <PillButton
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  resetAddForm();
+                  setRepoKind('github');
+                  setTeamAdd(true);
+                  setAddOpen(true);
+                }}
+              >
+                Add for the whole team
+              </PillButton>
+            ) : null}
+            <PillButton
+              size="sm"
+              onClick={() => {
+                resetAddForm();
+                setTeamAdd(false);
+                setAddOpen(true);
+              }}
+            >
+              Add repo
+            </PillButton>
+          </div>
         </div>
 
         {loading && repos.length === 0 ? (
@@ -437,6 +504,7 @@ export function ReposSection() {
                         <div className="studio-chip-row">
                           <span className="studio-card-title">{repo.name}</span>
                           <span className="mg-chip">{repo.kind}</span>
+                          {repo.scope === 'global' ? <span className="mg-chip">Team</span> : null}
                           {repo.status ? (
                             <span className="mg-chip">
                               {STATUS_LABELS[repo.status] || repo.status}
@@ -466,13 +534,37 @@ export function ReposSection() {
                         >
                           {busyId === `sync-${repo.id}` ? 'Syncing...' : 'Sync now'}
                         </PillButton>
-                        <PillButton
-                          variant="danger"
-                          size="sm"
-                          onClick={() => setConfirmRemove(repo)}
-                        >
-                          Remove
-                        </PillButton>
+                        {repo.scope !== 'global' && isAdmin && repo.github ? (
+                          <PillButton
+                            variant="outline"
+                            size="sm"
+                            disabled={busyId === `share-${repo.id}`}
+                            onClick={() => void handlePromoteRepo(repo)}
+                          >
+                            {busyId === `share-${repo.id}` ? 'Sharing...' : 'Share with team'}
+                          </PillButton>
+                        ) : null}
+                        {repo.scope === 'global' ? (
+                          isAdmin ? (
+                            <PillButton
+                              variant="danger"
+                              size="sm"
+                              onClick={() => setConfirmRemove(repo)}
+                            >
+                              Remove for the whole team
+                            </PillButton>
+                          ) : (
+                            <span className="studio-hint">Managed by your admin</span>
+                          )
+                        ) : (
+                          <PillButton
+                            variant="danger"
+                            size="sm"
+                            onClick={() => setConfirmRemove(repo)}
+                          >
+                            Remove
+                          </PillButton>
+                        )}
                       </div>
                     </div>
 
@@ -632,7 +724,7 @@ export function ReposSection() {
                   id="manual-fact-product"
                   value={manualProductId}
                   onChange={(e) => setManualProductId(e.target.value)}
-                  placeholder="cero"
+                  placeholder="my-product"
                 />
               </Field>
               <Field label="Source URL (optional)" htmlFor="manual-fact-url">
@@ -736,7 +828,7 @@ export function ReposSection() {
       <Dialog
         open={addOpen}
         onClose={() => setAddOpen(false)}
-        title="Add repository"
+        title={teamAdd ? 'Add repository for the whole team' : 'Add repository'}
         subtitle="Repos"
         actions={
           <>
@@ -748,7 +840,7 @@ export function ReposSection() {
               disabled={busyId === 'add-repo'}
               onClick={() => void handleAddRepo()}
             >
-              {busyId === 'add-repo' ? 'Connecting...' : 'Add repository'}
+              {busyId === 'add-repo' ? 'Connecting...' : teamAdd ? 'Add for the whole team' : 'Add repository'}
             </PillButton>
           </>
         }
@@ -759,14 +851,21 @@ export function ReposSection() {
               {addError}
             </div>
           ) : null}
+          {teamAdd ? (
+            <div className="studio-hint">
+              Every member gets this repository automatically. GitHub only, because a local folder is not
+              the same on every computer.
+            </div>
+          ) : null}
           <div className="studio-grid-2">
             <Field label="Source" htmlFor="repo-kind">
               <Select
                 id="repo-kind"
                 value={repoKind}
+                disabled={teamAdd}
                 onChange={(e) => setRepoKind(e.target.value as 'local' | 'github')}
               >
-                <option value="local">Local folder</option>
+                {teamAdd ? null : <option value="local">Local folder</option>}
                 <option value="github">GitHub (public or token)</option>
               </Select>
             </Field>
@@ -775,7 +874,7 @@ export function ReposSection() {
                 id="repo-name"
                 value={repoName}
                 onChange={(e) => setRepoName(e.target.value)}
-                placeholder="Cero Terminal"
+                placeholder="My project"
               />
             </Field>
           </div>
@@ -810,7 +909,7 @@ export function ReposSection() {
                 id="repo-product-id"
                 value={repoProductId}
                 onChange={(e) => setRepoProductId(e.target.value)}
-                placeholder="cero"
+                placeholder="my-project"
               />
             </Field>
             <Field label="Branch (optional)" htmlFor="repo-branch">
@@ -840,21 +939,23 @@ export function ReposSection() {
             onChange={(e) => setRepoConfidential(e.target.checked)}
           />
 
-          <Field label="Marketing angle (optional)" htmlFor="repo-angle">
-            <TextArea
-              id="repo-angle"
-              rows={2}
-              value={repoAngle}
-              onChange={(e) => setRepoAngle(e.target.value)}
-            />
-          </Field>
+          {teamAdd ? null : (
+            <Field label="Marketing angle (optional)" htmlFor="repo-angle">
+              <TextArea
+                id="repo-angle"
+                rows={2}
+                value={repoAngle}
+                onChange={(e) => setRepoAngle(e.target.value)}
+              />
+            </Field>
+          )}
         </div>
       </Dialog>
 
       <Dialog
         open={Boolean(confirmRemove)}
         onClose={() => setConfirmRemove(null)}
-        title="Remove repository"
+        title={confirmRemove?.scope === 'global' ? 'Remove for the whole team' : 'Remove repository'}
         subtitle="Repos"
         actions={
           <>
@@ -867,16 +968,24 @@ export function ReposSection() {
               disabled={Boolean(confirmRemove && busyId === `remove-${confirmRemove.id}`)}
               onClick={() => void handleConfirmRemove()}
             >
-              Remove repo
+              {confirmRemove?.scope === 'global' ? 'Remove for everyone' : 'Remove repo'}
             </PillButton>
           </>
         }
       >
         {confirmRemove ? (
-          <p className="mg-sub">
-            Disconnect <span className="studio-mono">{confirmRemove.name}</span> from
-            Magnm Studio? Local files on disk are not deleted.
-          </p>
+          confirmRemove.scope === 'global' ? (
+            <p className="mg-sub">
+              Stop sharing <span className="studio-mono">{confirmRemove.name}</span> with the whole
+              team? Every member loses it from their list on their next sync. Nothing on anyone's
+              disk is deleted.
+            </p>
+          ) : (
+            <p className="mg-sub">
+              Disconnect <span className="studio-mono">{confirmRemove.name}</span> from
+              Magnm Studio? Local files on disk are not deleted.
+            </p>
+          )
         ) : null}
       </Dialog>
 

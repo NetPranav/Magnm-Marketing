@@ -18,6 +18,7 @@ import json as _json
 import paths
 import product_rules
 import repos
+import retired_repos
 
 _SECTION_START = re.compile(r"(?m)^(?=## )")
 
@@ -65,6 +66,8 @@ def product_is_confidential(product_id):
             for prod in product_rules.load_rules(path).get("products", []):
                 if prod.get("confidential") and target == str(prod.get("name") or "").strip().lower():
                     return True
+        if target in {t.lower() for t in retired_repos.terms()}:
+            return True
         return any(
             _repo_flagged(r, conf_ids)
             for r in repos.list_repos()
@@ -86,6 +89,8 @@ def patterns():
     for repo in repos.list_repos():
         if _repo_flagged(repo, conf_ids):
             terms += [repo.get("name"), repo.get("id"), repo.get("product_id"), repo.get("github")]
+    # Removed or no longer shared confidential repos stay guarded.
+    terms += retired_repos.terms()
     return [product_rules._word_pattern(str(t).strip()) for t in terms if str(t or "").strip()]
 
 

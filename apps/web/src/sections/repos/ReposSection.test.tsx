@@ -241,4 +241,116 @@ describe('ReposSection', () => {
     });
     expect(screen.queryByRole('button', { name: 'Edit rules' })).toBeNull();
   });
+
+  describe('team repositories', () => {
+    const TEAM_REPO = {
+      id: 'team-app',
+      global_id: 'team-app',
+      name: 'Team App',
+      kind: 'github',
+      github: 'acme/team-app',
+      status: 'in_development',
+      confidential: false,
+      scope: 'global',
+      recent_commits: [],
+    };
+    const OWN_REPO = {
+      id: 'mine',
+      name: 'My Project',
+      kind: 'github',
+      github: 'me/mine',
+      status: 'in_development',
+      confidential: false,
+      scope: 'personal',
+      recent_commits: [],
+    };
+
+    function mockServer(role: 'admin' | 'member', calls: Array<{ url: string; init?: RequestInit }> = []) {
+      return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        calls.push({ url, init });
+        if (url === '/api/account') {
+          return jsonResponse({
+            configured: true,
+            signed_in: true,
+            deactivated: false,
+            user: { id: 'u-1', email: 'u@example.com', display_name: 'U', avatar_url: null, role, active: true },
+          });
+        }
+        if (url === '/api/repos' && (!init?.method || init.method === 'GET')) {
+          return jsonResponse([TEAM_REPO, OWN_REPO]);
+        }
+        if (url === '/api/product_rules') {
+          return jsonResponse({ version: 1, show_levels: {}, products: [] });
+        }
+        if (url.startsWith('/api/team/repos')) {
+          return jsonResponse({ success: true, repo: TEAM_REPO, id: 'team-app' });
+        }
+        return jsonResponse([]);
+      });
+    }
+
+    it('shows a member the team repo as managed by the admin, with no way to edit or remove it', async () => {
+      mockServer('member');
+      render(<ReposSection />);
+      await waitFor(() => expect(screen.getAllByText('Team App').length).toBeGreaterThan(0));
+      expect(screen.getByText('Team')).toBeTruthy();
+      expect(screen.getAllByText('Managed by your admin').length).toBeGreaterThanOrEqual(2);
+      expect(screen.queryByRole('button', { name: /whole team/i })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Share with team' })).toBeNull();
+      // Their own repo can still be removed.
+      expect(screen.getAllByRole('button', { name: 'Remove' }).length).toBe(1);
+    });
+
+    it('lets an admin add for the whole team, share their own repo, and remove a team repo after confirming', async () => {
+      const calls: Array<{ url: string; init?: RequestInit }> = [];
+      mockServer('admin', calls);
+      render(<ReposSection />);
+      await waitFor(() => expect(screen.getAllByText('Team App').length).toBeGreaterThan(0));
+
+      // Add for the whole team: GitHub only.
+      fireEvent.click(screen.getByRole('button', { name: 'Add for the whole team' }));
+      expect(screen.queryByText('Local folder path')).toBeNull();
+      fireEvent.change(screen.getByLabelText(/GitHub repository/i), { target: { value: 'acme/new-one' } });
+      fireEvent.click(screen.getAllByRole('button', { name: 'Add for the whole team' }).pop() as HTMLElement);
+      await waitFor(() => {
+        const post = calls.find((c) => c.url === '/api/team/repos' && c.init?.method === 'POST');
+        expect(post).toBeTruthy();
+        expect(JSON.parse(String(post?.init?.body))).toMatchObject({ github: 'acme/new-one', confidential: false });
+      });
+
+      // Share their own GitHub repo.
+      fireEvent.click(screen.getByRole('button', { name: 'Share with team' }));
+      await waitFor(() => {
+        const post = calls.find((c) => c.url === '/api/team/repos/promote');
+        expect(JSON.parse(String(post?.init?.body))).toEqual({ repo_id: 'mine' });
+      });
+
+      // Removing a team repo needs a confirmation that says it affects everyone.
+      fireEvent.click(screen.getByRole('button', { name: 'Remove for the whole team' }));
+      expect(screen.getByText(/loses it from their list/i)).toBeTruthy();
+      expect(calls.some((c) => c.url === '/api/team/repos/team-app/remove')).toBe(false);
+      fireEvent.click(screen.getByRole('button', { name: 'Remove for everyone' }));
+      await waitFor(() => {
+        expect(calls.some((c) => c.url === '/api/team/repos/team-app/remove' && c.init?.method === 'POST')).toBe(true);
+      });
+    });
+
+    it('does not offer team actions to someone who is not an admin', async () => {
+      mockServer('member');
+      render(<ReposSection />);
+      await waitFor(() => expect(screen.getAllByText('Team App').length).toBeGreaterThan(0));
+      expect(screen.queryByRole('button', { name: 'Add for the whole team' })).toBeNull();
+    });
+
+    it('uses neutral placeholders instead of a product name', async () => {
+      mockServer('member');
+      render(<ReposSection />);
+      await waitFor(() => expect(screen.getAllByText('Team App').length).toBeGreaterThan(0));
+      fireEvent.click(screen.getByRole('button', { name: 'Add repo' }));
+      expect(screen.getByPlaceholderText('My project')).toBeTruthy();
+      expect(document.body.innerHTML.toLowerCase()).not.toContain('placeholder="cero');
+      expect((screen.getByPlaceholderText('my-product') as HTMLInputElement).value).toBe('');
+    });
+  });
 });

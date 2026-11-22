@@ -96,7 +96,7 @@ def _write_markdown_copy(content_id, version, content_type, platform, title, bod
             },
             "product_id": {
                 "type": "string",
-                "description": "Optional product ID (e.g. 'cero').",
+                "description": "Optional product ID (e.g. 'my-product').",
             },
         },
         "required": ["type", "platform", "title", "body"],

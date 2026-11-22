@@ -80,6 +80,19 @@ def _discover_hidden_imports(engine_dir):
     return modules
 
 
+# Per-user data that must never ship inside the app: users add their own repos.
+PER_USER_CONFIG = ("repos.json",)
+
+
+def stage_config(root, stage_dir):
+    """Copy config/ to stage_dir without per-user files, so a developer's own repos never get bundled."""
+    src = os.path.join(root, "config")
+    if os.path.isdir(stage_dir):
+        shutil.rmtree(stage_dir)
+    shutil.copytree(src, stage_dir, ignore=shutil.ignore_patterns(*PER_USER_CONFIG))
+    return stage_dir
+
+
 def build_pyinstaller_command(vpy, engine_dir, dist_dir, work_dir, pyi_root, data_specs):
     """Build the PyInstaller CLI argument list including hidden imports and collected packages."""
     hidden_imports = _discover_hidden_imports(engine_dir)
@@ -169,7 +182,7 @@ def main():
     os.makedirs(pyi_root, exist_ok=True)
 
     data_specs = [
-        (os.path.join(root, "config"), "config"),
+        (stage_config(root, os.path.join(pyi_root, "staged-config")), "config"),
         (os.path.join(root, "agents"), "agents"),
         (os.path.join(root, "playbooks"), "playbooks"),
         (os.path.join(root, "templates"), "templates"),

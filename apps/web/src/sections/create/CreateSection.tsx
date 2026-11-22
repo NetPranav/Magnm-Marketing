@@ -27,12 +27,14 @@ import {
   type CardRenderResult,
   type PrDraftResult,
 } from '../../api/create';
+import { listRepos } from '../../api/repos';
 import { useFallbackPoll, useStudioEvents } from '../../events';
 import type {
   AssetRecord,
   CheckTextWarning,
   ContentItem,
   ProductRule,
+  RepoRecord,
   WorkflowRun,
 } from '../../types';
 import { formatTimestamp } from '../../ui/format';
@@ -118,12 +120,14 @@ export function CreateSection() {
   const [selectedKind, setSelectedKind] = useState<CreateKind>('post');
 
   const [products, setProducts] = useState<ProductRule[]>([]);
+  const [repos, setRepos] = useState<RepoRecord[]>([]);
   const [assets, setAssets] = useState<AssetRecord[]>([]);
   const [contentList, setContentList] = useState<ContentItem[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
 
   // Shared workflow inputs
   const [productId, setProductId] = useState('');
+  const [repoId, setRepoId] = useState('');
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(['linkedin', 'x']);
   const [briefOrTopic, setBriefOrTopic] = useState('');
   const [sourceContentId, setSourceContentId] = useState('');
@@ -138,7 +142,7 @@ export function CreateSection() {
   // Card studio inputs
   const [cardPostId, setCardPostId] = useState('custom-card');
   const [cardField, setCardField] = useState('sky');
-  const [cardKicker, setCardKicker] = useState('CERO');
+  const [cardKicker, setCardKicker] = useState('');
   const [cardBig, setCardBig] = useState('ASKS\nFIRST.');
   const [cardSerif, setCardSerif] = useState('before anything changes your files.');
   const [cardFoot, setCardFoot] = useState('magnm-org.vercel.app');
@@ -172,10 +176,11 @@ export function CreateSection() {
       getProductRules(),
       listContent(50),
       listAssets(),
+      listRepos(),
     ]);
 
     let firstErr: string | null = null;
-    const [wfRes, rulesRes, contentRes, assetsRes] = results;
+    const [wfRes, rulesRes, contentRes, assetsRes, reposRes] = results;
 
     if (wfRes.status === 'fulfilled') {
       setWorkflows(Array.isArray(wfRes.value) ? wfRes.value : []);
@@ -195,6 +200,10 @@ export function CreateSection() {
 
     if (assetsRes.status === 'fulfilled') {
       setAssets(Array.isArray(assetsRes.value) ? assetsRes.value : []);
+    }
+
+    if (reposRes.status === 'fulfilled') {
+      setRepos(Array.isArray(reposRes.value) ? reposRes.value : []);
     }
 
     setError(firstErr);
@@ -245,6 +254,11 @@ export function CreateSection() {
     [products, productId],
   );
 
+  const selectedRepo = useMemo(
+    () => repos.find((r) => r.id === repoId) ?? null,
+    [repos, repoId],
+  );
+
   const imageAssets = useMemo(
     () => assets.filter((a) => a.file_group === 'image'),
     [assets],
@@ -275,6 +289,9 @@ export function CreateSection() {
     const inputs: Record<string, unknown> = {};
     if (productId) {
       inputs.product_id = productId;
+    }
+    if (repoId && selectedKind !== 'repurpose') {
+      inputs.repo_id = repoId;
     }
 
     if (selectedKind === 'post' || selectedKind === 'thread') {
@@ -520,6 +537,33 @@ export function CreateSection() {
                   </Select>
                 </Field>
 
+                {selectedKind !== 'repurpose' && (
+                  <Field
+                    label="Repository"
+                    htmlFor="create-repo"
+                    hint={
+                      repos.length === 0
+                        ? 'Add a repository in Repos to ground work on its changes.'
+                        : 'Grounds the run on this repository\'s changes, approved facts and research only.'
+                    }
+                  >
+                    <Select
+                      id="create-repo"
+                      value={repoId}
+                      onChange={(e) => setRepoId(e.target.value)}
+                    >
+                      <option value="">No repository</option>
+                      {repos.map((repo) => (
+                        <option key={repo.id} value={repo.id}>
+                          {repo.name}
+                          {repo.scope === 'global' ? ' (team)' : ''}
+                          {repo.confidential ? ' (confidential)' : ''}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                )}
+
                 {(selectedKind === 'post' || selectedKind === 'thread') && (
                   <Field label="Optional source asset" htmlFor="create-asset">
                     <Select
@@ -587,6 +631,15 @@ export function CreateSection() {
                   </Field>
                 )}
               </div>
+
+              {selectedKind !== 'repurpose' && selectedRepo?.confidential ? (
+                <div className="studio-chip-row">
+                  <span className="mg-chip">CONFIDENTIAL REPOSITORY</span>
+                  <span className="studio-hint">
+                    This whole run uses local AI only, from the first step. Nothing is sent to cloud models.
+                  </span>
+                </div>
+              ) : null}
 
               {selectedProduct?.confidential ? (
                 <div className="studio-chip-row">

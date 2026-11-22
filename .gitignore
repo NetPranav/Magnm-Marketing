@@ -55,3 +55,8 @@ state/knowledge_backups/
 /outputs/pitch/
 /outputs/**/browser-shots/
 /outputs/content/
+
+# Per-user repositories and what was generated from them: the software ships with none.
+/config/repos.json
+/research/repo-sync.json
+/research/repo-sync.md

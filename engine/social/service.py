@@ -22,6 +22,7 @@ import db
 import paths
 import product_rules
 import repos
+import retired_repos
 from social import (
     PLATFORMS,
     REQUIRED_ACKNOWLEDGEMENT_SUMMARY,
@@ -93,6 +94,9 @@ def _confidential_checker_and_patterns():
                 txt = str(term or "").strip()
                 if txt:
                     patterns.append(product_rules._word_pattern(txt))
+        # Removed or no longer shared confidential repos stay guarded.
+        for txt in retired_repos.terms():
+            patterns.append(product_rules._word_pattern(txt))
     except Exception as exc:
         raise SocialError(
             "Connected repositories could not be read; refusing social research.",
