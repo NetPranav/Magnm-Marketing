@@ -13,6 +13,7 @@ import { CACHE_STORAGE_KEY, saveMirrorRecords } from './cache';
 import { createPreviewNativeBridge } from './native';
 import { getPublicSupabaseConfig } from './net';
 import { enqueueInboxItem, loadQueue } from './queue';
+import { dumpStorage } from './test-storage';
 
 const SUPA = getPublicSupabaseConfig();
 
@@ -69,7 +70,7 @@ describe('Google PKCE auth (src/auth.ts)', () => {
     expect(tokenCalls).toBe(1);
 
     // Secrets live only in secureStore, never web storage
-    const dumpedStorage = JSON.stringify(window.localStorage);
+    const dumpedStorage = dumpStorage();
     expect(dumpedStorage).not.toContain('supa-access-1');
     expect(dumpedStorage).not.toContain('supa-refresh-1');
     expect(window.localStorage.getItem(SESSION_SECRET_KEY)).toBeNull();

@@ -50,6 +50,7 @@ import { getPublicSupabaseConfig, HttpStatusError, NIM_BASE_URL } from './net';
 import { getLaptopToken, getPairingConfig, LAPTOP_TOKEN_SECRET_KEY, PAIRING_META_KEY, pollPairRequest } from './pairing';
 import { enqueueInboxItem, flushBoundQueue, loadQueue, QUEUE_STORAGE_KEY } from './queue';
 import { bumpStateGeneration, writeNonSecretJson } from './storage';
+import { failStorageWrites } from './test-storage';
 
 const SUPA = getPublicSupabaseConfig();
 
@@ -548,9 +549,7 @@ describe('T6.2b mobile review fixes', () => {
       ownerUid: '',
       pairedAt: '2026-11-22T09:00:00Z',
     });
-    const setItemSpy = vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
-      throw new Error('QuotaExceededError');
-    });
+    const setItemSpy = failStorageWrites();
     const failBridge = createPreviewNativeBridge({
       httpHandler: async () => {
         throw new Error('Offline');

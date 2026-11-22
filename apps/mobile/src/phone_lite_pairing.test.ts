@@ -17,6 +17,7 @@ import {
   unpairLaptop,
 } from './pairing';
 import { enqueueInboxItem, loadQueue } from './queue';
+import { dumpStorage } from './test-storage';
 
 const SUPA = getPublicSupabaseConfig();
 
@@ -76,7 +77,7 @@ describe('pairing and Phone Lite guards', () => {
     expect(await getLaptopToken(bridge)).toBe('device-bearer-xyz');
     expect(getPairingConfig()?.deviceId).toBe('pdev_1');
     // Device token must NEVER be in localStorage
-    expect(JSON.stringify(window.localStorage)).not.toContain('device-bearer-xyz');
+    expect(dumpStorage()).not.toContain('device-bearer-xyz');
 
     enqueueInboxItem({
       kind: 'note',

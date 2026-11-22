@@ -8,6 +8,7 @@ import contract from './fixtures/phone_contract.json';
 import { createPreviewNativeBridge, type NativeHttpRequest, type NativeHttpResponse } from './native';
 import { LAPTOP_TOKEN_SECRET_KEY, PAIRING_META_KEY } from './pairing';
 import { writeNonSecretJson } from './storage';
+import { failStorageWrites } from './test-storage';
 
 const ok = (body: unknown): NativeHttpResponse => ({ status: 200, headers: {}, body: JSON.stringify(body) });
 
@@ -71,9 +72,7 @@ describe('review regressions', () => {
     const nova = { id: 'nova', name: 'Nova', status: 'released', show: 'everything', confidential: false } as const;
     const show_levels = { everything: 'All' };
     saveCachedProductRules('uid-1', { show_levels, products: [nova] });
-    vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
-      throw new Error('QuotaExceededError');
-    });
+    failStorageWrites();
     const urls: string[] = [];
     const bridge = createPreviewNativeBridge({
       httpHandler: async (req) => {
@@ -93,9 +92,7 @@ describe('review regressions', () => {
 
   it('a full phone store does not mark a reachable laptop offline', async () => {
     const bridge = await pairedBridge(async (req) => laptop(req));
-    const setItem = vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
-      throw new Error('QuotaExceededError');
-    });
+    const setItem = failStorageWrites();
     render(<App bridge={bridge} />);
     await waitFor(() => expect(setItem).toHaveBeenCalled());
     await new Promise((resolve) => setTimeout(resolve, 20));
