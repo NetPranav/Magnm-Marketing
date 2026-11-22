@@ -2,6 +2,8 @@
 
 from datetime import datetime, timezone
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -26,6 +28,20 @@ class _Listener:
 
     def server_close(self):
         pass
+
+
+class NoTimezoneDatabaseTests(unittest.TestCase):
+    def test_engine_imports_without_a_timezone_database(self):
+        """Windows has none: the packaged engine crashed on import there."""
+        code = (
+            "import zoneinfo\n"
+            "def none(*a, **k): raise zoneinfo.ZoneInfoNotFoundError('no database')\n"
+            "zoneinfo.ZoneInfo = none\n"
+            "import sys; sys.path.insert(0, sys.argv[1]); import server, scheduler_loop, weekly_summary, workflows, reminders"
+        )
+        engine_dir = os.path.dirname(os.path.abspath(server.__file__))
+        res = subprocess.run([sys.executable, "-c", code, engine_dir], capture_output=True, text=True, timeout=60)
+        self.assertEqual(res.returncode, 0, res.stderr)
 
 
 class ServerEntrypointTests(unittest.TestCase):

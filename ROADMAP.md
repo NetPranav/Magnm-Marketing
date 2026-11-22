@@ -178,6 +178,7 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
     Windows and macOS, and the release workflow runs it before bundling.
   - Guides: `docs/INSTALL.md`, key backup in `apps/desktop/RELEASING.md` and `apps/mobile/README.md`.
   - Release workflow: current macOS runners, pnpm 12, stops early without signing configuration.
+  - The smoke test's first run found that the engine never started on Windows (no timezone database). Fixed.
   - Not tested: installers, the updater, a release build, real key and catalog failures.
   - Needs the owner: both signing keys and their backups, GitHub secrets, the updater public key, the first release.
 - **2026-11-22 correction to Phase 5:** reminders and the Monday summary never ran on engines started with

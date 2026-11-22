@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 import os
 import sys
 import threading
-from zoneinfo import ZoneInfo
 
 _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _ENGINE_DIR not in sys.path:
@@ -13,13 +12,13 @@ if _ENGINE_DIR not in sys.path:
 
 import cmo_runtime
 import db
+from ist import IST
 import jobs
 import reminders
 
 CHECK_INTERVAL_S = 60
 # What engine/server.py runs. The other schedules act on their own, so only engine/main.py starts them.
 ANALYST_COMMANDS = ("weekly_summary",)
-IST = ZoneInfo("Asia/Kolkata")
 
 DEFAULT_SCHEDULES = [
     {

@@ -6,20 +6,19 @@ import json
 import os
 import re
 import sys
-from zoneinfo import ZoneInfo
 
 _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
 
 import db
+from ist import IST as _IST_ZONE
 import paths
 import platforms
 import product_rules
 
 _PLATFORM_NORMS_AGENTS = {"writer", "designer", "reviewer", "video-producer"}
 _PROPOSAL_AGENTS = {"cmo", "writer"}
-_IST_ZONE = ZoneInfo("Asia/Kolkata")
 
 _TOOL_RULES_BLOCK = "\n".join([
     "## Tool rules",

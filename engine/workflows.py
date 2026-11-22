@@ -10,7 +10,6 @@ import sys
 import threading
 import time
 import uuid
-from zoneinfo import ZoneInfo
 
 _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _ENGINE_DIR not in sys.path:
@@ -21,6 +20,7 @@ import agents
 import ai_gateway
 import db
 import events
+from ist import IST as _IST
 import jobs
 import paths
 import platforms
@@ -29,7 +29,6 @@ import product_rules
 from tools import content as content_tools
 from tools import core as core_tools
 
-_IST = ZoneInfo("Asia/Kolkata")
 
 
 def _now_iso():
