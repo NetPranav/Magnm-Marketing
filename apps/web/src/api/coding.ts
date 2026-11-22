@@ -5,6 +5,7 @@ import type {
   CodingRunLogResponse,
   CodingRunRecord,
   ContentItem,
+  McpSettingsInfo,
 } from '../types';
 
 export interface CodingAgentsResponse {
@@ -12,6 +13,21 @@ export interface CodingAgentsResponse {
   adapters?: CodingAgentInfo[];
   agent_engines: Record<string, string>;
   timeout_s?: number;
+  mcp?: McpSettingsInfo;
+}
+
+/** Fetch MCP server configuration, daily call count, and CLI setup snippets. */
+export function getMcpSettings(): Promise<McpSettingsInfo> {
+  return api.get<McpSettingsInfo>('/api/coding/mcp');
+}
+
+/** Toggle whether external coding agents via MCP may create drafts, notes, and reminders. */
+export function setMcpWritesEnabled(
+  writesEnabled: boolean,
+): Promise<McpSettingsInfo & { success: boolean }> {
+  return api.post<McpSettingsInfo & { success: boolean }>('/api/coding/mcp', {
+    writes_enabled: writesEnabled,
+  });
 }
 
 /** Detect installed coding CLIs, confinement capability, and detected ACP adapters. */

@@ -2371,3 +2371,8 @@
   max-height: 280px;
   overflow-y: auto;
 }
+
+/* Coding run form: a longer hint under one field must not stretch the other field's control. */
+.studio-coding-fields {
+  align-items: start;
+}

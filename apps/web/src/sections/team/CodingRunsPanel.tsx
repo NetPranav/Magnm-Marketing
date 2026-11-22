@@ -560,7 +560,7 @@ export function CodingRunsPanel() {
         <div className="studio-stack-sm">
           <div className="studio-card-title">Start coding run</div>
 
-          <div className="studio-grid-2">
+          <div className="studio-grid-2 studio-coding-fields">
             <Field label="Coding engine" htmlFor="coding-run-engine">
               <Select
                 id="coding-run-engine"

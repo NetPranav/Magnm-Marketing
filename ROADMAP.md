@@ -126,6 +126,15 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
   proposals that are saved only after you confirm (the Analyst can't bypass this); a weekly summary every Monday 09:00 IST
   (tables from real data; the AI narrative is dropped if it cites numbers that aren't in the data); learnings proposed
   from evidence, approved by you, and given to the agents after the product rules.
+- **Phase 7 done (2026-11-22): connected coding agents.** Built before Phase 6.
+  - Claude Code runs confined: read-only copies of the chosen repos outside the data folder, no shell, web, MCP or user
+    settings, writes only to `out/`. Tested against the real binary with a simulated prompt-injected model.
+  - A run an agent asks for waits for the user's Start. Confidential repos need explicit consent for each run.
+  - Codex, Antigravity and Gemini CLI are detected but not enabled, and there is no ACP client: these tools can't yet be
+    confined to a workspace. This departs from the plan and needs a decision before they are switched on.
+  - Magnm MCP server: read-only by default, hides confidential records, write tools behind a Settings switch.
+- **2026-11-22 hardening:** local engine request checks (PR #8), tests isolated from real data (PR #9), safer file
+  serving (PR #10). Open: a token for engines started with `engine/server.py`.
 
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.

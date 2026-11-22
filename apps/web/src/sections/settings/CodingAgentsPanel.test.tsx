@@ -147,4 +147,156 @@ describe('CodingAgentsPanel', () => {
       expect(screen.getByText('Update Claude Code to use it here')).toBeTruthy();
     });
   });
+
+  it('renders Magnm MCP server toggle, real-path setup commands, daily count, and copy buttons', async () => {
+    const writeTextMock = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: writeTextMock },
+    });
+
+    const claudeCmd =
+      'claude mcp add magnm -- python3 /abs/repo/engine/mcp_server.py --data-dir /abs/data';
+    const geminiJson = JSON.stringify(
+      {
+        mcpServers: {
+          magnm: {
+            command: 'python3',
+            args: ['/abs/repo/engine/mcp_server.py', '--data-dir', '/abs/data'],
+          },
+        },
+      },
+      null,
+      2,
+    );
+    const codexToml =
+      '[mcp_servers.magnm]\ncommand = "python3"\nargs = ["/abs/repo/engine/mcp_server.py", "--data-dir", "/abs/data"]';
+
+    const mcpClients = [
+      {
+        id: 'claude',
+        name: 'Claude Code',
+        format: 'cli',
+        config_hint: 'Run in your terminal',
+        snippet: claudeCmd,
+      },
+      {
+        id: 'gemini',
+        name: 'Gemini CLI',
+        format: 'json',
+        config_hint: 'Add to ~/.gemini/settings.json',
+        snippet: geminiJson,
+      },
+      {
+        id: 'codex',
+        name: 'Codex',
+        format: 'toml',
+        config_hint: 'Add to ~/.codex/config.toml',
+        snippet: codexToml,
+      },
+    ];
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('/api/coding/agents')) {
+        return jsonResponse({
+          agents: [
+            {
+              id: 'claude',
+              name: 'Claude Code',
+              command: 'claude',
+              installed: true,
+              path: '/usr/bin/claude',
+              version: 'claude 2.1.0',
+              enabled: true,
+              confined: true,
+            },
+            {
+              id: 'gemini',
+              name: 'Gemini CLI',
+              command: 'gemini',
+              installed: true,
+              path: '/usr/bin/gemini',
+              version: 'gemini 1.0.0',
+              enabled: false,
+              confined: false,
+            },
+            {
+              id: 'codex',
+              name: 'Codex',
+              command: 'codex',
+              installed: true,
+              path: '/usr/bin/codex',
+              version: 'codex 1.0.0',
+              enabled: false,
+              confined: false,
+            },
+          ],
+          adapters: [],
+          agent_engines: { writer: 'ai' },
+          mcp: {
+            writes_enabled: false,
+            calls_today: 7,
+            mcp_server_path: '/abs/repo/engine/mcp_server.py',
+            data_dir: '/abs/data',
+            clients: mcpClients,
+          },
+        });
+      }
+      if (url === '/api/coding/mcp' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body || '{}'));
+        return jsonResponse({
+          success: true,
+          writes_enabled: Boolean(body.writes_enabled),
+          calls_today: 7,
+          mcp_server_path: '/abs/repo/engine/mcp_server.py',
+          data_dir: '/abs/data',
+          clients: mcpClients,
+        });
+      }
+      return jsonResponse({});
+    });
+
+    render(<CodingAgentsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Magnm MCP server')).toBeTruthy();
+    });
+
+    expect(screen.getByText(/Magnm Studio must be running/i)).toBeTruthy();
+    expect(screen.getByTestId('mcp-calls-today').textContent).toContain('7');
+    expect(screen.getByText(claudeCmd)).toBeTruthy();
+    expect(screen.getByText(/\[mcp_servers\.magnm\]/)).toBeTruthy();
+    expect(screen.getByText(/"mcpServers"/)).toBeTruthy();
+    expect(screen.queryByText(/engine_endpoint\.json/)).toBeNull();
+
+    const toggle = screen.getByLabelText(
+      'Allow coding agents to create drafts, notes and reminders',
+    ) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+
+    fireEvent.click(toggle);
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/coding/mcp',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ writes_enabled: true }),
+        }),
+      );
+    });
+    expect(toggle.checked).toBe(true);
+
+    const copyClaudeBtn = screen.getByRole('button', { name: 'Copy Claude Code MCP config' });
+    fireEvent.click(copyClaudeBtn);
+    await waitFor(() => {
+      expect(writeTextMock).toHaveBeenCalledWith(claudeCmd);
+    });
+
+    const copyCodexBtn = screen.getByRole('button', { name: 'Copy Codex MCP config' });
+    fireEvent.click(copyCodexBtn);
+    await waitFor(() => {
+      expect(writeTextMock).toHaveBeenCalledWith(codexToml);
+    });
+  });
 });

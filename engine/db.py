@@ -1516,6 +1516,44 @@ def get_activity_lines(limit=10):
     ]
 
 
+def count_mcp_calls_today(now=None):
+    """Return the count of MCP tool calls logged today in IST (Asia/Kolkata)."""
+    ensure_init()
+    conn = connect()
+    ist = timezone(timedelta(hours=5, minutes=30))  # IST has no DST; Windows has no tz database.
+    ref = now or datetime.now(timezone.utc)
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=timezone.utc)
+    now_ist = ref.astimezone(ist)
+    start_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_ist = start_ist + timedelta(days=1)
+    start_utc = start_ist.astimezone(timezone.utc)
+    end_utc = end_ist.astimezone(timezone.utc)
+    # Query with a generous UTC window then compare parsed timestamps exactly.
+    floor_iso = (start_utc - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows = conn.execute(
+        "SELECT ts FROM activity WHERE target = 'MCP' AND ts >= ?",
+        (floor_iso,),
+    ).fetchall()
+    count = 0
+    for row in rows:
+        raw = str(row["ts"] or "").strip()
+        if not raw:
+            continue
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(raw)
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt_utc = dt.astimezone(timezone.utc)
+        if start_utc <= dt_utc < end_utc:
+            count += 1
+    return count
+
+
 def log_run(
     role=None,
     provider=None,
@@ -1923,6 +1961,34 @@ def save_research_note(note_id, title, body, url=None, source=None, agent_id=Non
         "agent_id": agent_id,
         "created_at": str(created_at),
     }
+
+
+def list_research_notes(limit=20):
+    """Return research_notes ordered newest first."""
+    ensure_init()
+    conn = connect()
+    cap = max(1, min(int(limit or 20), 500))
+    rows = conn.execute(
+        """
+        SELECT id, title, body, url, source, agent_id, created_at
+        FROM research_notes
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT ?
+        """,
+        (cap,),
+    ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "title": r["title"],
+            "body": r["body"],
+            "url": r["url"] or "",
+            "source": r["source"] or "research_notes",
+            "agent_id": r["agent_id"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
 
 
 def search_research_notes(query, limit=20):

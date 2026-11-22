@@ -365,6 +365,22 @@ export interface CodingAgentInfo {
   install_command?: string;
 }
 
+export interface McpClientConfig {
+  id: string;
+  name: string;
+  format: 'cli' | 'json' | 'toml' | string;
+  config_hint: string;
+  snippet: string;
+}
+
+export interface McpSettingsInfo {
+  writes_enabled: boolean;
+  calls_today: number;
+  mcp_server_path: string;
+  data_dir: string;
+  clients: McpClientConfig[];
+}
+
 export interface CodingOutFile {
   name: string;
   size: number;

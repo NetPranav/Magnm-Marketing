@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Card, PillButton, Row, RowList, Select, StatusDot } from '@magnm/design/react';
-import { getCodingAgents, setAgentEngine } from '../../api/coding';
-import type { CodingAgentInfo } from '../../types';
+import { Card, Checkbox, PillButton, Row, RowList, Select, StatusDot } from '@magnm/design/react';
+import { getCodingAgents, getMcpSettings, setAgentEngine, setMcpWritesEnabled } from '../../api/coding';
+import type { CodingAgentInfo, McpSettingsInfo } from '../../types';
 
 const AGENT_LABELS: Record<string, string> = {
   cmo: 'CMO',
@@ -15,11 +15,14 @@ const AGENT_LABELS: Record<string, string> = {
 
 const UNCONFINED_REASON = "Found, not enabled: this tool can't yet be confined to a workspace";
 
-/** Settings card: detected coding CLIs/adapters, confinement status, privacy note, re-detect, and per-agent engine picker. */
+/** Settings card: detected coding CLIs/adapters, confinement status, privacy note, re-detect, per-agent engine picker, and Magnm MCP server. */
 export function CodingAgentsPanel() {
   const [clis, setClis] = useState<CodingAgentInfo[]>([]);
   const [adapters, setAdapters] = useState<CodingAgentInfo[]>([]);
   const [agentEngines, setAgentEngines] = useState<Record<string, string>>({});
+  const [mcpSettings, setMcpSettings] = useState<McpSettingsInfo | null>(null);
+  const [savingMcp, setSavingMcp] = useState(false);
+  const [copiedClientId, setCopiedClientId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [savingAgent, setSavingAgent] = useState<string | null>(null);
@@ -38,6 +41,18 @@ export function CodingAgentsPanel() {
       setAgentEngines(
         res?.agent_engines && typeof res.agent_engines === 'object' ? res.agent_engines : {},
       );
+      if (res?.mcp && typeof res.mcp === 'object') {
+        setMcpSettings(res.mcp);
+      } else {
+        try {
+          const mcpRes = await getMcpSettings();
+          if (mcpRes && typeof mcpRes === 'object' && 'writes_enabled' in mcpRes) {
+            setMcpSettings(mcpRes);
+          }
+        } catch {
+          // Keep existing MCP state when engine mock omits it.
+        }
+      }
       if (refresh) {
         setNotice('Re-detected coding agents.');
       }
@@ -73,8 +88,54 @@ export function CodingAgentsPanel() {
     }
   };
 
+  const handleToggleMcpWrites = async (nextEnabled: boolean) => {
+    setError(null);
+    setNotice(null);
+    setSavingMcp(true);
+    const prev = mcpSettings;
+    setMcpSettings((cur) => (cur ? { ...cur, writes_enabled: nextEnabled } : cur));
+    try {
+      const res = await setMcpWritesEnabled(nextEnabled);
+      setMcpSettings({
+        writes_enabled: Boolean(res.writes_enabled),
+        calls_today: typeof res.calls_today === 'number' ? res.calls_today : (prev?.calls_today ?? 0),
+        mcp_server_path: res.mcp_server_path ?? prev?.mcp_server_path ?? '',
+        data_dir: res.data_dir ?? prev?.data_dir ?? '',
+        clients: Array.isArray(res.clients) ? res.clients : (prev?.clients ?? []),
+      });
+      setNotice(
+        nextEnabled
+          ? 'Coding agents can now create drafts, notes, and reminders via MCP.'
+          : 'MCP write tools disabled (read-only mode).',
+      );
+    } catch (err) {
+      setMcpSettings(prev);
+      setError(err instanceof Error ? err.message : 'Failed to update MCP write setting.');
+    } finally {
+      setSavingMcp(false);
+    }
+  };
+
+  const handleCopySnippet = async (clientId: string, snippet: string) => {
+    setError(null);
+    try {
+      if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
+        throw new Error('Clipboard unavailable');
+      }
+      await navigator.clipboard.writeText(snippet);
+      setCopiedClientId(clientId);
+      setTimeout(() => {
+        setCopiedClientId((cur) => (cur === clientId ? null : cur));
+      }, 2000);
+    } catch {
+      setError('Could not copy MCP config to clipboard.');
+    }
+  };
+
   const enabledClis = clis.filter((c) => c.installed && c.enabled);
   const agentIds = Object.keys(agentEngines);
+  const mcpClients = Array.isArray(mcpSettings?.clients) ? mcpSettings.clients : [];
+  const mcpCallsToday = typeof mcpSettings?.calls_today === 'number' ? mcpSettings.calls_today : 0;
 
   return (
     <section className="studio-section" aria-labelledby="settings-coding-agents-heading">
@@ -216,6 +277,56 @@ export function CodingAgentsPanel() {
           </div>
         </Card>
       ) : null}
+
+      <Card outline>
+        <div className="studio-stack-sm">
+          <div className="studio-section-bar">
+            <div className="mg-label">Magnm MCP server</div>
+            <span className="mg-chip" data-testid="mcp-calls-today">
+              MCP calls today: {mcpCallsToday}
+            </span>
+          </div>
+          <p className="studio-hint">
+            Connect your own coding CLI to read drafts, research notes, reminders, weekly summaries,
+            product rules, and repos. Magnm Studio must be running for the MCP tools to work.
+          </p>
+          <Checkbox
+            label="Allow coding agents to create drafts, notes and reminders"
+            checked={Boolean(mcpSettings?.writes_enabled)}
+            disabled={savingMcp || mcpSettings === null}
+            onChange={(e) => void handleToggleMcpWrites(e.target.checked)}
+          />
+
+          {mcpClients.length === 0 ? (
+            <div className="studio-hint">
+              No supported coding CLIs detected yet. Install Claude Code, Codex, Gemini CLI, or
+              Antigravity, then click Re-detect to generate the exact setup command.
+            </div>
+          ) : (
+            <div className="studio-stack-sm" aria-label="MCP setup commands">
+              {mcpClients.map((client) => (
+                <div key={client.id} className="studio-stack-xs">
+                  <div className="studio-section-bar">
+                    <div>
+                      <strong>{client.name}</strong>{' '}
+                      <span className="studio-hint">{client.config_hint}</span>
+                    </div>
+                    <PillButton
+                      variant="outline"
+                      size="sm"
+                      aria-label={`Copy ${client.name} MCP config`}
+                      onClick={() => void handleCopySnippet(client.id, client.snippet)}
+                    >
+                      {copiedClientId === client.id ? 'Copied' : 'Copy'}
+                    </PillButton>
+                  </div>
+                  <pre className="studio-coding-summary-text">{client.snippet}</pre>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </Card>
     </section>
   );
 }
