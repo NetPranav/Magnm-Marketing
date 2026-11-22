@@ -1224,6 +1224,17 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.send_json(social_service.login_cancel())
                 return
 
+            if parts == ["runs"]:
+                run_obj = social_service.create_run_request(
+                    platform=params.get("platform"),
+                    recipe=params.get("recipe"),
+                    argument=params.get("argument"),
+                    requested_by="user",
+                    session_id=params.get("session_id"),
+                )
+                self.send_json({"success": True, "run": run_obj})
+                return
+
             if len(parts) == 3 and parts[0] == "runs" and parts[2] == "start":
                 run_obj = social_service.start_run(
                     parts[1],
@@ -1234,6 +1245,11 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
             if len(parts) == 3 and parts[0] == "runs" and parts[2] == "cancel":
                 run_obj = social_service.cancel_run(parts[1])
+                self.send_json({"success": True, "run": run_obj})
+                return
+
+            if len(parts) == 3 and parts[0] == "runs" and parts[2] == "summarise":
+                run_obj = social_service.summarise_run(parts[1])
                 self.send_json({"success": True, "run": run_obj})
                 return
 

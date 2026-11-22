@@ -11,6 +11,10 @@ import {
   type StatusState,
 } from '@magnm/design/react';
 import { validateMetricInputs } from '../metrics';
+import {
+  SocialResearchPanel,
+  type SocialResearchPanelProps,
+} from './SocialResearchPanel';
 import type {
   LaptopStatus,
   MetricProposal,
@@ -44,6 +48,7 @@ export interface TodayTabProps {
     platform: string | null,
     contentId: string | null,
   ) => Promise<boolean>;
+  socialResearch?: Omit<SocialResearchPanelProps, 'idPrefix'>;
 }
 
 function formatMetricInput(metrics: Record<string, number | null> | undefined): Record<string, string> {
@@ -73,6 +78,7 @@ export function TodayTab({
   onMarkAllNotificationsRead,
   onOpenNotification,
   onConfirmResult,
+  socialResearch,
 }: TodayTabProps) {
   const [editingProposalId, setEditingProposalId] = useState<string | null>(null);
   const [editedMetrics, setEditedMetrics] = useState<Record<string, string>>({});
@@ -416,6 +422,8 @@ export function TodayTab({
           )}
         </div>
       </Card>
+
+      {socialResearch ? <SocialResearchPanel idPrefix="today" {...socialResearch} /> : null}
     </section>
   );
 }

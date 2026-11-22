@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Dialog, NumberedTabs, PillButton, StatusDot, Wordmark, type TabItem } from '@magnm/design/react';
 import {
   ConfidentialRefusalError,
+  cancelLaptopSocialRun,
   confirmLaptopResults,
+  createLaptopSocialRun,
   extractLaptopResults,
   fetchLaptopAgents,
   fetchLaptopDraftDetail,
@@ -11,6 +13,8 @@ import {
   fetchLaptopPendingResults,
   fetchLaptopPitchProposals,
   fetchLaptopReminders,
+  fetchLaptopSocialRuns,
+  fetchLaptopSocialStatus,
   fetchLaptopStatus,
   fetchLaptopSummary,
   fetchOwnMirrorRecords,
@@ -22,9 +26,12 @@ import {
   postLaptopInboxBatch,
   postLaptopNotificationsRead,
   postLaptopReminderDone,
+  postLaptopSocialChallenge,
   ProductRulesUnavailableError,
   sendPhoneLiteMessage,
   shareLaptopDraftFile,
+  startLaptopSocialRun,
+  summariseLaptopSocialRun,
 } from './api';
 import {
   fetchAccountProfile,
@@ -48,6 +55,7 @@ import { DraftsTab } from './components/DraftsTab';
 import { MoreTab } from './components/MoreTab';
 import { PitchTab } from './components/PitchTab';
 import { ShareInModal } from './components/ShareInModal';
+import { SocialLiveView } from './components/SocialLiveView';
 import { TodayTab } from './components/TodayTab';
 import { getNativeBridge, type NativeBridge, type SharedItem } from './native';
 import { HttpStatusError, NetworkPolicyError } from './net';
@@ -82,6 +90,10 @@ import type {
   QueueItemKind,
   QueuedInboxItem,
   ReminderItem,
+  SocialPlatform,
+  SocialRecipe,
+  SocialRunRecord,
+  SocialStatusInfo,
   WeeklySummary,
 } from './types';
 
@@ -173,6 +185,8 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
   const pairingCancelledRef = useRef(false);
   const pairingGenRef = useRef(0);
   const appGenRef = useRef(0);
+  const socialGenRef = useRef(0);
+  const isForegroundRef = useRef(true);
   const handledDeepLinksRef = useRef(new Set<string>());
 
   const [accountInitialized, setAccountInitialized] = useState(false);
@@ -215,6 +229,13 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
   const [chatError, setChatError] = useState<string | null>(null);
   const [chatBusy, setChatBusy] = useState(false);
 
+  // Social research state lives strictly in memory; never persisted to cache or localStorage.
+  const [socialStatus, setSocialStatus] = useState<SocialStatusInfo | null>(null);
+  const [socialRuns, setSocialRuns] = useState<SocialRunRecord[]>([]);
+  const [socialLiveOpen, setSocialLiveOpen] = useState(false);
+  const [socialError, setSocialError] = useState<string | null>(null);
+  const [isForeground, setIsForeground] = useState(true);
+
   const [todayError, setTodayError] = useState<string | null>(null);
   const [draftsError, setDraftsError] = useState<string | null>(null);
   const [moreError, setMoreError] = useState<string | null>(null);
@@ -244,6 +265,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
   sessionRef.current = session;
   const backStateRef = useRef({
     confirmOpen: false,
+    socialLiveOpen: false,
     shareOpen: false,
     pitchPresentOpen: false,
     draftOpen: false,
@@ -251,6 +273,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
   });
   backStateRef.current = {
     confirmOpen: Boolean(confirmDialog),
+    socialLiveOpen,
     shareOpen: sharedQueue.length > 0,
     pitchPresentOpen: Boolean(presentingPitch),
     draftOpen: Boolean(selectedDraft),
@@ -270,6 +293,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
   const resetAllInMemoryState = useCallback((options: { keepAccount?: boolean } = {}) => {
     appGenRef.current += 1;
     pairingGenRef.current += 1;
+    socialGenRef.current += 1;
     pairingCancelledRef.current = true;
     if (pollTimerRef.current !== null) {
       clearTimeout(pollTimerRef.current);
@@ -309,6 +333,10 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
     setSelectedAgentId('writer');
     setChatMessages([]);
     setChatError(null);
+    setSocialStatus(null);
+    setSocialRuns([]);
+    setSocialLiveOpen(false);
+    setSocialError(null);
     setTodayError(null);
     setDraftsError(null);
     setMoreError(null);
@@ -404,8 +432,11 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
         return;
       }
       const gen = appGenRef.current;
+      const socGen = socialGenRef.current;
       const stateGen = getStateGeneration();
       const isStale = () => appGenRef.current !== gen || getStateGeneration() !== stateGen;
+      const isSocialStale = () =>
+        isStale() || socialGenRef.current !== socGen || !isForegroundRef.current;
 
       setBusyAction('refresh');
       setTodayError(null);
@@ -417,19 +448,44 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
         setLaptopReachable(true);
         setLaptopStatus(statusRes);
 
-        const [draftsRes, remRes, notifRes, sumRes, resPending, agentsRes, pitchRes] =
-          await Promise.allSettled([
-            fetchLaptopDrafts(activePairing, 30, bridge),
-            fetchLaptopReminders(activePairing, bridge),
-            fetchLaptopNotifications(activePairing, bridge),
-            fetchLaptopSummary(activePairing, bridge),
-            fetchLaptopPendingResults(activePairing, bridge),
-            fetchLaptopAgents(activePairing, bridge),
-            fetchLaptopPitchProposals(activePairing, bridge),
-          ]);
+        const [
+          draftsRes,
+          remRes,
+          notifRes,
+          sumRes,
+          resPending,
+          agentsRes,
+          pitchRes,
+          socStatusRes,
+          socRunsRes,
+        ] = await Promise.allSettled([
+          fetchLaptopDrafts(activePairing, 30, bridge),
+          fetchLaptopReminders(activePairing, bridge),
+          fetchLaptopNotifications(activePairing, bridge),
+          fetchLaptopSummary(activePairing, bridge),
+          fetchLaptopPendingResults(activePairing, bridge),
+          fetchLaptopAgents(activePairing, bridge),
+          fetchLaptopPitchProposals(activePairing, bridge),
+          isForegroundRef.current
+            ? fetchLaptopSocialStatus(activePairing, bridge)
+            : Promise.resolve(null),
+          isForegroundRef.current
+            ? fetchLaptopSocialRuns(activePairing, 30, bridge)
+            : Promise.resolve(null),
+        ]);
         if (isStale()) return;
 
-        const settled = [draftsRes, remRes, notifRes, sumRes, resPending, agentsRes, pitchRes];
+        const settled = [
+          draftsRes,
+          remRes,
+          notifRes,
+          sumRes,
+          resPending,
+          agentsRes,
+          pitchRes,
+          socStatusRes,
+          socRunsRes,
+        ];
         const authErr = settled.find(
           (r): r is PromiseRejectedResult =>
             r.status === 'rejected' && r.reason instanceof LaptopAuthError,
@@ -477,6 +533,14 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
           snapshotUpdate.pitchProposals = pitchRes.value;
           snapshotUpdate.pitchPricesAsOf = syncedAt;
         }
+        if (!isSocialStale()) {
+          if (socStatusRes.status === 'fulfilled' && socStatusRes.value) {
+            setSocialStatus(socStatusRes.value);
+          }
+          if (socRunsRes.status === 'fulfilled' && Array.isArray(socRunsRes.value)) {
+            setSocialRuns(socRunsRes.value);
+          }
+        }
 
         saveLaptopSnapshot(activePairing.deviceId, snapshotUpdate);
         setCacheVersion((v) => v + 1);
@@ -487,15 +551,27 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
           );
           if (isStale()) return;
           setQueueItems(getBoundQueueItems(activePairing.deviceId));
-          if (flushRes.acknowledgedIds.length > 0 && draftsRes.status === 'fulfilled') {
-            try {
-              const refreshedDrafts = await fetchLaptopDrafts(activePairing, 30, bridge);
-              if (!isStale()) {
-                setDrafts(refreshedDrafts);
-                saveLaptopSnapshot(activePairing.deviceId, { drafts: refreshedDrafts });
+          if (flushRes.acknowledgedIds.length > 0) {
+            if (draftsRes.status === 'fulfilled') {
+              try {
+                const refreshedDrafts = await fetchLaptopDrafts(activePairing, 30, bridge);
+                if (!isStale()) {
+                  setDrafts(refreshedDrafts);
+                  saveLaptopSnapshot(activePairing.deviceId, { drafts: refreshedDrafts });
+                }
+              } catch {
+                // Secondary drafts reload failure does not mark laptop offline.
               }
-            } catch {
-              // Secondary drafts reload failure does not mark laptop offline.
+            }
+            if (!isSocialStale()) {
+              try {
+                const refreshedRuns = await fetchLaptopSocialRuns(activePairing, 30, bridge);
+                if (!isSocialStale()) {
+                  setSocialRuns(refreshedRuns);
+                }
+              } catch {
+                // Non-fatal if social runs route unavailable.
+              }
             }
           }
         } catch (flushErr) {
@@ -586,19 +662,42 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
 
   useEffect(() => {
     const handleResume = () => {
+      isForegroundRef.current = true;
+      setIsForeground(true);
       void checkSharedItems();
       void refreshLaptop(pairingRef.current, sessionRef.current);
     };
-    if (bridge.onResume) {
-      return bridge.onResume(handleResume);
-    }
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') {
-        handleResume();
-      }
+    const handleBackground = () => {
+      isForegroundRef.current = false;
+      setIsForeground(false);
+      socialGenRef.current += 1;
+      setSocialLiveOpen(false);
+      setSocialRuns([]);
+      setSocialStatus(null);
+      setSocialError(null);
     };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
+
+    const unsubs: Array<() => void> = [];
+    if (bridge.onResume) {
+      unsubs.push(bridge.onResume(handleResume));
+    }
+    if (bridge.onBackground) {
+      unsubs.push(bridge.onBackground(handleBackground));
+    }
+    if (!bridge.onResume || !bridge.onBackground) {
+      const onVis = () => {
+        if (document.visibilityState === 'hidden') {
+          if (!bridge.onBackground) handleBackground();
+        } else if (document.visibilityState === 'visible') {
+          if (!bridge.onResume) handleResume();
+        }
+      };
+      document.addEventListener('visibilitychange', onVis);
+      unsubs.push(() => document.removeEventListener('visibilitychange', onVis));
+    }
+    return () => {
+      for (const fn of unsubs) fn();
+    };
   }, [bridge, checkSharedItems, refreshLaptop]);
 
   useEffect(() => {
@@ -607,6 +706,10 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
       const state = backStateRef.current;
       if (state.confirmOpen) {
         setConfirmDialog(null);
+        return;
+      }
+      if (state.socialLiveOpen) {
+        setSocialLiveOpen(false);
         return;
       }
       if (state.shareOpen) {
@@ -638,11 +741,101 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
       pairingCancelledRef.current = true;
       pairingGenRef.current += 1;
       appGenRef.current += 1;
+      socialGenRef.current += 1;
       if (pollTimerRef.current !== null) {
         clearTimeout(pollTimerRef.current);
       }
     };
   }, []);
+
+  const hasActiveSocialRun = Boolean(
+    socialLiveOpen ||
+      socialStatus?.active_run?.status === 'running' ||
+      socialStatus?.active_run?.status === 'waiting_user' ||
+      socialRuns.some((r) => r.status === 'running' || r.status === 'waiting_user'),
+  );
+
+  const socialStatusRef = useRef(socialStatus);
+  socialStatusRef.current = socialStatus;
+
+  useEffect(() => {
+    const activePairing = pairing;
+    if (!isForeground || !activePairing || !laptopReachable) {
+      return undefined;
+    }
+    // The status is small, so an idle phone can watch it; the runs are fetched only when it changes.
+    const intervalMs = hasActiveSocialRun ? 2500 : 10000;
+    const activeKey = (st: SocialStatusInfo | null) =>
+      st?.active_run ? `${st.active_run.id}:${st.active_run.status}` : '';
+
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const gen = appGenRef.current;
+    const socGen = socialGenRef.current;
+    const stateGen = getStateGeneration();
+
+    const isStale = () =>
+      disposed ||
+      !isForegroundRef.current ||
+      appGenRef.current !== gen ||
+      socialGenRef.current !== socGen ||
+      getStateGeneration() !== stateGen;
+
+    const pollSocial = async () => {
+      if (isStale()) return;
+      try {
+        const stRes = await fetchLaptopSocialStatus(activePairing, bridge);
+        if (isStale()) return;
+        if (activeKey(stRes) !== activeKey(socialStatusRef.current) || (hasActiveSocialRun && !stRes?.active_run)) {
+          const runsRes = await fetchLaptopSocialRuns(activePairing, 30, bridge);
+          if (isStale()) return;
+          setSocialRuns(runsRes);
+        }
+        setSocialStatus(stRes);
+      } catch (err) {
+        if (isStale()) return;
+        if (err instanceof LaptopAuthError) {
+          setLaptopAuthError(err.message);
+          setLaptopReachable(false);
+          return;
+        }
+      }
+      if (!isStale()) {
+        timer = setTimeout(() => {
+          void pollSocial();
+        }, intervalMs);
+      }
+    };
+
+    timer = setTimeout(() => {
+      void pollSocial();
+    }, intervalMs);
+
+    return () => {
+      disposed = true;
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [isForeground, pairing, laptopReachable, hasActiveSocialRun, bridge]);
+
+  const waitingSocialRun = useMemo(() => {
+    const fromList = socialRuns.find((r) => r.status === 'waiting_user');
+    if (fromList) return fromList;
+    if (socialStatus?.active_run?.status === 'waiting_user') {
+      return socialStatus.active_run;
+    }
+    return null;
+  }, [socialRuns, socialStatus]);
+
+  useEffect(() => {
+    if (socialLiveOpen && (!waitingSocialRun || waitingSocialRun.status !== 'waiting_user')) {
+      setSocialLiveOpen(false);
+    }
+  }, [socialLiveOpen, waitingSocialRun]);
+
+  const queuedSocialRequests = useMemo(
+    () => queueItems.filter((item) => item.kind === 'social_request'),
+    [queueItems],
+  );
 
   const cacheSnapshot = useMemo(() => {
     void cacheVersion;
@@ -1039,6 +1232,8 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
             createdAt: nowIso,
           },
         ]);
+        // The agent may have asked for a social run: show its card, with Start, straight away.
+        void reloadSocialRuns(activePairing);
         return true;
       }
 
@@ -1275,6 +1470,246 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
     setShareError(null);
   }
 
+  async function reloadSocialRuns(target: PairingConfig): Promise<void> {
+    const gen = appGenRef.current;
+    const socGen = socialGenRef.current;
+    const stateGen = getStateGeneration();
+    try {
+      const runs = await fetchLaptopSocialRuns(target, 30, bridge);
+      if (
+        appGenRef.current !== gen ||
+        socialGenRef.current !== socGen ||
+        getStateGeneration() !== stateGen ||
+        !isForegroundRef.current
+      ) {
+        return;
+      }
+      setSocialRuns(runs);
+    } catch {
+      // The next poll or refresh shows them.
+    }
+  }
+
+  function mergeSocialRun(incoming: SocialRunRecord) {
+    setSocialRuns((prev) => {
+      const idx = prev.findIndex((r) => r.id === incoming.id);
+      if (idx === -1) return [incoming, ...prev];
+      return prev.map((r, i) => (i === idx ? { ...r, ...incoming } : r));
+    });
+  }
+
+  async function handleCreateSocialRun(payload: {
+    platform: SocialPlatform;
+    recipe: SocialRecipe;
+    argument: string;
+  }): Promise<boolean> {
+    const activePairing = pairingRef.current;
+    if (!activePairing?.deviceId) {
+      setSocialError('Pair with your laptop before requesting social research.');
+      return false;
+    }
+    const gen = appGenRef.current;
+    const socGen = socialGenRef.current;
+    const stateGen = getStateGeneration();
+    const isStale = () =>
+      appGenRef.current !== gen ||
+      socialGenRef.current !== socGen ||
+      getStateGeneration() !== stateGen ||
+      !isForegroundRef.current;
+
+    setSocialError(null);
+    setBusyAction('social-create');
+    try {
+      if (laptopReachable) {
+        try {
+          const res = await createLaptopSocialRun(activePairing, payload, bridge);
+          if (isStale()) return false;
+          if (res?.run) {
+            mergeSocialRun(res.run);
+            showToast('Social run created (tap Start to run)');
+            return true;
+          }
+        } catch (err) {
+          if (isStale()) return false;
+          if (!isLaptopNetworkError(err)) {
+            handleLaptopActionError(err);
+            setSocialError(err instanceof Error ? err.message : 'Could not create social run.');
+            return false;
+          }
+          handleLaptopActionError(err);
+          // Fall through to queue when laptop went unreachable.
+        }
+      }
+
+      enqueueInboxItem({
+        kind: 'social_request',
+        title: `${payload.platform} ${payload.recipe}`,
+        body: payload.argument,
+        platform: payload.platform,
+        recipe: payload.recipe,
+        argument: payload.argument,
+        ownerUid: sessionRef.current?.user_id || '',
+        laptopDeviceId: activePairing.deviceId,
+      });
+      refreshQueueState(activePairing);
+      showToast('Queued social request for laptop sync');
+      return true;
+    } catch (err) {
+      if (!isStale()) {
+        setSocialError(err instanceof Error ? err.message : 'Could not queue social request.');
+      }
+      return false;
+    } finally {
+      if (appGenRef.current === gen && getStateGeneration() === stateGen) {
+        setBusyAction(null);
+      }
+    }
+  }
+
+  async function handleStartSocialRun(run: SocialRunRecord): Promise<void> {
+    const activePairing = pairingRef.current;
+    if (!activePairing || !run.approval_hash) return;
+    const gen = appGenRef.current;
+    const socGen = socialGenRef.current;
+    const stateGen = getStateGeneration();
+    const isStale = () =>
+      appGenRef.current !== gen ||
+      socialGenRef.current !== socGen ||
+      getStateGeneration() !== stateGen ||
+      !isForegroundRef.current;
+
+    setSocialError(null);
+    setBusyAction(`social-start-${run.id}`);
+    try {
+      const res = await startLaptopSocialRun(activePairing, run.id, run.approval_hash, bridge);
+      if (isStale()) return;
+      if (res?.run) mergeSocialRun(res.run);
+      showToast('Social run started');
+    } catch (err) {
+      if (isStale()) return;
+      handleLaptopActionError(err);
+      setSocialError(err instanceof Error ? err.message : 'Could not start social run.');
+    } finally {
+      if (appGenRef.current === gen && getStateGeneration() === stateGen) {
+        setBusyAction(null);
+      }
+    }
+  }
+
+  async function handleCancelSocialRun(runId: string): Promise<void> {
+    const activePairing = pairingRef.current;
+    if (!activePairing) return;
+    const gen = appGenRef.current;
+    const socGen = socialGenRef.current;
+    const stateGen = getStateGeneration();
+    const isStale = () =>
+      appGenRef.current !== gen ||
+      socialGenRef.current !== socGen ||
+      getStateGeneration() !== stateGen ||
+      !isForegroundRef.current;
+
+    setSocialError(null);
+    setBusyAction(`social-cancel-${runId}`);
+    try {
+      const res = await cancelLaptopSocialRun(activePairing, runId, bridge);
+      if (isStale()) return;
+      if (res?.run) mergeSocialRun(res.run);
+      if (waitingSocialRun?.id === runId) {
+        setSocialLiveOpen(false);
+      }
+      showToast('Social run stopped');
+    } catch (err) {
+      if (isStale()) return;
+      handleLaptopActionError(err);
+      setSocialError(err instanceof Error ? err.message : 'Could not stop social run.');
+    } finally {
+      if (appGenRef.current === gen && getStateGeneration() === stateGen) {
+        setBusyAction(null);
+      }
+    }
+  }
+
+  async function handleSummariseSocialRun(runId: string): Promise<void> {
+    const activePairing = pairingRef.current;
+    if (!activePairing) return;
+    const gen = appGenRef.current;
+    const socGen = socialGenRef.current;
+    const stateGen = getStateGeneration();
+    const isStale = () =>
+      appGenRef.current !== gen ||
+      socialGenRef.current !== socGen ||
+      getStateGeneration() !== stateGen ||
+      !isForegroundRef.current;
+
+    setSocialError(null);
+    setBusyAction(`summarise-${runId}`);
+    try {
+      const res = await summariseLaptopSocialRun(activePairing, runId, bridge);
+      if (isStale()) return;
+      if (res?.run) mergeSocialRun(res.run);
+    } catch (err) {
+      if (isStale()) return;
+      handleLaptopActionError(err);
+      setSocialError(err instanceof Error ? err.message : 'Could not summarise social run.');
+    } finally {
+      if (appGenRef.current === gen && getStateGeneration() === stateGen) {
+        setBusyAction(null);
+      }
+    }
+  }
+
+  async function handleSocialChallengeAction(
+    action: 'later' | 'skip',
+    runId: string,
+  ): Promise<void> {
+    const activePairing = pairingRef.current;
+    if (!activePairing) return;
+    const gen = appGenRef.current;
+    const socGen = socialGenRef.current;
+    const stateGen = getStateGeneration();
+    const isStale = () =>
+      appGenRef.current !== gen ||
+      socialGenRef.current !== socGen ||
+      getStateGeneration() !== stateGen ||
+      !isForegroundRef.current;
+
+    setSocialError(null);
+    setBusyAction(`social-challenge-${action}`);
+    try {
+      const res = await postLaptopSocialChallenge(activePairing, action, runId, bridge);
+      if (isStale()) return;
+      if (res?.run) mergeSocialRun(res.run);
+      setSocialLiveOpen(false);
+    } catch (err) {
+      if (isStale()) return;
+      handleLaptopActionError(err);
+      setSocialError(err instanceof Error ? err.message : 'Could not update security check.');
+    } finally {
+      if (appGenRef.current === gen && getStateGeneration() === stateGen) {
+        setBusyAction(null);
+      }
+    }
+  }
+
+  const socialResearchProps = {
+    paired: Boolean(pairing),
+    laptopReachable,
+    socialStatus,
+    socialRuns,
+    queuedSocialRequests,
+    busyAction,
+    errorMessage: socialError,
+    onCreateRun: handleCreateSocialRun,
+    onStartRun: handleStartSocialRun,
+    onCancelRun: handleCancelSocialRun,
+    onSummariseRun: handleSummariseSocialRun,
+    onChallengeAction: handleSocialChallengeAction,
+    onSolveNow: (run: SocialRunRecord) => {
+      mergeSocialRun(run);
+      setSocialLiveOpen(true);
+    },
+  };
+
   const isPresentingPitch = Boolean(presentingPitch);
 
   return (
@@ -1451,6 +1886,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
                 }
               }
             }}
+            socialResearch={socialResearchProps}
           />
         ) : null}
 
@@ -1512,6 +1948,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
             errorMessage={chatError}
             onSendMessage={handleSendChatMessage}
             onDictate={() => bridge.dictate()}
+            socialResearch={socialResearchProps}
           />
         ) : null}
 
@@ -1768,6 +2205,25 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
           {toast}
         </div>
       ) : null}
+
+      <SocialLiveView
+        open={socialLiveOpen && Boolean(waitingSocialRun && waitingSocialRun.status === 'waiting_user')}
+        foreground={isForeground}
+        pairing={pairing}
+        run={waitingSocialRun}
+        bridge={bridge}
+        sessionGen={socialGenRef.current}
+        getSessionGen={() => socialGenRef.current}
+        onClose={() => setSocialLiveOpen(false)}
+        onCleared={(clearedRun) => {
+          if (clearedRun) mergeSocialRun(clearedRun);
+          setSocialLiveOpen(false);
+          if (pairingRef.current && isForegroundRef.current) {
+            void reloadSocialRuns(pairingRef.current);
+          }
+        }}
+        onAuthError={handleLaptopActionError}
+      />
     </div>
   );
 }

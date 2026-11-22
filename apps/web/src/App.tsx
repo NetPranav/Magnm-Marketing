@@ -7,10 +7,13 @@ import {
   markNotificationsRead,
   type NotificationRecord,
 } from './api/notifications';
+import { getSocialRun, getSocialStatus } from './api/social';
 import { NotificationBell } from './components/NotificationBell';
+import { SocialChallengeBanner } from './components/SocialChallengeBanner';
+import { SocialLiveModal } from './components/SocialLiveModal';
 import { StudioShell } from './components/StudioShell';
 import { listenDesktopNotificationClick } from './desktop';
-import { EventsProvider, useRootEventBus } from './events';
+import { EventsProvider, useFallbackPoll, useRootEventBus } from './events';
 import { showSystemNotification } from './notifications';
 import {
   ADMIN_SECTION,
@@ -35,7 +38,7 @@ import { ReviewSection } from './sections/review/ReviewSection';
 import { SettingsSection } from './sections/settings/SettingsSection';
 import { TeamSection } from './sections/team/TeamSection';
 import { TodaySection } from './sections/today/TodaySection';
-import type { EngineStatusInfo, HealthInfo, JobRecord } from './types';
+import type { EngineStatusInfo, HealthInfo, JobRecord, SocialRunRecord } from './types';
 
 function mergeJobUpdate(prev: JobRecord[], incoming: JobRecord): JobRecord[] {
   const index = prev.findIndex((item) => item.id === incoming.id);
@@ -81,6 +84,10 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [waitingSocialRun, setWaitingSocialRun] = useState<SocialRunRecord | null>(null);
+  const [socialLiveOpen, setSocialLiveOpen] = useState(false);
+  const waitingSocialRunRef = useRef<SocialRunRecord | null>(null);
+  waitingSocialRunRef.current = waitingSocialRun;
   const prevEventsStateRef = useRef<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const notifMutationSeqRef = useRef(0);
@@ -111,6 +118,21 @@ export function App() {
       }
     } catch {
       // Non-fatal if notifications endpoint is unavailable in isolated tests.
+    }
+  }, []);
+
+  const loadSocialChallenge = useCallback(async () => {
+    try {
+      const st = await getSocialStatus();
+      const active = st?.active_run;
+      if (active && active.status === 'waiting_user') {
+        setWaitingSocialRun(active);
+      } else {
+        setWaitingSocialRun(null);
+        setSocialLiveOpen(false);
+      }
+    } catch {
+      // Non-fatal if social status endpoint is unavailable in isolated tests.
     }
   }, []);
 
@@ -207,8 +229,9 @@ export function App() {
     if (!sessionEnded) {
       void loadSummary();
       void loadNotifications();
+      void loadSocialChallenge();
     }
-  }, [sessionEnded, loadSummary, loadNotifications]);
+  }, [sessionEnded, loadSummary, loadNotifications, loadSocialChallenge]);
 
   useEffect(() => {
     return listenDesktopNotificationClick((routeStr) => {
@@ -253,13 +276,43 @@ export function App() {
           setUnreadCount((prev) => prev + 1);
         }
         void showSystemNotification(data, navigateToRoute);
+        if (data.kind === 'social_challenge') {
+          void loadSocialChallenge();
+        }
+      } else if (eventName === 'social_run.status' && data && typeof data === 'object') {
+        const ev = data as Partial<SocialRunRecord>;
+        if (!ev.id) return;
+        if (ev.status === 'waiting_user') {
+          void getSocialRun(ev.id)
+            .then((full) => {
+              if (full.status === 'waiting_user') {
+                setWaitingSocialRun(full);
+              }
+            })
+            .catch(() => {
+              void loadSocialChallenge();
+            });
+        } else if (waitingSocialRunRef.current?.id === ev.id) {
+          setWaitingSocialRun(null);
+          setSocialLiveOpen(false);
+        }
+      } else if (eventName === 'social_challenge_cleared') {
+        setWaitingSocialRun(null);
+        setSocialLiveOpen(false);
       }
     },
-    [navigateToRoute, showToast],
+    [navigateToRoute, showToast, loadSocialChallenge],
   );
 
   const eventBus = useRootEventBus(handleEvent);
   const eventsState = eventBus.state;
+
+  useFallbackPoll(
+    loadSocialChallenge,
+    Boolean(waitingSocialRun || socialLiveOpen) && !sessionEnded,
+    eventsState,
+    5000,
+  );
 
   useEffect(() => {
     const prev = prevEventsStateRef.current;
@@ -267,8 +320,9 @@ export function App() {
     if (prev !== null && prev !== 'open' && eventsState === 'open' && !sessionEnded) {
       void loadSummary();
       void loadNotifications();
+      void loadSocialChallenge();
     }
-  }, [eventsState, sessionEnded, loadSummary, loadNotifications]);
+  }, [eventsState, sessionEnded, loadSummary, loadNotifications, loadSocialChallenge]);
 
   const handleSelectNotification = useCallback(
     (item: NotificationRecord) => {
@@ -442,8 +496,30 @@ export function App() {
           />
         }
       >
+        {waitingSocialRun && waitingSocialRun.status === 'waiting_user' ? (
+          <div className="studio-social-alert-wrap">
+            <SocialChallengeBanner
+              run={waitingSocialRun}
+              onSolveNow={() => setSocialLiveOpen(true)}
+              onResolved={() => {
+                setWaitingSocialRun(null);
+                setSocialLiveOpen(false);
+              }}
+            />
+          </div>
+        ) : null}
         {renderSection()}
       </StudioShell>
+      <SocialLiveModal
+        open={socialLiveOpen && Boolean(waitingSocialRun && waitingSocialRun.status === 'waiting_user')}
+        run={waitingSocialRun}
+        onClose={() => setSocialLiveOpen(false)}
+        onCheckStatus={() => void loadSocialChallenge()}
+        onCleared={() => {
+          setWaitingSocialRun(null);
+          setSocialLiveOpen(false);
+        }}
+      />
       {toast ? (
         <div className="studio-toast" role="status" aria-live="polite">
           {toast}

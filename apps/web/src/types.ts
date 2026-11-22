@@ -666,3 +666,84 @@ export interface LearningRecord {
   created_at: string;
   decided_at?: string | null;
 }
+
+export type SocialPlatform = 'instagram' | 'x' | 'linkedin';
+export type SocialRecipe = 'profile_posts' | 'search' | 'post_replies' | 'trending';
+
+export interface SocialPlatformStatus {
+  platform: SocialPlatform;
+  enabled: boolean;
+  acknowledged_at?: string | null;
+  has_session: boolean;
+  paused: boolean;
+  paused_until?: string | null;
+  pause_reason?: string | null;
+  pages_today: number;
+  daily_limit: number;
+  challenges_24h: number;
+}
+
+export interface SocialRunResult {
+  platform?: string;
+  recipe?: string;
+  url?: string;
+  text?: string;
+  pages_used?: number;
+  untrusted?: boolean;
+  note?: string;
+  fetched_at?: string;
+  ai_summary?: string | null;
+  ai_summary_model?: string | null;
+  ai_summary_untrusted?: boolean;
+  ai_summarised_at?: string | null;
+}
+
+export interface SocialRunRecord {
+  id: string;
+  platform: SocialPlatform | string;
+  recipe: SocialRecipe | string;
+  argument: string;
+  status:
+    | 'awaiting_start'
+    | 'running'
+    | 'waiting_user'
+    | 'done'
+    | 'incomplete'
+    | 'cancelled'
+    | 'failed'
+    | string;
+  approval_hash?: string | null;
+  approved_at?: string | null;
+  approval_consumed?: boolean;
+  requested_by?: string | null;
+  session_id?: string | null;
+  pages_used?: number;
+  challenge_kind?: string | null;
+  challenge_detected_at?: string | null;
+  challenge_notif_id?: string | null;
+  result?: SocialRunResult | null;
+  summary?: string | null;
+  error?: string | null;
+  created_at?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  updated_at?: string;
+}
+
+export interface SocialStatusInfo {
+  platforms: Record<SocialPlatform, SocialPlatformStatus>;
+  active_run: SocialRunRecord | null;
+  login: {
+    active: boolean;
+    platform: SocialPlatform | string | null;
+    started_at?: string | null;
+  };
+  acknowledgement_summary: string;
+  limits: {
+    pages_per_run: number;
+    pages_per_day: number;
+    nav_cooldown_s: number;
+    active_time_s: number;
+    challenge_timeout_s: number;
+  };
+}

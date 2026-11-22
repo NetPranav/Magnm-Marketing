@@ -15,8 +15,9 @@ import {
   type RosterAgent,
   type TeamMessage,
 } from '../../api/team';
+import { getSocialRun, listSocialRuns } from '../../api/social';
 import { useStudioEvents } from '../../events';
-import type { AgentSession } from '../../types';
+import type { AgentSession, SocialRunRecord } from '../../types';
 import { MentionComposer } from '../../ui/MentionComposer';
 import { AgentRoster } from './AgentRoster';
 import { CodingRunsPanel } from './CodingRunsPanel';
@@ -40,6 +41,7 @@ export function TeamSection() {
   const [directHistory, setDirectHistory] = useState<DirectChatTurn[]>([]);
   const [assets, setAssets] = useState<AssetRecord[]>([]);
   const [waitingSessions, setWaitingSessions] = useState<AgentSession[]>([]);
+  const [socialRuns, setSocialRuns] = useState<SocialRunRecord[]>([]);
   const [liveProgress, setLiveProgress] = useState<StepProgress | null>(null);
 
   const [composerText, setComposerText] = useState('');
@@ -53,11 +55,20 @@ export function TeamSection() {
   const [error, setError] = useState<string | null>(null);
   const [showMemory, setShowMemory] = useState(true);
 
+  const upsertSocialRun = useCallback((incoming: SocialRunRecord) => {
+    setSocialRuns((prev) => {
+      const idx = prev.findIndex((r) => r.id === incoming.id);
+      if (idx === -1) return [incoming, ...prev];
+      return prev.map((r, i) => (i === idx ? { ...r, ...incoming } : r));
+    });
+  }, []);
+
   const loadRosterAndAssets = useCallback(async () => {
-    const [rosterRes, assetsRes, sessRes] = await Promise.allSettled([
+    const [rosterRes, assetsRes, sessRes, socialRes] = await Promise.allSettled([
       getRoster(),
       listAssets(),
       listSessions(10, 'waiting_user'),
+      listSocialRuns(50),
     ]);
 
     if (rosterRes.status === 'fulfilled') {
@@ -72,6 +83,10 @@ export function TeamSection() {
 
     if (sessRes.status === 'fulfilled') {
       setWaitingSessions(Array.isArray(sessRes.value) ? sessRes.value : []);
+    }
+
+    if (socialRes.status === 'fulfilled') {
+      setSocialRuns(Array.isArray(socialRes.value) ? socialRes.value : []);
     }
 
     setLoadingRoster(false);
@@ -164,9 +179,21 @@ export function TeamSection() {
               .then((turns) => setDirectHistory(Array.isArray(turns) ? turns : []))
               .catch(() => {});
           }
+          void listSocialRuns(50)
+            .then((runs) => setSocialRuns(runs))
+            .catch(() => {});
+          return;
+        }
+
+        if (eventName === 'social_run.status' && data && typeof data === 'object') {
+          const ev = data as Partial<SocialRunRecord>;
+          if (!ev.id) return;
+          void getSocialRun(ev.id)
+            .then((full) => upsertSocialRun(full))
+            .catch(() => {});
         }
       },
-      [selectedTarget],
+      [selectedTarget, upsertSocialRun],
     ),
   );
 
@@ -197,6 +224,7 @@ export function TeamSection() {
           authorLabel,
           timestamp: m.timestamp,
           text: m.text,
+          sessionId: m.session_id,
           modelUsed: m.model_used,
           attachedAssets: m.attached_assets,
           contentIds: m.content_ids,
@@ -211,6 +239,7 @@ export function TeamSection() {
       authorLabel: turn.sender === 'user' ? 'You' : turn.name || `@${turn.sender}`,
       timestamp: turn.timestamp,
       text: turn.text,
+      sessionId: turn.session_id,
       modelUsed: turn.model_used,
       attachedAssets: turn.attached_assets,
       contentIds: turn.content_ids,
@@ -447,6 +476,8 @@ export function TeamSection() {
                   : 'No messages in the team room yet. Start with @cmo or another agent.'
               }
               onSelectAgent={(aid) => setSelectedTarget(aid)}
+              socialRuns={socialRuns}
+              onSocialRunUpdated={upsertSocialRun}
             />
           )}
 

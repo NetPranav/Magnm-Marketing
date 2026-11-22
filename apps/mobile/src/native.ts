@@ -69,6 +69,7 @@ export interface NativeBridge {
   scanQrCode(): Promise<string | null>;
   onDeepLink(handler: (url: string) => void): () => void;
   onResume?(handler: () => void): () => void;
+  onBackground?(handler: () => void): () => void;
   onBackButton?(handler: () => void): () => void;
   minimizeApp?(): Promise<void>;
 }
@@ -108,6 +109,7 @@ export function createPreviewNativeBridge(
 ): NativeBridge & {
   emitDeepLink: (url: string) => void;
   emitResume: () => void;
+  emitBackground: () => void;
   emitBackButton: () => void;
   getMinimizeCount: () => number;
   pushSharedItem: (item: SharedItem) => void;
@@ -118,6 +120,7 @@ export function createPreviewNativeBridge(
   const sharedQueue: SharedItem[] = [...(options.initialSharedItems ?? [])];
   const deepLinkListeners = new Set<(url: string) => void>();
   const resumeListeners = new Set<() => void>();
+  const backgroundListeners = new Set<() => void>();
   const backListeners = new Set<() => void>();
   const deliveredLaunchUrls = new Set<string>();
   let dictateValue = options.dictateResult ?? null;
@@ -216,6 +219,23 @@ export function createPreviewNativeBridge(
         }
       };
     },
+    onBackground(handler: () => void): () => void {
+      backgroundListeners.add(handler);
+      const onVis = () => {
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+          handler();
+        }
+      };
+      if (typeof document !== 'undefined') {
+        document.addEventListener('visibilitychange', onVis);
+      }
+      return () => {
+        backgroundListeners.delete(handler);
+        if (typeof document !== 'undefined') {
+          document.removeEventListener('visibilitychange', onVis);
+        }
+      };
+    },
     onBackButton(handler: () => void): () => void {
       backListeners.add(handler);
       return () => {
@@ -233,6 +253,11 @@ export function createPreviewNativeBridge(
     },
     emitResume(): void {
       for (const listener of resumeListeners) {
+        listener();
+      }
+    },
+    emitBackground(): void {
+      for (const listener of backgroundListeners) {
         listener();
       }
     },
@@ -341,6 +366,18 @@ export function createCapacitorNativeBridge(): NativeBridge {
       let removed = false;
       const handlePromise = App.addListener('appStateChange', ({ isActive }) => {
         if (!removed && isActive) {
+          handler();
+        }
+      });
+      return () => {
+        removed = true;
+        void handlePromise.then((handle) => handle.remove()).catch(() => {});
+      };
+    },
+    onBackground(handler: () => void): () => void {
+      let removed = false;
+      const handlePromise = App.addListener('appStateChange', ({ isActive }) => {
+        if (!removed && !isActive) {
           handler();
         }
       });

@@ -39,6 +39,9 @@ import repos
 import results_extract
 import review
 import review_studio
+from social import SocialError as _SocialError
+from social import live as social_live
+from social import service as social_service
 from tools import content as content_tools
 from tools import core as core_tools
 import weekly_summary
@@ -417,6 +420,49 @@ def _stub_proposal(prop):
     }
 
 
+def _social_run_is_confidential(run, conf_sids, conf_pids, checker, repo_patterns):
+    del conf_pids
+    if not isinstance(run, dict):
+        return True
+    if run.get("session_id") in conf_sids:
+        return True
+    parts = [
+        run.get("argument") or "",
+        run.get("summary") or "",
+        run.get("error") or "",
+        json.dumps(run.get("result") or {}, ensure_ascii=False, default=str),
+    ]
+    combined = "\n".join(str(p) for p in parts if p)
+    return _text_is_confidential(combined, checker, repo_patterns)
+
+
+def _stub_social_run(run):
+    return {
+        "id": run["id"],
+        "platform": run.get("platform"),
+        "recipe": run.get("recipe"),
+        "argument": "Confidential topic",
+        "status": run.get("status"),
+        "approval_hash": "",  # A stub can never be started from the phone.
+        "approved_at": run.get("approved_at"),
+        "approval_consumed": bool(run.get("approval_consumed")),
+        "requested_by": run.get("requested_by"),
+        "session_id": run.get("session_id"),
+        "pages_used": int(run.get("pages_used") or 0),
+        "challenge_kind": run.get("challenge_kind"),
+        "challenge_detected_at": run.get("challenge_detected_at"),
+        "challenge_notif_id": run.get("challenge_notif_id"),
+        "result": None,
+        "summary": "Confidential social run",
+        "error": None,
+        "confidential": True,
+        "created_at": run.get("created_at"),
+        "started_at": run.get("started_at"),
+        "finished_at": run.get("finished_at"),
+        "updated_at": run.get("updated_at"),
+    }
+
+
 # Tools whose results hold only names and rules, which agents see in every chat anyway.
 _NAMES_ONLY_TOOLS = frozenset(("read_product_facts", "list_repos", "list_pitch_catalog", "check_text"))
 _MAX_SCANNED_TEXT_FILE_BYTES = 5 * 1024 * 1024
@@ -725,12 +771,27 @@ class PhoneHandler(BaseHTTPRequestHandler):
                 self._handle_get_pitch()
             elif parts == ["results", "pending"]:
                 self._handle_get_results_pending()
+            elif parts == ["social", "status"]:
+                self._handle_get_social_status()
+            elif parts == ["social", "runs"]:
+                self._handle_get_social_runs(qs)
+            elif len(parts) == 3 and parts[0] == "social" and parts[1] == "runs":
+                self._handle_get_social_run_detail(parts[2])
+            elif parts == ["social", "live", "frame"]:
+                self._handle_get_social_live_frame()
+            elif parts and parts[0] == "social" and (
+                parts[1:] in (["enable"], ["disable"], ["remove"], ["live", "open_window"])
+                or (len(parts) >= 2 and parts[1] == "login")
+            ):
+                raise PhoneApiError("This social action is only available on the laptop.", status=403)
             else:
                 self._send_json({"error": "Not found"}, status=404)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
         except PhoneApiError as exc:
             self._send_json({"error": exc.message}, status=exc.status)
+        except _SocialError as exc:
+            self._send_json({"error": exc.message, "error_code": exc.code}, status=exc.status)
         except (reminders.ReminderError, results_extract.ResultsExtractError) as exc:
             self._send_json({"error": exc.message}, status=exc.status)
         except Exception:
@@ -814,10 +875,35 @@ class PhoneHandler(BaseHTTPRequestHandler):
             elif len(parts) == 3 and parts[0] == "results" and parts[2] == "confirm":
                 params = self._read_json_body(max_body)
                 self._handle_post_results_confirm(device, parts[1], params)
+            elif parts == ["social", "runs"]:
+                params = self._read_json_body(max_body)
+                self._handle_post_social_create(device, params)
+            elif len(parts) == 4 and parts[0] == "social" and parts[1] == "runs" and parts[3] == "start":
+                params = self._read_json_body(max_body)
+                self._handle_post_social_start(device, parts[2], params)
+            elif len(parts) == 4 and parts[0] == "social" and parts[1] == "runs" and parts[3] == "cancel":
+                self._read_json_body(max_body)
+                self._handle_post_social_cancel(device, parts[2])
+            elif len(parts) == 4 and parts[0] == "social" and parts[1] == "runs" and parts[3] == "summarise":
+                self._read_json_body(max_body)
+                self._handle_post_social_summarise(device, parts[2])
+            elif len(parts) == 3 and parts[0] == "social" and parts[1] == "challenge" and parts[2] in ("later", "skip", "continue"):
+                params = self._read_json_body(max_body)
+                self._handle_post_social_challenge(device, parts[2], params)
+            elif parts == ["social", "live", "input"]:
+                params = self._read_json_body(max_body)
+                self._handle_post_social_live_input(params)
+            elif parts and parts[0] == "social" and (
+                parts[1:] in (["enable"], ["disable"], ["remove"], ["live", "open_window"])
+                or (len(parts) >= 2 and parts[1] == "login")
+            ):
+                raise PhoneApiError("This social action is only available on the laptop.", status=403)
             else:
                 self._send_json({"error": "Not found"}, status=404)
         except PhoneApiError as exc:
             self._send_json({"error": exc.message}, status=exc.status)
+        except _SocialError as exc:
+            self._send_json({"error": exc.message, "error_code": exc.code}, status=exc.status)
         except (review_studio.NotFoundError,) as exc:
             self._send_json({"error": str(exc)}, status=404)
         except (review_studio.ValidationError, ValueError) as exc:
@@ -1117,7 +1203,7 @@ class PhoneHandler(BaseHTTPRequestHandler):
         self._send_json({"item": updated})
 
     def _handle_post_inbox(self, device, params):
-        _build_confidential_guard()
+        _, _, _, checker, repo_patterns = _build_confidential_guard()
         raw_items = params.get("items")
         if not isinstance(raw_items, list) or len(raw_items) == 0:
             raise PhoneApiError("items must be a non-empty array", status=400)
@@ -1132,8 +1218,35 @@ class PhoneHandler(BaseHTTPRequestHandler):
             if not client_id or len(client_id) > 128:
                 raise PhoneApiError(f"items[{idx}].client_id is required (max 128 chars)", status=400)
             kind = str(entry.get("kind") or "").strip().lower()
-            if kind not in ("draft", "note", "idea"):
-                raise PhoneApiError(f"items[{idx}].kind must be draft, note, or idea", status=400)
+            if kind not in ("draft", "note", "idea", "social_request"):
+                raise PhoneApiError(f"items[{idx}].kind must be draft, note, idea, or social_request", status=400)
+            if kind == "social_request":
+                plat = str(entry.get("platform") or "").strip()
+                recipe = str(entry.get("recipe") or "").strip()
+                raw_arg = entry.get("argument")
+                if raw_arg is None:
+                    raw_arg = entry.get("body")
+                argument = str(raw_arg or "").strip()
+                if not plat or not recipe or not argument:
+                    raise PhoneApiError(
+                        f"items[{idx}] social_request requires platform, recipe, and argument",
+                        status=400,
+                    )
+                if _text_is_confidential(argument, checker, repo_patterns):
+                    raise PhoneApiError(
+                        "Confidential topics cannot be researched from phone",
+                        status=400,
+                    )
+                validated.append({
+                    "client_id": client_id,
+                    "kind": "social_request",
+                    "platform": plat,
+                    "recipe": recipe,
+                    "argument": argument,
+                    "created_at": entry.get("created_at"),
+                })
+                continue
+
             title = str(entry.get("title") or "").strip()
             body = entry.get("body")
             if not title:
@@ -1159,7 +1272,7 @@ class PhoneHandler(BaseHTTPRequestHandler):
 
         ctx = SimpleNamespace(agent_id=f"phone:{device['name']}", session_id=None)
         results = []
-        created_any = False
+        created_syncable = False
 
         for item in validated:
             existing = db.get_phone_inbox_receipt(device["id"], item["client_id"])
@@ -1169,6 +1282,33 @@ class PhoneHandler(BaseHTTPRequestHandler):
                     "kind": existing["kind"],
                     "id": existing["target_id"],
                     "deduplicated": True,
+                })
+                continue
+
+            if item["kind"] == "social_request":
+                try:
+                    created_run = social_service.create_run_request(
+                        platform=item["platform"],
+                        recipe=item["recipe"],
+                        argument=item["argument"],
+                        requested_by=f"phone:{device['name']}",
+                    )
+                except _SocialError as exc:
+                    # 400 makes the phone set this one item aside instead of stopping every item queued behind it.
+                    raise PhoneApiError(exc.message, status=400 if exc.status < 500 else exc.status) from exc
+                db.save_phone_inbox_receipt(device["id"], item["client_id"], "social_request", created_run["id"])
+                _log_device_activity(
+                    device,
+                    "inbox",
+                    "phone_inbox:social_request",
+                    f"{created_run['id']}:{created_run['platform']}:{created_run['recipe']}",
+                )
+                results.append({
+                    "client_id": item["client_id"],
+                    "kind": "social_request",
+                    "id": created_run["id"],
+                    "deduplicated": False,
+                    "warnings": [],
                 })
                 continue
 
@@ -1188,7 +1328,7 @@ class PhoneHandler(BaseHTTPRequestHandler):
                 auto_rev = review.auto_review(cid)
                 db.save_phone_inbox_receipt(device["id"], item["client_id"], "draft", cid)
                 _log_device_activity(device, "inbox", "phone_inbox:draft", cid)
-                created_any = True
+                created_syncable = True
                 results.append({
                     "client_id": item["client_id"],
                     "kind": "draft",
@@ -1214,7 +1354,7 @@ class PhoneHandler(BaseHTTPRequestHandler):
                 )
                 db.save_phone_inbox_receipt(device["id"], item["client_id"], item["kind"], note_id)
                 _log_device_activity(device, "inbox", f"phone_inbox:{item['kind']}", note_id)
-                created_any = True
+                created_syncable = True
                 results.append({
                     "client_id": item["client_id"],
                     "kind": item["kind"],
@@ -1223,7 +1363,7 @@ class PhoneHandler(BaseHTTPRequestHandler):
                     "warnings": rule_warnings,
                 })
 
-        if created_any:
+        if created_syncable:
             cloud_sync.request_sync()
 
         self._send_json({"items": results})
@@ -1410,6 +1550,172 @@ class PhoneHandler(BaseHTTPRequestHandler):
         _log_device_activity(device, "analyst", f"phone_results_confirm:{proposal_id}", proposal_id)
         cloud_sync.request_sync()
         self._send_json(res)
+
+    def _guard_social_run(self, run, conf_sids, conf_pids, checker, repo_patterns):
+        if run is None:
+            return None
+        if _social_run_is_confidential(run, conf_sids, conf_pids, checker, repo_patterns):
+            return _stub_social_run(run)
+        return run
+
+    def _require_non_confidential_social_run(self, run_id, conf_sids, conf_pids, checker, repo_patterns):
+        run = social_service.get_run(run_id)
+        if _social_run_is_confidential(run, conf_sids, conf_pids, checker, repo_patterns):
+            raise PhoneApiError("Confidential social runs cannot be controlled from phone", status=403)
+        return run
+
+    def _require_phone_live_challenge(self, conf_sids, conf_pids, checker, repo_patterns):
+        svc = social_service.get_default_service()
+        active = svc.live_registry.current()
+        if active is not None:
+            if active.get("kind") != "challenge":
+                raise PhoneApiError("Login windows can only be controlled on the laptop.", status=403)
+            run_id = active.get("run_id")
+            if run_id:
+                self._require_non_confidential_social_run(run_id, conf_sids, conf_pids, checker, repo_patterns)
+            return active
+        status_info = social_service.get_status()
+        if (status_info.get("login") or {}).get("active"):
+            raise PhoneApiError("Login windows can only be controlled on the laptop.", status=403)
+        active_run = status_info.get("active_run")
+        if active_run is not None and _social_run_is_confidential(
+            active_run, conf_sids, conf_pids, checker, repo_patterns
+        ):
+            raise PhoneApiError("Confidential live views are not available on phone", status=403)
+        raise PhoneApiError("No security check is waiting.", status=409)
+
+    def _handle_get_social_status(self):
+        conf_sids, _, conf_pids, checker, repo_patterns = _build_confidential_guard()
+        status_data = dict(social_service.get_status())
+        if status_data.get("active_run") is not None:
+            status_data["active_run"] = self._guard_social_run(
+                status_data["active_run"], conf_sids, conf_pids, checker, repo_patterns
+            )
+        self._send_json(status_data)
+
+    def _handle_get_social_runs(self, qs):
+        conf_sids, _, conf_pids, checker, repo_patterns = _build_confidential_guard()
+        try:
+            limit = int((qs.get("limit") or ["50"])[0])
+        except (TypeError, ValueError):
+            limit = 50
+        limit = max(1, min(limit, 200))
+        plat_filter = (qs.get("platform") or [None])[0] or None
+        status_filter = (qs.get("status") or [None])[0] or None
+        runs = social_service.list_runs(limit=limit, platform=plat_filter, status=status_filter)
+        safe = [
+            self._guard_social_run(r, conf_sids, conf_pids, checker, repo_patterns)
+            for r in runs
+        ]
+        self._send_json({"runs": safe})
+
+    def _handle_get_social_run_detail(self, run_id):
+        conf_sids, _, conf_pids, checker, repo_patterns = _build_confidential_guard()
+        run = social_service.get_run(run_id)
+        self._send_json(self._guard_social_run(run, conf_sids, conf_pids, checker, repo_patterns))
+
+    def _handle_get_social_live_frame(self):
+        conf_sids, _, conf_pids, checker, repo_patterns = _build_confidential_guard()
+        active = self._require_phone_live_challenge(conf_sids, conf_pids, checker, repo_patterns)
+        # Use the session just checked: looking it up again could land on a login window that opened since.
+        frame_bytes = active["call"]("frame", None)
+        # Never log live frames, not even their length.
+        b64 = base64.b64encode(frame_bytes).decode("ascii")
+        self._send_json({
+            "frame_base64": b64,
+            "content_type": "image/jpeg",
+            "width": 1280,
+            "height": 800,
+            "run_id": active.get("run_id"),
+            "platform": active.get("platform"),
+        })
+
+    def _handle_post_social_create(self, device, params):
+        conf_sids, _, conf_pids, checker, repo_patterns = _build_confidential_guard()
+        arg = params.get("argument")
+        if _text_is_confidential(str(arg or ""), checker, repo_patterns):
+            raise PhoneApiError("Confidential topics cannot be researched from phone", status=403)
+        raw_sid = params.get("session_id")
+        clean_sid = str(raw_sid).strip() if raw_sid and str(raw_sid).strip() else None
+        if clean_sid and clean_sid in conf_sids:
+            raise PhoneApiError("Confidential sessions cannot be linked from phone", status=403)
+        created = social_service.create_run_request(
+            platform=params.get("platform"),
+            recipe=params.get("recipe"),
+            argument=arg,
+            requested_by=f"phone:{device['name']}",
+            session_id=clean_sid,
+        )
+        _log_device_activity(
+            device,
+            "social",
+            f"phone_social_create:{created['id']}",
+            f"{created['platform']}:{created['recipe']}",
+        )
+        safe = self._guard_social_run(created, conf_sids, conf_pids, checker, repo_patterns)
+        self._send_json({"success": True, "run": safe})
+
+    def _handle_post_social_start(self, device, run_id, params):
+        conf_sids, _, conf_pids, checker, repo_patterns = _build_confidential_guard()
+        self._require_non_confidential_social_run(run_id, conf_sids, conf_pids, checker, repo_patterns)
+        started = social_service.start_run(run_id, expected_hash=params.get("approval_hash"))
+        _log_device_activity(
+            device,
+            "social",
+            f"phone_social_start:{run_id}",
+            f"{started['platform']}:{started['recipe']}",
+        )
+        safe = self._guard_social_run(started, conf_sids, conf_pids, checker, repo_patterns)
+        self._send_json({"success": True, "run": safe})
+
+    def _handle_post_social_cancel(self, device, run_id):
+        conf_sids, _, conf_pids, checker, repo_patterns = _build_confidential_guard()
+        self._require_non_confidential_social_run(run_id, conf_sids, conf_pids, checker, repo_patterns)
+        cancelled = social_service.cancel_run(run_id)
+        _log_device_activity(device, "social", f"phone_social_cancel:{run_id}", run_id)
+        safe = self._guard_social_run(cancelled, conf_sids, conf_pids, checker, repo_patterns)
+        self._send_json({"success": True, "run": safe})
+
+    def _handle_post_social_summarise(self, device, run_id):
+        conf_sids, _, conf_pids, checker, repo_patterns = _build_confidential_guard()
+        self._require_non_confidential_social_run(run_id, conf_sids, conf_pids, checker, repo_patterns)
+        updated = social_service.summarise_run(run_id)
+        if _social_run_is_confidential(updated, conf_sids, conf_pids, checker, repo_patterns):
+            raise PhoneApiError("Confidential social results cannot be sent to phone", status=403)
+        _log_device_activity(device, "social", f"phone_social_summarise:{run_id}", run_id)
+        self._send_json({"success": True, "run": updated})
+
+    def _handle_post_social_challenge(self, device, action, params):
+        conf_sids, _, conf_pids, checker, repo_patterns = _build_confidential_guard()
+        req_run_id = params.get("run_id")
+        target_id = str(req_run_id).strip() if req_run_id and str(req_run_id).strip() else None
+        if target_id:
+            self._require_non_confidential_social_run(target_id, conf_sids, conf_pids, checker, repo_patterns)
+        else:
+            active = db.get_active_social_run()
+            if active and _social_run_is_confidential(active, conf_sids, conf_pids, checker, repo_patterns):
+                raise PhoneApiError("Confidential social runs cannot be controlled from phone", status=403)
+
+        if action == "later":
+            res = dict(social_service.challenge_later(run_id=target_id))
+        elif action == "skip":
+            res = dict(social_service.challenge_skip(run_id=target_id))
+        else:
+            res = dict(social_service.challenge_continue(run_id=target_id))
+
+        if res.get("run") is not None:
+            res["run"] = self._guard_social_run(res["run"], conf_sids, conf_pids, checker, repo_patterns)
+        rid = str((res.get("run") or {}).get("id") or target_id or "")
+        _log_device_activity(device, "social", f"phone_social_challenge:{action}", rid)
+        status = 200 if (action != "continue" or res.get("ok")) else 409
+        self._send_json(res, status=status)
+
+    def _handle_post_social_live_input(self, params):
+        conf_sids, _, conf_pids, checker, repo_patterns = _build_confidential_guard()
+        active = self._require_phone_live_challenge(conf_sids, conf_pids, checker, repo_patterns)
+        active["call"]("input", social_live.validate_live_input(params))
+        # Never log live input, not even its length.
+        self._send_json({"ok": True})
 
 
 class PhoneServerManager:

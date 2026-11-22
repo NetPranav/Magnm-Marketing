@@ -28,9 +28,24 @@ import {
   type ResearchItem,
   type WatchTopic,
 } from '../../api/research';
+import {
+  createSocialRun,
+  getSocialRun,
+  getSocialStatus,
+  listSocialRuns,
+} from '../../api/social';
 import { postMessage } from '../../api/team';
+import { SocialRunCard } from '../../components/SocialRunCard';
 import { useStudioEvents } from '../../events';
-import type { AgentSession, JobRecord, ResearchFindingItem } from '../../types';
+import type {
+  AgentSession,
+  JobRecord,
+  ResearchFindingItem,
+  SocialPlatform,
+  SocialRecipe,
+  SocialRunRecord,
+  SocialStatusInfo,
+} from '../../types';
 import { extractDomain, extractUrls, formatTimestamp, isSafeHttpUrl } from '../../ui/format';
 import { SafeMarkdown } from '../../ui/SafeMarkdown';
 
@@ -84,10 +99,25 @@ export function ResearchSection() {
   const [newCadence, setNewCadence] = useState('24');
   const [newDays, setNewDays] = useState('7');
 
+  const [socialStatus, setSocialStatus] = useState<SocialStatusInfo | null>(null);
+  const [socialRuns, setSocialRuns] = useState<SocialRunRecord[]>([]);
+  const [socialPlatform, setSocialPlatform] = useState<SocialPlatform>('x');
+  const [socialRecipe, setSocialRecipe] = useState<SocialRecipe>('search');
+  const [socialArgument, setSocialArgument] = useState('');
+  const [socialSubmitting, setSocialSubmitting] = useState(false);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  const upsertSocialRun = useCallback((incoming: SocialRunRecord) => {
+    setSocialRuns((prev) => {
+      const idx = prev.findIndex((r) => r.id === incoming.id);
+      if (idx === -1) return [incoming, ...prev];
+      return prev.map((r, i) => (i === idx ? { ...r, ...incoming } : r));
+    });
+  }, []);
 
   const loadAll = useCallback(async () => {
     setError(null);
@@ -96,10 +126,12 @@ export function ResearchSection() {
       listWatchTopics(),
       getEngineStatus(),
       listSessions(10),
+      getSocialStatus(),
+      listSocialRuns(50),
     ]);
 
     let firstErr: string | null = null;
-    const [itemsRes, topicsRes, statusRes, sessRes] = results;
+    const [itemsRes, topicsRes, statusRes, sessRes, socStatusRes, socRunsRes] = results;
 
     if (itemsRes.status === 'fulfilled') {
       setResearchItems(Array.isArray(itemsRes.value) ? itemsRes.value : []);
@@ -122,6 +154,14 @@ export function ResearchSection() {
 
     if (sessRes.status === 'fulfilled') {
       setSessions(Array.isArray(sessRes.value) ? sessRes.value : []);
+    }
+
+    if (socStatusRes.status === 'fulfilled') {
+      setSocialStatus(socStatusRes.value);
+    }
+
+    if (socRunsRes.status === 'fulfilled') {
+      setSocialRuns(Array.isArray(socRunsRes.value) ? socRunsRes.value : []);
     }
 
     setError(firstErr);
@@ -205,9 +245,18 @@ export function ResearchSection() {
 
         if (eventName === 'research_digest') {
           void loadAll();
+          return;
+        }
+
+        if (eventName === 'social_run.status' && data && typeof data === 'object') {
+          const ev = data as Partial<SocialRunRecord>;
+          if (!ev.id) return;
+          void getSocialRun(ev.id)
+            .then((full) => upsertSocialRun(full))
+            .catch(() => {});
         }
       },
-      [loadAll],
+      [loadAll, upsertSocialRun],
     ),
   );
 
@@ -442,6 +491,30 @@ export function ResearchSection() {
     setNewSources((prev) =>
       prev.includes(src) ? prev.filter((item) => item !== src) : [...prev, src],
     );
+  };
+
+  const handleCreateSocialRun = async () => {
+    const clean = socialArgument.trim();
+    if (!clean) return;
+    setSocialSubmitting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await createSocialRun({
+        platform: socialPlatform,
+        recipe: socialRecipe,
+        argument: clean,
+      });
+      if (res?.run) {
+        upsertSocialRun(res.run);
+        setSocialArgument('');
+        setNotice(`Created social run ${res.run.id}. Press Start on the card when ready.`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not create social research run.');
+    } finally {
+      setSocialSubmitting(false);
+    }
   };
 
   return (
@@ -843,6 +916,104 @@ export function ResearchSection() {
               />
             ))}
           </RowList>
+        )}
+      </section>
+
+      <section className="studio-section" aria-labelledby="research-social-heading">
+        <h2 id="research-social-heading" className="studio-section-title">
+          Social research
+        </h2>
+        <Card>
+          <div className="studio-stack-sm">
+            <div className="studio-grid-2">
+              <Field label="Platform" htmlFor="social-form-platform">
+                <Select
+                  id="social-form-platform"
+                  value={socialPlatform}
+                  onChange={(e) => setSocialPlatform(e.target.value as SocialPlatform)}
+                >
+                  <option value="instagram">Instagram</option>
+                  <option value="x">X</option>
+                  <option value="linkedin">LinkedIn</option>
+                </Select>
+              </Field>
+              <Field label="Recipe" htmlFor="social-form-recipe">
+                <Select
+                  id="social-form-recipe"
+                  value={socialRecipe}
+                  onChange={(e) => setSocialRecipe(e.target.value as SocialRecipe)}
+                >
+                  <option value="profile_posts">profile_posts</option>
+                  <option value="search">search</option>
+                  <option value="post_replies">post_replies</option>
+                  <option value="trending">trending</option>
+                </Select>
+              </Field>
+            </div>
+
+            <Field
+              label="Argument"
+              htmlFor="social-form-argument"
+              hint={
+                socialRecipe === 'profile_posts'
+                  ? 'Account handle (e.g. @handle)'
+                  : socialRecipe === 'post_replies'
+                    ? 'Exact https post URL'
+                    : socialRecipe === 'trending'
+                      ? 'Topic keyword'
+                      : 'Search query'
+              }
+            >
+              <TextInput
+                id="social-form-argument"
+                placeholder={
+                  socialRecipe === 'post_replies'
+                    ? 'https://x.com/user/status/123456'
+                    : socialRecipe === 'profile_posts'
+                      ? 'handle'
+                      : 'developer tools'
+                }
+                value={socialArgument}
+                onChange={(e) => setSocialArgument(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !socialSubmitting && socialArgument.trim()) {
+                    e.preventDefault();
+                    void handleCreateSocialRun();
+                  }
+                }}
+              />
+            </Field>
+
+            {socialStatus?.platforms?.[socialPlatform] &&
+            !socialStatus.platforms[socialPlatform].enabled ? (
+              <div className="studio-hint">
+                {socialPlatform} is disabled. Enable it in Settings &gt; Social research first.
+              </div>
+            ) : null}
+
+            <div className="studio-section-bar">
+              <span className="studio-hint">
+                Creates an awaiting_start run; nothing runs until you press Start.
+              </span>
+              <PillButton
+                size="sm"
+                disabled={socialSubmitting || !socialArgument.trim()}
+                onClick={() => void handleCreateSocialRun()}
+              >
+                {socialSubmitting ? 'Creating...' : 'Create social run'}
+              </PillButton>
+            </div>
+          </div>
+        </Card>
+
+        {socialRuns.length === 0 ? (
+          <div className="mg-empty">No social research runs yet.</div>
+        ) : (
+          <div className="studio-stack-sm" aria-label="Social research runs">
+            {socialRuns.map((run) => (
+              <SocialRunCard key={run.id} run={run} onRunUpdated={upsertSocialRun} />
+            ))}
+          </div>
         )}
       </section>
     </div>

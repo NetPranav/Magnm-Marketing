@@ -615,6 +615,39 @@ class PhoneServerTests(unittest.TestCase):
             with self.assertRaises(phone_server.PhoneApiError):
                 phone_server.send_item_to_phone("content", "c_send")
 
+    def test_one_refused_social_request_does_not_block_the_inbox(self):
+        refused = phone_server._SocialError("X is disabled", status=403, code="platform_disabled")
+        items = [{"client_id": "s1", "kind": "social_request", "platform": "x", "recipe": "search", "argument": "Cero"}]
+        with patch.object(phone_server.social_service, "create_run_request", side_effect=refused):
+            with self.assertRaises(phone_server.PhoneApiError) as caught:
+                self._call_as_phone("_handle_post_inbox", ({"id": "d", "name": "Phone"}, {"items": items}))
+        # The phone isolates and marks a bad item only on 400; anything else stops every item behind it.
+        self.assertEqual(caught.exception.status, 400)
+
+    def test_phone_never_gets_whatever_window_opened_after_the_check(self):
+        registry = SimpleNamespace(current=lambda: None)
+        with patch.object(phone_server.social_service, "get_default_service", return_value=SimpleNamespace(live_registry=registry)), \
+                patch.object(phone_server.social_service, "get_status", return_value={"login": {"active": False}}), \
+                patch.object(phone_server.social_service, "get_live_frame", return_value=b"LOGIN-FRAME") as frame, \
+                patch.object(phone_server.social_service, "post_live_input", return_value={"ok": True}) as typed:
+            for method, args in (("_handle_get_social_live_frame", ()), ("_handle_post_social_live_input", ({"action": "text", "text": "x"},))):
+                with self.assertRaises(phone_server.PhoneApiError):
+                    self._call_as_phone(method, args)
+        frame.assert_not_called()
+        typed.assert_not_called()
+
+    def test_phone_live_calls_use_the_session_that_was_checked(self):
+        challenge = {"kind": "challenge", "platform": "x", "run_id": None, "call": lambda cmd, arg: b"CHALLENGE-FRAME"}
+        registry = SimpleNamespace(current=lambda: challenge)
+        with patch.object(phone_server.social_service, "get_default_service", return_value=SimpleNamespace(live_registry=registry)), \
+                patch.object(phone_server.social_service, "get_live_frame", return_value=b"LOGIN-FRAME"):
+            out = self._call_as_phone("_handle_get_social_live_frame", ())
+        self.assertIn(base64.b64encode(b"CHALLENGE-FRAME").decode("ascii"), out)
+
+    def test_confidential_social_stub_has_no_start_hash(self):
+        stub = phone_server._stub_social_run({"id": "r", "approval_hash": "h" * 64})
+        self.assertFalse(stub.get("approval_hash"))
+
     def test_09_confidential_stubs_and_fail_closed_everywhere(self):
         self._start_phone_server()
         _, token, _ = self._pair_device()

@@ -456,6 +456,11 @@ class _OffPlatformTrapServer:
         self.httpd.server_close()
 
 
+def _chromium_missing(run):
+    """True only for the missing-browser error, so any other failure still fails the test."""
+    return run.get("error") == "Chromium browser binary is not installed."
+
+
 class SocialTests(unittest.TestCase):
     """Tests for social vault, policy, recipes, limits, challenges, live control, API, and Chromium."""
 
@@ -1149,7 +1154,7 @@ class SocialTests(unittest.TestCase):
             if cur["status"] == "waiting_user":
                 break
             if cur["status"] in ("failed", "done", "incomplete"):
-                if "BrowserNotInstalledError" in str(cur.get("error") or ""):
+                if _chromium_missing(cur):
                     self.skipTest("Chromium not installed")
                 self.fail(f"Unexpected status {cur['status']}: {cur.get('error')}")
             time.sleep(0.05)
@@ -1216,7 +1221,9 @@ class SocialTests(unittest.TestCase):
             if cur["status"] == "waiting_user":
                 break
             if cur["status"] == "failed":
-                self.skipTest(f"Chromium unavailable: {cur.get('error')}")
+                if _chromium_missing(cur):
+                    self.skipTest("Chromium not installed")
+                self.fail(f"Run failed: {cur.get('error')}")
             time.sleep(0.05)
         self.assertEqual(cur["status"], "waiting_user")
         self.assertEqual(cur["challenge_kind"], "confirm_its_you")
@@ -1263,7 +1270,9 @@ class SocialTests(unittest.TestCase):
             if cur["status"] == "waiting_user":
                 break
             if cur["status"] == "failed":
-                self.skipTest(f"Chromium unavailable: {cur.get('error')}")
+                if _chromium_missing(cur):
+                    self.skipTest("Chromium not installed")
+                self.fail(f"Run failed: {cur.get('error')}")
             time.sleep(0.05)
         self.assertEqual(cur["status"], "waiting_user")
         self.assertEqual(cur["challenge_kind"], "confirm_its_you")
@@ -1958,6 +1967,18 @@ class SocialPolicyTrickTests(unittest.TestCase):
             challenge_mod.detect_challenge_from_snapshot("https://x.com/home", title="Security check", body_text=""),
             "checkpoint",
         )
+
+
+class SocialSummaryErrorTests(unittest.TestCase):
+    def test_summary_errors_never_echo_the_model_call(self):
+        svc = social_service_mod.SocialService(key_store=vault_mod.InMemoryKeyStore())
+        run = {"id": "r", "status": "done", "platform": "x", "recipe": "search", "argument": "Cero", "result": {"text": "posts"}}
+        with patch.object(svc, "get_run", return_value=run), \
+                patch.object(social_service_mod, "_is_text_confidential", return_value=False), \
+                patch.object(social_service_mod.ai_gateway, "generate_completion_with_meta", side_effect=RuntimeError("SCRAPED-TEXT")):
+            with self.assertRaises(SocialError) as caught:
+                svc.summarise_run("r")
+        self.assertNotIn("SCRAPED-TEXT", caught.exception.message)
 
 
 if __name__ == "__main__":

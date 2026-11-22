@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Card, PillButton, TextInput } from '@magnm/design/react';
 import { postFeedback } from '../../api/team';
+import { SocialRunCard } from '../../components/SocialRunCard';
+import type { SocialRunRecord } from '../../types';
 import { formatTimestamp } from '../../ui/format';
 import { SafeMarkdown } from '../../ui/SafeMarkdown';
 
@@ -10,6 +12,7 @@ export interface DisplayMessage {
   authorLabel: string;
   timestamp?: string;
   text: string;
+  sessionId?: string;
   modelUsed?: string | null;
   attachedAssets?: string[];
   contentIds?: string[];
@@ -21,10 +24,18 @@ export interface MessageListProps {
   messages: DisplayMessage[];
   emptyText: string;
   onSelectAgent?: (agentId: string) => void;
+  socialRuns?: SocialRunRecord[];
+  onSocialRunUpdated?: (run: SocialRunRecord) => void;
 }
 
 /** Thread view rendering author/timestamps in mono, safe markdown, and optional feedback. */
-export function MessageList({ messages, emptyText, onSelectAgent }: MessageListProps) {
+export function MessageList({
+  messages,
+  emptyText,
+  onSelectAgent,
+  socialRuns = [],
+  onSocialRunUpdated,
+}: MessageListProps) {
   const [feedbackOpenKey, setFeedbackOpenKey] = useState<string | null>(null);
   const [feedbackTone, setFeedbackTone] = useState<'up' | 'down'>('up');
   const [feedbackNote, setFeedbackNote] = useState('');
@@ -65,10 +76,14 @@ export function MessageList({ messages, emptyText, onSelectAgent }: MessageListP
         </div>
       ) : null}
 
-      {messages.map((msg) => {
+      {messages.map((msg, msgIndex) => {
         const isUser = msg.sender === 'CEO' || msg.sender === 'user';
         const canFeedback = !isUser && Array.isArray(msg.contentIds) && msg.contentIds.length > 0;
         const savedTone = feedbackDone[msg.key];
+        // One card per thread, under its latest message.
+        const linkedSocialRuns = msg.sessionId && !messages.slice(msgIndex + 1).some((m) => m.sessionId === msg.sessionId)
+          ? socialRuns.filter((r) => r.session_id === msg.sessionId)
+          : [];
 
         return (
           <Card
@@ -110,6 +125,18 @@ export function MessageList({ messages, emptyText, onSelectAgent }: MessageListP
                 >
                   Open @{msg.redirectTo}
                 </PillButton>
+              </div>
+            ) : null}
+
+            {linkedSocialRuns.length > 0 ? (
+              <div className="studio-stack-xs">
+                {linkedSocialRuns.map((run) => (
+                  <SocialRunCard
+                    key={run.id}
+                    run={run}
+                    onRunUpdated={onSocialRunUpdated}
+                  />
+                ))}
               </div>
             ) : null}
 

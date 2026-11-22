@@ -40,6 +40,7 @@ import { CodingAgentsPanel } from './CodingAgentsPanel';
 import { NotificationsPanel } from './NotificationsPanel';
 import { PhonePanel } from './PhonePanel';
 import { PitchBasePricesPanel } from './PitchBasePricesPanel';
+import { SocialResearchSettingsPanel } from './SocialResearchSettingsPanel';
 import { TeamKnowledgePanel } from './TeamKnowledgePanel';
 import type {
   BakeoffModelStat,
@@ -1123,6 +1124,8 @@ export function SettingsSection() {
       </section>
 
       <PitchBasePricesPanel />
+
+      <SocialResearchSettingsPanel />
 
       <PhonePanel />
 
