@@ -146,6 +146,19 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
     (plain HTTP on shared networks needs a decision); the saved Pitch copy expires after 14 days.
   - Needs the owner: Supabase redirect for the app, Tailscale, a phone test, release key and GitHub Release, Firebase
     for push, real app icons.
+- **Phase 8 built (2026-11-22), never run against a real platform: logged-in social research.**
+  - T8.1: engine. Off until you accept the risks per platform. Sessions encrypted with a key in the OS keychain. A proxy
+    inspects every request and allows reads only. Fixed recipes, page and time limits, stop and hand over on any check.
+  - T8.2: screens. Settings for opt-in and sign-in, run cards in Research, Team and on the phone, Start by a person,
+    live view for checks, summaries from a model without tools.
+  - Tested against fake HTTPS platforms in real Chromium, with a real engine and the built web app.
+  - Changes from the plan: every run needs a Start tap, also when asked in chat. Scraped text never goes back to the
+    agent, so it cannot use results by itself. Phone alerts appear while the app is open (no FCM yet). Profiles are
+    encrypted session state, not browser folders.
+  - Unverified: platform selectors, sign-in and read endpoints are guesses. Because all writes are blocked, some pages
+    may show little. No detection evasion: platforms may challenge or ban the research account.
+  - Needs the owner: `pip install -r engine/requirements.txt` in the engine's venv, separate research accounts, the
+    first sign-in and a live check of each platform.
 - **2026-11-22 hardening:** local engine request checks (PR #8), tests isolated from real data (PR #9), safer file
   serving (PR #10), agent tool boundaries (PR #12), confidential names found in serialized text (PR #13), no dropped
   workflow resumes (PR #14). Open: a token for engines started with `engine/server.py`.
