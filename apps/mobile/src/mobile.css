@@ -266,3 +266,64 @@ body {
   text-transform: uppercase;
   cursor: pointer;
 }
+
+.mob-social-result-text {
+  margin: 0;
+  padding: var(--s-2);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: var(--f-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.mob-social-live {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: var(--bg);
+  color: var(--fg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: calc(var(--s-3) + env(safe-area-inset-top, 0px)) var(--s-3) calc(var(--s-3) + env(safe-area-inset-bottom, 0px));
+}
+
+.mob-social-live-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+
+.mob-social-live-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  aspect-ratio: 1280 / 800;
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.mob-social-live-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  touch-action: none;
+}
+
+.mob-social-live-controls {
+  display: grid;
+  gap: var(--s-2);
+}

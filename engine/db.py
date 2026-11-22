@@ -22,7 +22,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -940,6 +940,74 @@ def _apply_migration_v22(conn):
     )
 
 
+def _apply_migration_v23(conn):
+    """Add social_settings, social_runs, social_page_counts, and social_challenges tables idempotently."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS social_settings (
+            platform TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            acknowledged_at TEXT,
+            acknowledgement_text TEXT,
+            paused_until TEXT,
+            pause_reason TEXT,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS social_runs (
+            id TEXT PRIMARY KEY,
+            platform TEXT NOT NULL,
+            recipe TEXT NOT NULL,
+            argument TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'awaiting_start',
+            approval_hash TEXT NOT NULL,
+            approved_at TEXT,
+            approval_consumed INTEGER NOT NULL DEFAULT 0,
+            requested_by TEXT,
+            session_id TEXT,
+            pages_used INTEGER NOT NULL DEFAULT 0,
+            challenge_kind TEXT,
+            challenge_detected_at TEXT,
+            challenge_notif_id TEXT,
+            result_json TEXT,
+            summary TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_social_runs_created
+            ON social_runs(created_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_social_runs_status
+            ON social_runs(status);
+
+        CREATE TABLE IF NOT EXISTS social_page_counts (
+            platform TEXT NOT NULL,
+            day_utc TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (platform, day_utc)
+        );
+
+        CREATE TABLE IF NOT EXISTS social_challenges (
+            id TEXT PRIMARY KEY,
+            platform TEXT NOT NULL,
+            run_id TEXT,
+            challenge_kind TEXT NOT NULL,
+            detected_at TEXT NOT NULL,
+            resolved_at TEXT,
+            resolution TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_social_challenges_platform_detected
+            ON social_challenges(platform, detected_at DESC);
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -963,6 +1031,7 @@ _MIGRATIONS = (
     (20, _apply_migration_v20),
     (21, _apply_migration_v21),
     (22, _apply_migration_v22),
+    (23, _apply_migration_v23),
 )
 
 
@@ -6357,5 +6426,476 @@ def save_phone_inbox_receipt(device_id, client_id, kind, target_id, created_at=N
             (str(device_id), str(client_id), str(kind), str(target_id), now),
         )
     return get_phone_inbox_receipt(device_id, client_id)
+
+
+# --- Social research persistence (schema v23; never synced to cloud) ---
+
+_UPDATABLE_SOCIAL_RUN_FIELDS = frozenset({
+    "status",
+    "pages_used",
+    "challenge_kind",
+    "challenge_detected_at",
+    "challenge_notif_id",
+    "result",
+    "summary",
+    "error",
+    "started_at",
+    "finished_at",
+    "updated_at",
+})
+
+
+def _row_to_social_setting(row):
+    if row is None:
+        return None
+    return {
+        "platform": row["platform"],
+        "enabled": bool(row["enabled"]),
+        "acknowledged_at": row["acknowledged_at"],
+        "acknowledgement_text": row["acknowledgement_text"],
+        "paused_until": row["paused_until"],
+        "pause_reason": row["pause_reason"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def get_social_setting(platform):
+    """Return social_settings row for platform, or None if never configured."""
+    if not platform:
+        return None
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM social_settings WHERE platform = ?",
+        (str(platform).strip().lower(),),
+    ).fetchone()
+    return _row_to_social_setting(row)
+
+
+def list_social_settings():
+    """Return all rows in social_settings keyed by platform."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute("SELECT * FROM social_settings").fetchall()
+    return {r["platform"]: _row_to_social_setting(r) for r in rows}
+
+
+def upsert_social_setting(
+    platform,
+    *,
+    enabled,
+    acknowledged_at=None,
+    acknowledgement_text=None,
+    updated_at=None,
+):
+    """Create or update enabled/acknowledgement fields on social_settings without clearing pause state."""
+    ensure_init()
+    plat = str(platform).strip().lower()
+    now = str(updated_at or datetime.now(timezone.utc).isoformat())
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO social_settings (
+                platform, enabled, acknowledged_at, acknowledgement_text, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(platform) DO UPDATE SET
+                enabled = excluded.enabled,
+                acknowledged_at = COALESCE(excluded.acknowledged_at, social_settings.acknowledged_at),
+                acknowledgement_text = COALESCE(excluded.acknowledgement_text, social_settings.acknowledgement_text),
+                updated_at = excluded.updated_at
+            """,
+            (
+                plat,
+                1 if enabled else 0,
+                acknowledged_at,
+                acknowledgement_text,
+                now,
+            ),
+        )
+    return get_social_setting(plat)
+
+
+def set_social_platform_paused(platform, paused_until, pause_reason=None, updated_at=None):
+    """Persist a platform cooldown pause in social_settings (never cleared by restart or agents)."""
+    ensure_init()
+    plat = str(platform).strip().lower()
+    now = str(updated_at or datetime.now(timezone.utc).isoformat())
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO social_settings (
+                platform, enabled, paused_until, pause_reason, updated_at
+            ) VALUES (?, 0, ?, ?, ?)
+            ON CONFLICT(platform) DO UPDATE SET
+                paused_until = excluded.paused_until,
+                pause_reason = excluded.pause_reason,
+                updated_at = excluded.updated_at
+            """,
+            (plat, paused_until, pause_reason, now),
+        )
+    return get_social_setting(plat)
+
+
+def _row_to_social_run(row):
+    if row is None:
+        return None
+    result = None
+    if row["result_json"]:
+        try:
+            result = json.loads(row["result_json"])
+        except Exception:
+            result = None
+    return {
+        "id": row["id"],
+        "platform": row["platform"],
+        "recipe": row["recipe"],
+        "argument": row["argument"],
+        "status": row["status"],
+        "approval_hash": row["approval_hash"],
+        "approved_at": row["approved_at"],
+        "approval_consumed": bool(row["approval_consumed"]),
+        "requested_by": row["requested_by"],
+        "session_id": row["session_id"],
+        "pages_used": int(row["pages_used"] or 0),
+        "challenge_kind": row["challenge_kind"],
+        "challenge_detected_at": row["challenge_detected_at"],
+        "challenge_notif_id": row["challenge_notif_id"],
+        "result": result,
+        "summary": row["summary"],
+        "error": row["error"],
+        "created_at": row["created_at"],
+        "started_at": row["started_at"],
+        "finished_at": row["finished_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def create_social_run(run):
+    """Insert a new social_runs row and return the serialized dict."""
+    ensure_init()
+    now = str(run.get("created_at") or datetime.now(timezone.utc).isoformat())
+    updated = str(run.get("updated_at") or now)
+    res_json = json.dumps(run["result"], ensure_ascii=False) if run.get("result") is not None else None
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO social_runs (
+                id, platform, recipe, argument, status, approval_hash,
+                approved_at, approval_consumed, requested_by, session_id,
+                pages_used, challenge_kind, challenge_detected_at, challenge_notif_id,
+                result_json, summary, error, created_at, started_at, finished_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(run["id"]),
+                str(run["platform"]),
+                str(run["recipe"]),
+                str(run["argument"]),
+                str(run.get("status") or "awaiting_start"),
+                str(run["approval_hash"]),
+                run.get("approved_at"),
+                1 if run.get("approval_consumed") else 0,
+                run.get("requested_by"),
+                run.get("session_id"),
+                int(run.get("pages_used") or 0),
+                run.get("challenge_kind"),
+                run.get("challenge_detected_at"),
+                run.get("challenge_notif_id"),
+                res_json,
+                run.get("summary"),
+                run.get("error"),
+                now,
+                run.get("started_at"),
+                run.get("finished_at"),
+                updated,
+            ),
+        )
+    return get_social_run(run["id"])
+
+
+def get_social_run(run_id):
+    """Return a single social_runs dict by ID, or None."""
+    if not run_id:
+        return None
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM social_runs WHERE id = ?",
+        (str(run_id),),
+    ).fetchone()
+    return _row_to_social_run(row)
+
+
+def list_social_runs(limit=50, platform=None, status=None):
+    """Return social runs newest-first, optionally filtered by platform or status."""
+    ensure_init()
+    conn = connect()
+    cap = max(1, min(int(limit or 50), 500))
+    clauses = []
+    params = []
+    if platform:
+        clauses.append("platform = ?")
+        params.append(str(platform).strip().lower())
+    if status:
+        clauses.append("status = ?")
+        params.append(str(status).strip())
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(cap)
+    rows = conn.execute(
+        f"SELECT * FROM social_runs {where} ORDER BY created_at DESC, rowid DESC LIMIT ?",
+        tuple(params),
+    ).fetchall()
+    return [_row_to_social_run(r) for r in rows]
+
+
+def get_active_social_run():
+    """Return the currently running or waiting_user social run, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        """
+        SELECT * FROM social_runs
+        WHERE status IN ('running', 'waiting_user')
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    return _row_to_social_run(row)
+
+
+def start_social_run_atomic(run_id, approval_hash, approved_at):
+    """Atomically consume single-use approval and transition awaiting_start -> running if no other run is active."""
+    ensure_init()
+    conn = connect()
+    ts = str(approved_at)
+    with conn:
+        cur = conn.execute(
+            """
+            UPDATE social_runs
+            SET status = 'running',
+                approved_at = ?,
+                approval_consumed = 1,
+                started_at = ?,
+                updated_at = ?
+            WHERE id = ?
+              AND status = 'awaiting_start'
+              AND approval_consumed = 0
+              AND approved_at IS NULL
+              AND approval_hash = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM social_runs WHERE status IN ('running', 'waiting_user')
+              )
+            """,
+            (ts, ts, ts, str(run_id), str(approval_hash)),
+        )
+    if cur.rowcount != 1:
+        return None
+    return get_social_run(run_id)
+
+
+def update_social_run(run_id, **fields):
+    """Update allowed fields on social_runs and return the updated dict."""
+    ensure_init()
+    assignments = []
+    params = []
+    for k, v in fields.items():
+        if k not in _UPDATABLE_SOCIAL_RUN_FIELDS:
+            raise ValueError(f"Unsupported social_run field '{k}'")
+        if k == "result":
+            assignments.append("result_json = ?")
+            params.append(json.dumps(v, ensure_ascii=False) if v is not None else None)
+        else:
+            assignments.append(f"{k} = ?")
+            params.append(v)
+    if not assignments:
+        return get_social_run(run_id)
+    if "updated_at" not in fields:
+        assignments.append("updated_at = ?")
+        params.append(datetime.now(timezone.utc).isoformat())
+    params.append(str(run_id))
+    conn = connect()
+    with conn:
+        conn.execute(
+            f"UPDATE social_runs SET {', '.join(assignments)} WHERE id = ?",
+            tuple(params),
+        )
+    return get_social_run(run_id)
+
+
+def update_social_run_if_status(run_id, expected_statuses, **fields):
+    """Update allowed fields on social_runs only when status is in expected_statuses."""
+    ensure_init()
+    statuses = [str(s) for s in (expected_statuses or ()) if s]
+    if not statuses:
+        return None
+    assignments = []
+    params = []
+    for k, v in fields.items():
+        if k not in _UPDATABLE_SOCIAL_RUN_FIELDS:
+            raise ValueError(f"Unsupported social_run field '{k}'")
+        if k == "result":
+            assignments.append("result_json = ?")
+            params.append(json.dumps(v, ensure_ascii=False) if v is not None else None)
+        else:
+            assignments.append(f"{k} = ?")
+            params.append(v)
+    if not assignments:
+        return get_social_run(run_id)
+    if "updated_at" not in fields:
+        assignments.append("updated_at = ?")
+        params.append(datetime.now(timezone.utc).isoformat())
+    placeholders = ",".join("?" for _ in statuses)
+    params.append(str(run_id))
+    params.extend(statuses)
+    conn = connect()
+    with conn:
+        cur = conn.execute(
+            f"UPDATE social_runs SET {', '.join(assignments)} WHERE id = ? AND status IN ({placeholders})",
+            tuple(params),
+        )
+    if cur.rowcount != 1:
+        return None
+    return get_social_run(run_id)
+
+
+def fail_stale_active_social_runs(finished_at, error="engine restarted"):
+    """Mark any social runs left in running or waiting_user state after restart as incomplete."""
+    ensure_init()
+    ts = str(finished_at)
+    conn = connect()
+    with conn:
+        rows = conn.execute(
+            "SELECT id, platform FROM social_runs WHERE status IN ('running', 'waiting_user')"
+        ).fetchall()
+        ids = [r["id"] for r in rows]
+        for r in rows:
+            plat = r["platform"]
+            conn.execute(
+                """
+                UPDATE social_runs
+                SET status = 'incomplete',
+                    challenge_kind = NULL,
+                    summary = COALESCE(summary, ?),
+                    error = COALESCE(error, ?),
+                    finished_at = ?,
+                    updated_at = ?
+                WHERE id = ? AND status IN ('running', 'waiting_user')
+                """,
+                (f"{plat} part incomplete", str(error), ts, ts, r["id"]),
+            )
+    return [get_social_run(rid) for rid in ids]
+
+
+def mark_social_challenge_notifications_read(read_at=None):
+    """Mark all unread social_challenge notifications as read."""
+    ensure_init()
+    ts = str(read_at or datetime.now(timezone.utc).isoformat())
+    conn = connect()
+    with conn:
+        conn.execute(
+            "UPDATE notifications SET read_at = ? WHERE kind = 'social_challenge' AND read_at IS NULL",
+            (ts,),
+        )
+    return count_unread_notifications()
+
+
+def get_social_daily_pages(platform, day_utc):
+    """Return page count used on platform for day_utc (YYYY-MM-DD)."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT count FROM social_page_counts WHERE platform = ? AND day_utc = ?",
+        (str(platform).strip().lower(), str(day_utc)),
+    ).fetchone()
+    return int(row["count"]) if row else 0
+
+
+def increment_social_daily_pages(platform, day_utc, max_daily, updated_at=None):
+    """Atomically increment daily page count if below max_daily; return new count or None if limit reached."""
+    ensure_init()
+    plat = str(platform).strip().lower()
+    day = str(day_utc)
+    ts = str(updated_at or datetime.now(timezone.utc).isoformat())
+    limit = int(max_daily)
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO social_page_counts (platform, day_utc, count, updated_at)
+            VALUES (?, ?, 0, ?)
+            """,
+            (plat, day, ts),
+        )
+        cur = conn.execute(
+            """
+            UPDATE social_page_counts
+            SET count = count + 1, updated_at = ?
+            WHERE platform = ? AND day_utc = ? AND count < ?
+            """,
+            (ts, plat, day, limit),
+        )
+        if cur.rowcount != 1:
+            return None
+        row = conn.execute(
+            "SELECT count FROM social_page_counts WHERE platform = ? AND day_utc = ?",
+            (plat, day),
+        ).fetchone()
+        return int(row["count"]) if row else None
+
+
+def record_social_challenge(challenge_id, platform, run_id, challenge_kind, detected_at):
+    """Insert a social_challenges audit row."""
+    ensure_init()
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO social_challenges (
+                id, platform, run_id, challenge_kind, detected_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                str(challenge_id),
+                str(platform).strip().lower(),
+                str(run_id) if run_id else None,
+                str(challenge_kind),
+                str(detected_at),
+            ),
+        )
+
+
+def count_recent_social_challenges(platform, since_iso):
+    """Return count of challenges recorded for platform at or after since_iso."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS cnt FROM social_challenges
+        WHERE platform = ? AND detected_at >= ?
+        """,
+        (str(platform).strip().lower(), str(since_iso)),
+    ).fetchone()
+    return int(row["cnt"]) if row else 0
+
+
+def resolve_social_challenges_for_run(run_id, resolved_at, resolution):
+    """Mark unresolved social_challenges rows for run_id as resolved."""
+    if not run_id:
+        return
+    ensure_init()
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            UPDATE social_challenges
+            SET resolved_at = ?, resolution = ?
+            WHERE run_id = ? AND resolved_at IS NULL
+            """,
+            (str(resolved_at), str(resolution), str(run_id)),
+        )
+
 
 

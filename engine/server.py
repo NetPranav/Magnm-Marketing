@@ -69,6 +69,8 @@ import review
 import review_studio
 import scheduler
 import setup_check
+from social import SocialError as _SocialError
+from social import service as social_service
 import team_auth
 import team_knowledge
 import team_room
@@ -1142,6 +1144,141 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             status = 404 if "not found" in msg.lower() else 400
             self.send_json({"error": msg}, status=status)
 
+    def _handle_social_get(self, url):
+        raw_rest = url.path[len("/api/social"):].strip("/")
+        parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
+        qs = urllib.parse.parse_qs(url.query)
+        try:
+            if parts == ["status"]:
+                self.send_json(social_service.get_status())
+                return
+
+            if parts == ["runs"]:
+                try:
+                    limit = int((qs.get("limit", ["50"])[0] or "50"))
+                except (TypeError, ValueError):
+                    limit = 50
+                limit = max(1, min(limit, 500))
+                plat_filter = qs.get("platform", [None])[0] or None
+                status_filter = qs.get("status", [None])[0] or None
+                self.send_json({
+                    "runs": social_service.list_runs(
+                        limit=limit,
+                        platform=plat_filter,
+                        status=status_filter,
+                    )
+                })
+                return
+
+            if len(parts) == 2 and parts[0] == "runs":
+                self.send_json(social_service.get_run(parts[1]))
+                return
+
+            if parts == ["live", "frame"]:
+                frame_bytes = social_service.get_live_frame()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Content-Length", str(len(frame_bytes)))
+                self.end_headers()
+                self.wfile.write(frame_bytes)
+                return
+
+            self.send_json({"error": "Not found"}, status=404)
+        except _SocialError as exc:
+            self.send_json({"error": exc.message, "error_code": exc.code}, status=exc.status)
+
+    def _handle_social_post(self, url, params):
+        raw_rest = url.path[len("/api/social"):].strip("/")
+        parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
+        try:
+            if parts == ["enable"]:
+                self.send_json(
+                    social_service.enable_platform(
+                        params.get("platform"),
+                        acknowledged=params.get("acknowledged") is True,
+                        acknowledgement_text=params.get("acknowledgement_text"),
+                    )
+                )
+                return
+
+            if parts == ["disable"]:
+                self.send_json(social_service.disable_platform(params.get("platform")))
+                return
+
+            if parts == ["remove"]:
+                self.send_json(social_service.remove_platform(params.get("platform")))
+                return
+
+            if parts == ["login", "start"]:
+                self.send_json(social_service.login_start(params.get("platform")))
+                return
+
+            if parts == ["login", "done"]:
+                self.send_json(social_service.login_done(platform=params.get("platform")))
+                return
+
+            if parts == ["login", "cancel"]:
+                self.send_json(social_service.login_cancel())
+                return
+
+            if parts == ["runs"]:
+                run_obj = social_service.create_run_request(
+                    platform=params.get("platform"),
+                    recipe=params.get("recipe"),
+                    argument=params.get("argument"),
+                    requested_by="user",
+                    session_id=params.get("session_id"),
+                )
+                self.send_json({"success": True, "run": run_obj})
+                return
+
+            if len(parts) == 3 and parts[0] == "runs" and parts[2] == "start":
+                run_obj = social_service.start_run(
+                    parts[1],
+                    expected_hash=params.get("approval_hash"),
+                )
+                self.send_json({"success": True, "run": run_obj})
+                return
+
+            if len(parts) == 3 and parts[0] == "runs" and parts[2] == "cancel":
+                run_obj = social_service.cancel_run(parts[1])
+                self.send_json({"success": True, "run": run_obj})
+                return
+
+            if len(parts) == 3 and parts[0] == "runs" and parts[2] == "summarise":
+                run_obj = social_service.summarise_run(parts[1])
+                self.send_json({"success": True, "run": run_obj})
+                return
+
+            if parts == ["challenge", "later"]:
+                self.send_json(social_service.challenge_later(run_id=params.get("run_id")))
+                return
+
+            if parts == ["challenge", "skip"]:
+                self.send_json(social_service.challenge_skip(run_id=params.get("run_id")))
+                return
+
+            if parts == ["challenge", "continue"]:
+                res = social_service.challenge_continue(run_id=params.get("run_id"))
+                status = 200 if res.get("ok") else 409
+                self.send_json(res, status=status)
+                return
+
+            if parts == ["live", "input"]:
+                self.send_json(social_service.post_live_input(params))
+                return
+
+            if parts == ["live", "open_window"]:
+                self.send_json(social_service.open_live_full_window())
+                return
+
+            self.send_json({"error": "Not found"}, status=404)
+        except _SocialError as exc:
+            self.send_json({"error": exc.message, "error_code": exc.code}, status=exc.status)
+
     def _serve_sse(self):
         """Stream live Server-Sent Events ('job', 'message', 'ping') to connected clients."""
         q = events.subscribe()
@@ -1852,6 +1989,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         elif url.path.startswith("/api/coding/"):
             self._handle_coding_get(url)
 
+        elif url.path.startswith("/api/social/"):
+            self._handle_social_get(url)
+
         elif url.path == "/api/phone" or url.path.startswith("/api/phone/"):
             self._handle_phone_get(url)
 
@@ -1945,6 +2085,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             or url.path == "/api/learnings"
             or url.path.startswith("/api/learnings/")
             or url.path.startswith("/api/coding/")
+            or url.path.startswith("/api/social/")
             or url.path == "/api/phone"
             or url.path.startswith("/api/phone/")
         )
@@ -2007,6 +2148,10 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         if url.path.startswith("/api/coding/"):
             self._handle_coding_post(url, params)
+            return
+
+        if url.path.startswith("/api/social/"):
+            self._handle_social_post(url, params)
             return
 
         if url.path == "/api/phone" or url.path.startswith("/api/phone/"):
@@ -5339,6 +5484,7 @@ def main():
     db.init_db()
     agent_runtime.recover_stale_sessions()
     coding_agents.recover_stale_runs()
+    social_service.recover_stale_runs()
     jobs.start_worker()
     # Same as engine/main.py: mirror work, publish live links and pull quote requests in the background.
     import cloud_sync

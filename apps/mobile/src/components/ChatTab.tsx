@@ -9,6 +9,10 @@ import {
   TextArea,
 } from '@magnm/design/react';
 import type { ChatTurn, PhoneAgentInfo } from '../types';
+import {
+  SocialResearchPanel,
+  type SocialResearchPanelProps,
+} from './SocialResearchPanel';
 
 export interface ChatTabProps {
   laptopReachable: boolean;
@@ -23,6 +27,7 @@ export interface ChatTabProps {
   errorMessage: string | null;
   onSendMessage: (text: string, agentId: string) => Promise<boolean>;
   onDictate: () => Promise<string | null>;
+  socialResearch?: Omit<SocialResearchPanelProps, 'idPrefix'>;
 }
 
 export const DEFAULT_LITE_AGENTS: PhoneAgentInfo[] = [
@@ -50,6 +55,7 @@ export function ChatTab({
   errorMessage,
   onSendMessage,
   onDictate,
+  socialResearch,
 }: ChatTabProps) {
   const [draftText, setDraftText] = useState('');
   const [dictating, setDictating] = useState(false);
@@ -225,6 +231,8 @@ export function ChatTab({
           </div>
         </div>
       </Card>
+
+      {socialResearch ? <SocialResearchPanel idPrefix="chat" {...socialResearch} /> : null}
     </section>
   );
 }

@@ -155,6 +155,14 @@ NOTIFICATION_KINDS = (
         "admin_only": False,
         "route": "#/today",
     },
+    {
+        "kind": "social_challenge",
+        "label": "Social research checks",
+        "description": "When social research pauses for a login or security check",
+        "default": True,
+        "admin_only": False,
+        "route": "#/research",
+    },
 )
 
 KINDS_BY_ID = {item["kind"]: item for item in NOTIFICATION_KINDS}

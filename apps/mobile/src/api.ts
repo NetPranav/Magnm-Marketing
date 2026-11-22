@@ -32,6 +32,12 @@ import type {
   ProductRulesConfig,
   QueuedInboxItem,
   ReminderItem,
+  SocialLiveFrameResponse,
+  SocialLiveInputPayload,
+  SocialPlatform,
+  SocialRecipe,
+  SocialRunRecord,
+  SocialStatusInfo,
   WeeklySummary,
 } from './types';
 
@@ -422,18 +428,196 @@ export async function postLaptopInboxBatch(
     'POST',
     'inbox',
     {
-      items: items.map((item) => ({
-        client_id: item.client_id,
-        kind: item.kind,
-        title: item.title,
-        body: item.body,
-        platform: item.platform,
-        url: item.url,
-        created_at: item.created_at,
-      })),
+      items: items.map((item) =>
+        item.kind === 'social_request'
+          ? {
+              client_id: item.client_id,
+              kind: 'social_request',
+              platform: item.platform,
+              recipe: item.recipe,
+              argument: item.argument,
+              created_at: item.created_at,
+            }
+          : {
+              client_id: item.client_id,
+              kind: item.kind,
+              title: item.title,
+              body: item.body,
+              platform: item.platform,
+              url: item.url,
+              created_at: item.created_at,
+            },
+      ),
     },
     bridge,
   );
+}
+
+export async function fetchLaptopSocialStatus(
+  pairing: PairingConfig,
+  bridge: NativeBridge = getNativeBridge(),
+): Promise<SocialStatusInfo> {
+  return laptopCall<SocialStatusInfo>(pairing, 'GET', 'social/status', undefined, bridge, 5000);
+}
+
+export async function fetchLaptopSocialRuns(
+  pairing: PairingConfig,
+  limit = 30,
+  bridge: NativeBridge = getNativeBridge(),
+): Promise<SocialRunRecord[]> {
+  const res = await laptopCall<{ runs: SocialRunRecord[] }>(
+    pairing,
+    'GET',
+    `social/runs?limit=${limit}`,
+    undefined,
+    bridge,
+  );
+  return Array.isArray(res?.runs) ? res.runs : [];
+}
+
+export async function fetchLaptopSocialRun(
+  pairing: PairingConfig,
+  runId: string,
+  bridge: NativeBridge = getNativeBridge(),
+): Promise<SocialRunRecord> {
+  return laptopCall<SocialRunRecord>(
+    pairing,
+    'GET',
+    `social/runs/${encodeURIComponent(runId)}`,
+    undefined,
+    bridge,
+  );
+}
+
+export async function createLaptopSocialRun(
+  pairing: PairingConfig,
+  payload: { platform: SocialPlatform; recipe: SocialRecipe; argument: string },
+  bridge: NativeBridge = getNativeBridge(),
+): Promise<{ success: boolean; run: SocialRunRecord }> {
+  return laptopCall<{ success: boolean; run: SocialRunRecord }>(
+    pairing,
+    'POST',
+    'social/runs',
+    payload,
+    bridge,
+  );
+}
+
+export async function startLaptopSocialRun(
+  pairing: PairingConfig,
+  runId: string,
+  approvalHash: string,
+  bridge: NativeBridge = getNativeBridge(),
+): Promise<{ success: boolean; run: SocialRunRecord }> {
+  return laptopCall<{ success: boolean; run: SocialRunRecord }>(
+    pairing,
+    'POST',
+    `social/runs/${encodeURIComponent(runId)}/start`,
+    { approval_hash: approvalHash },
+    bridge,
+  );
+}
+
+export async function cancelLaptopSocialRun(
+  pairing: PairingConfig,
+  runId: string,
+  bridge: NativeBridge = getNativeBridge(),
+): Promise<{ success: boolean; run: SocialRunRecord }> {
+  return laptopCall<{ success: boolean; run: SocialRunRecord }>(
+    pairing,
+    'POST',
+    `social/runs/${encodeURIComponent(runId)}/cancel`,
+    {},
+    bridge,
+  );
+}
+
+export async function summariseLaptopSocialRun(
+  pairing: PairingConfig,
+  runId: string,
+  bridge: NativeBridge = getNativeBridge(),
+): Promise<{ success: boolean; run: SocialRunRecord }> {
+  return laptopCall<{ success: boolean; run: SocialRunRecord }>(
+    pairing,
+    'POST',
+    `social/runs/${encodeURIComponent(runId)}/summarise`,
+    {},
+    bridge,
+    AGENT_MESSAGE_TIMEOUT_MS,
+  );
+}
+
+export async function postLaptopSocialChallenge(
+  pairing: PairingConfig,
+  action: 'later' | 'skip' | 'continue',
+  runId?: string,
+  bridge: NativeBridge = getNativeBridge(),
+): Promise<{ ok: boolean; cleared?: boolean; challenge_kind?: string; run?: SocialRunRecord }> {
+  const cleanCreds = await laptopCreds(pairing, bridge);
+  try {
+    return await netJson<{
+      ok: boolean;
+      cleared?: boolean;
+      challenge_kind?: string;
+      run?: SocialRunRecord;
+    }>(
+      {
+        destination: 'laptop',
+        method: 'POST',
+        url: `http://${pairing.host}:${pairing.port}/phone/v1/social/challenge/${action}`,
+        body: runId ? { run_id: runId } : {},
+      },
+      cleanCreds,
+      bridge,
+    );
+  } catch (err) {
+    if (err instanceof HttpStatusError && err.status === 401) {
+      throw new LaptopAuthError();
+    }
+    if (action === 'continue' && err instanceof HttpStatusError && err.status === 409) {
+      try {
+        const parsed = JSON.parse(err.body) as {
+          ok?: boolean;
+          cleared?: boolean;
+          challenge_kind?: string;
+          run?: SocialRunRecord;
+        };
+        if (parsed && parsed.ok === false) {
+          return {
+            ok: false,
+            cleared: false,
+            challenge_kind: parsed.challenge_kind,
+            run: parsed.run,
+          };
+        }
+      } catch {
+        // Fall through to throw original error
+      }
+    }
+    throw err;
+  }
+}
+
+export async function fetchLaptopSocialLiveFrame(
+  pairing: PairingConfig,
+  bridge: NativeBridge = getNativeBridge(),
+): Promise<SocialLiveFrameResponse> {
+  return laptopCall<SocialLiveFrameResponse>(
+    pairing,
+    'GET',
+    'social/live/frame',
+    undefined,
+    bridge,
+    5000,
+  );
+}
+
+export async function postLaptopSocialLiveInput(
+  pairing: PairingConfig,
+  payload: SocialLiveInputPayload,
+  bridge: NativeBridge = getNativeBridge(),
+): Promise<{ ok: boolean }> {
+  return laptopCall<{ ok: boolean }>(pairing, 'POST', 'social/live/input', payload, bridge, 5000);
 }
 
 /** Fetch ONLY the signed-in user's own mirror_records (always filtered owner_id=eq.<uid>). */

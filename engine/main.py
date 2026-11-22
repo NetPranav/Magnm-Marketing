@@ -118,6 +118,9 @@ def main(argv=None):
     import coding_agents
     coding_agents.recover_stale_runs()
 
+    from social import service as social_service
+    social_service.recover_stale_runs()
+
     import jobs
     jobs.start_worker()
 

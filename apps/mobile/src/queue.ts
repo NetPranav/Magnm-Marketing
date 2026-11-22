@@ -26,14 +26,28 @@ function generateClientId(): string {
 function isValidQueueItem(item: unknown): item is QueuedInboxItem {
   if (!item || typeof item !== 'object') return false;
   const obj = item as Partial<QueuedInboxItem>;
+  if (
+    typeof obj.client_id !== 'string' ||
+    !obj.client_id.trim() ||
+    typeof obj.laptop_device_id !== 'string' ||
+    !obj.laptop_device_id.trim()
+  ) {
+    return false;
+  }
+  if (obj.kind === 'social_request') {
+    return Boolean(
+      typeof obj.platform === 'string' &&
+        obj.platform.trim().length > 0 &&
+        typeof obj.recipe === 'string' &&
+        obj.recipe.trim().length > 0 &&
+        typeof obj.argument === 'string' &&
+        obj.argument.trim().length > 0,
+    );
+  }
   return Boolean(
-    typeof obj.client_id === 'string' &&
-      obj.client_id.trim().length > 0 &&
-      (obj.kind === 'draft' || obj.kind === 'note' || obj.kind === 'idea') &&
+    (obj.kind === 'draft' || obj.kind === 'note' || obj.kind === 'idea') &&
       typeof obj.title === 'string' &&
-      typeof obj.body === 'string' &&
-      typeof obj.laptop_device_id === 'string' &&
-      obj.laptop_device_id.trim().length > 0,
+      typeof obj.body === 'string',
   );
 }
 
@@ -77,21 +91,51 @@ export interface EnqueueInput {
   title: string;
   body: string;
   platform?: string;
+  recipe?: string;
+  argument?: string;
   url?: string;
   ownerUid?: string;
   laptopDeviceId: string;
   clientId?: string;
 }
 
-/** Queue a draft, note, or idea locally, bound to paired laptop (sign-in is not required). */
+/** Queue a draft, note, idea, or social_request locally, bound to paired laptop (sign-in is not required). */
 export function enqueueInboxItem(input: EnqueueInput): QueuedInboxItem {
-  const title = input.title.trim();
-  if (!title) {
-    throw new Error('Title is required to queue an item.');
-  }
   const laptopDeviceId = (input.laptopDeviceId ?? '').trim();
   if (!laptopDeviceId) {
     throw new Error('Pair with your laptop before saving inbox items.');
+  }
+  if (input.kind === 'social_request') {
+    const plat = (input.platform ?? '').trim();
+    const rec = (input.recipe ?? '').trim();
+    const arg = (input.argument ?? input.body ?? '').trim();
+    if (!plat || !rec || !arg) {
+      throw new Error('Platform, recipe, and argument are required for a social request.');
+    }
+    const item: QueuedInboxItem = {
+      client_id: (input.clientId ?? '').trim() || generateClientId(),
+      kind: 'social_request',
+      title: input.title.trim() || `${plat} ${rec}`,
+      body: arg,
+      platform: plat,
+      recipe: rec,
+      argument: arg,
+      created_at: new Date().toISOString(),
+      owner_uid: (input.ownerUid ?? '').trim(),
+      laptop_device_id: laptopDeviceId,
+      last_error: null,
+    };
+    const existing = loadQueue();
+    if (existing.some((entry) => entry.client_id === item.client_id)) {
+      return item;
+    }
+    saveQueue([...existing, item]);
+    return item;
+  }
+
+  const title = input.title.trim();
+  if (!title) {
+    throw new Error('Title is required to queue an item.');
   }
   if (input.url && input.url.trim()) {
     let parsed: URL;

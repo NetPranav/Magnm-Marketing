@@ -2392,3 +2392,38 @@
 .studio-coding-fields {
   align-items: start;
 }
+
+.studio-social-alert-wrap {
+  margin-bottom: var(--s-4);
+}
+
+.studio-social-risks {
+  margin: 0;
+  padding-left: var(--s-4);
+  display: grid;
+  gap: 2px;
+}
+
+.studio-social-live-dialog {
+  width: min(760px, 96vw);
+}
+
+.studio-social-live-stage {
+  aspect-ratio: 1280 / 800;
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.studio-social-live-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  cursor: crosshair;
+}
