@@ -36,6 +36,7 @@ import platforms
 import product_rules
 import reminders
 import repos
+import retired_repos
 import results_extract
 import review
 import review_studio
@@ -170,6 +171,9 @@ def _build_confidential_guard():
                 txt = str(term or "").strip()
                 if txt:
                     repo_patterns.append(product_rules._word_pattern(txt))
+        # Removed or no longer shared confidential repos stay guarded.
+        for txt in retired_repos.terms():
+            repo_patterns.append(product_rules._word_pattern(txt))
     except Exception as exc:
         raise PhoneApiError(
             "Connected repos could not be read; phone access paused.",

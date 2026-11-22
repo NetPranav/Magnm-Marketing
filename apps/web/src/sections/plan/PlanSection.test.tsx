@@ -179,4 +179,36 @@ describe('PlanSection', () => {
     expect(screen.getByText(/No weekly plan generated yet/i)).toBeTruthy();
     expect(screen.getByText('No schedules configured.')).toBeTruthy();
   });
+
+  it('plans the week on a chosen repository and says so when it is confidential', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/repos') {
+        return jsonResponse([
+          { id: 'open', name: 'OpenRepo', kind: 'github', confidential: false, scope: 'personal' },
+          { id: 'team-secret', name: 'SecretRepo', kind: 'github', confidential: true, scope: 'global' },
+        ]);
+      }
+      if (url === '/api/status') return jsonResponse({ schedules: [], editorial_plan: [] });
+      if (url === '/api/workflows/start') return jsonResponse({ id: 'wf-1', kind: 'weekly_plan', status: 'queued' });
+      return jsonResponse([]);
+    });
+    render(<PlanSection />);
+    const picker = (await screen.findByLabelText(/Repository/)) as HTMLSelectElement;
+    await waitFor(() => expect(picker.options.length).toBe(3));
+    fireEvent.change(picker, { target: { value: 'team-secret' } });
+    expect(screen.getByText(/the whole plan runs on local AI only/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Plan my week' }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/workflows/start',
+        expect.objectContaining({
+          body: JSON.stringify({
+            kind: 'weekly_plan',
+            inputs: { posts_per_week: 3, platforms: ['linkedin', 'x'], repo_id: 'team-secret' },
+          }),
+        }),
+      );
+    });
+  });
 });

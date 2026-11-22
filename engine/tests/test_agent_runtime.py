@@ -652,6 +652,14 @@ class AgentRuntimeTests(unittest.TestCase):
         """Core tools work against repo files/DB and recover_stale_sessions marks running as failed."""
         ctx = tools.ToolContext(session_id="s_core", agent_id="researcher")
 
+        # The app ships with no repositories, so this test brings its own.
+        os.makedirs(paths.data("config"), exist_ok=True)
+        with open(paths.data("config", "repos.json"), "w", encoding="utf-8") as f:
+            json.dump({"repositories": [{
+                "id": "cero", "name": "Cero Terminal", "product_id": "cero", "kind": "github",
+                "github": "example/cero-terminal", "status": "released", "version": "2.2.3",
+            }]}, f)
+
         repos_res = tools.run_tool("list_repos", ctx, {}, ["list_repos"])
         repo_ids = [r["id"] for r in repos_res["repositories"]]
         self.assertIn("cero", repo_ids)

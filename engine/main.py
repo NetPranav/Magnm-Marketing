@@ -112,6 +112,12 @@ def main(argv=None):
     import db
     db.init_db()
 
+    import repos
+    try:
+        repos.remove_seeded_repos()
+    except Exception as exc:
+        _safe_log(f"[magnm-engine] Could not clean up old default repos: {exc}")
+
     import agent_runtime
     agent_runtime.recover_stale_sessions()
 

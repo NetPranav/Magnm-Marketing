@@ -100,7 +100,8 @@ Once Magnm Studio opens in your browser, go to **Settings** in the navigation ba
 1. **01 Account**: If your admin has invited your Google account, click **Sign in with Google** to turn on workspace sync and use the team's shared AI keys when available.
 2. **03 Keys**: If you have personal API keys (for example `NVIDIA_NIM_API_KEY` or numbered keys `NVIDIA_NIM_API_KEY1` through `NVIDIA_NIM_API_KEY10`), add them under **Add or replace a key** (**Key slot** -> **Key value** -> **Save key**). Never share keys or commit `.env` to git.
 3. **04 Setup check**: Click **Run check** to verify Python Runtime, Disk Space, FFmpeg, Chromium / Playwright, Node.js, Git, Ollama Local AI, and NVIDIA NIM API Key. Click **Install browser** if Playwright Chromium is not installed yet.
-4. **Notifications**: Optionally click **Turn on desktop notifications**, then **Send a test notification** to verify alerts appear in the top-right bell and system notifications.
+4. **Repos**: Magnm Studio starts with no repositories. Open **Repos** and click **Add repo** to connect a local folder or a GitHub repository; they are saved in your own `config/repos.json`. Admins also see **Add for the whole team** (GitHub repositories only) and **Share with team** on their own GitHub repos: every member then gets those repositories automatically on their next sync, marked **Team**, and cannot edit or remove them (**Managed by your admin**). In **Create** and **Plan my week**, pick a **Repository** to ground a run on that repository's changes, approved facts and research only; a confidential repository makes the whole run use local AI.
+5. **Notifications**: Optionally click **Turn on desktop notifications**, then **Send a test notification** to verify alerts appear in the top-right bell and system notifications.
 
 ---
 
@@ -132,6 +133,7 @@ Phone connections work strictly over **Tailscale** (same-Wi-Fi discovery is disa
 ## Where your data lives
 
 - **Running `engine/server.py` from source (without `MAGNM_HOME`)**: data is stored inside the repository folder (`state/magnm.db`, `outputs/`, `assets/`, `logs/`, `config/`, and `.env`).
+- **Your repositories** are per-user data (`config/repos.json`, never shipped with the app). Older installs lose only the two repositories that earlier versions shipped, once, after a backup in `state/backups/`; everything else you added stays. Team repositories are cached separately in `state/team_repos.json` and cleared when you sign out.
 - **Running with `MAGNM_HOME` or `--data-dir`**: data is stored in that directory instead.
 - **Desktop app (`studio.magnm.desktop`)**:
   - **Linux**: `$XDG_DATA_HOME/studio.magnm.desktop` (usually `~/.local/share/studio.magnm.desktop`)

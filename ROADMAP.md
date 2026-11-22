@@ -194,6 +194,10 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
   older paths did). Settings shows the working agy MCP command. From here code is written by Claude Sonnet and reviewed
   by Claude; agy is no longer used.
 
+- **2026-11-22 step 2 built: repositories.** The software ships with none; each user adds their own (a one-time cleanup,
+  with a backup, takes the two formerly seeded entries out of existing installs). An admin can add global GitHub repos
+  that reach every member automatically. Create and Plan have a Repository picker.
+
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.
 - **Storage:** Supabase Storage (1 GB) first, with **Backblaze B2 (10 GB free, no card)** as the overflow for video previews. Details in 3.7.

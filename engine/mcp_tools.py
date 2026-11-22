@@ -22,6 +22,7 @@ import paths
 import product_rules
 import reminders
 import repos
+import retired_repos
 import review
 from tools import content as content_tools
 import weekly_summary
@@ -366,6 +367,9 @@ def _build_confidential_guard():
                 txt = str(term or "").strip()
                 if txt:
                     repo_patterns.append(product_rules._word_pattern(txt))
+        # Removed or no longer shared confidential repos stay guarded.
+        for txt in retired_repos.terms():
+            repo_patterns.append(product_rules._word_pattern(txt))
     except Exception as exc:
         raise McpToolError(
             "Connected repos could not be read; MCP access paused.",

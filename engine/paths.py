@@ -30,6 +30,9 @@ _EMPTY_DATA_DIRS = (
     ("queue", "agy"),
 )
 
+# Per-user data: never seeded from a shipped copy (the software ships with no repositories).
+_NEVER_SEED_CONFIG = ("repos.json",)
+
 _SEED_FILES = (
     ("research", "product-facts.md"),
     ("config.md",),
@@ -78,7 +81,7 @@ def ensure_data_root():
     if os.path.isdir(src_config):
         os.makedirs(dst_config, exist_ok=True)
         for name in os.listdir(src_config):
-            if name.endswith(".json"):
+            if name.endswith(".json") and name not in _NEVER_SEED_CONFIG:
                 src_file = os.path.join(src_config, name)
                 dst_file = os.path.join(dst_config, name)
                 if os.path.isfile(src_file) and not os.path.exists(dst_file):

@@ -23,8 +23,15 @@ import {
   toggleSchedule,
   updateSchedule,
 } from '../../api/plan';
+import { listRepos } from '../../api/repos';
 import { useStudioEvents } from '../../events';
-import type { ContentItem, EditorialPlanRow, ScheduleRecord, WorkflowRun } from '../../types';
+import type {
+  ContentItem,
+  EditorialPlanRow,
+  RepoRecord,
+  ScheduleRecord,
+  WorkflowRun,
+} from '../../types';
 import { formatTimestamp } from '../../ui/format';
 import { EditorialCalendar } from './EditorialCalendar';
 
@@ -76,6 +83,8 @@ export function PlanSection() {
   const [schedules, setSchedules] = useState<ScheduleRecord[]>([]);
   const [editorialPlan, setEditorialPlan] = useState<EditorialPlanRow[]>([]);
 
+  const [repos, setRepos] = useState<RepoRecord[]>([]);
+  const [repoId, setRepoId] = useState('');
   const [postsPerWeek, setPostsPerWeek] = useState('3');
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(['linkedin', 'x']);
   const [gateFeedback, setGateFeedback] = useState<Record<string, string>>({});
@@ -96,10 +105,15 @@ export function PlanSection() {
       listWorkflows(30),
       listContent(100),
       getStatus(),
+      listRepos(),
     ]);
 
     let firstErr: string | null = null;
-    const [wfRes, contentRes, statusRes] = results;
+    const [wfRes, contentRes, statusRes, reposRes] = results;
+
+    if (reposRes.status === 'fulfilled') {
+      setRepos(Array.isArray(reposRes.value) ? reposRes.value : []);
+    }
 
     if (wfRes.status === 'fulfilled') {
       setWorkflows(Array.isArray(wfRes.value) ? wfRes.value : []);
@@ -179,6 +193,8 @@ export function PlanSection() {
     });
   }, [workflows]);
 
+  const selectedRepo = useMemo(() => repos.find((r) => r.id === repoId) ?? null, [repos, repoId]);
+
   const togglePlatform = (plat: string) => {
     setSelectedPlatforms((prev) =>
       prev.includes(plat) ? prev.filter((p) => p !== plat) : [...prev, plat],
@@ -191,7 +207,11 @@ export function PlanSection() {
     try {
       const count = Math.max(1, Number.parseInt(postsPerWeek, 10) || 2);
       const platforms = selectedPlatforms.length > 0 ? selectedPlatforms : ['linkedin', 'x'];
-      await startWeeklyPlan({ posts_per_week: count, platforms });
+      await startWeeklyPlan({
+        posts_per_week: count,
+        platforms,
+        ...(repoId ? { repo_id: repoId } : {}),
+      });
       await loadAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start weekly plan.');
@@ -332,6 +352,26 @@ export function PlanSection() {
                   value={postsPerWeek}
                   onChange={(e) => setPostsPerWeek(e.target.value)}
                 />
+              </Field>
+              <Field
+                label="Repository"
+                htmlFor="plan-repo"
+                hint={
+                  selectedRepo?.confidential
+                    ? 'Confidential: the whole plan runs on local AI only.'
+                    : 'Optional. Grounds the plan on this repository only.'
+                }
+              >
+                <Select id="plan-repo" value={repoId} onChange={(e) => setRepoId(e.target.value)}>
+                  <option value="">No repository</option>
+                  {repos.map((repo) => (
+                    <option key={repo.id} value={repo.id}>
+                      {repo.name}
+                      {repo.scope === 'global' ? ' (team)' : ''}
+                      {repo.confidential ? ' (confidential)' : ''}
+                    </option>
+                  ))}
+                </Select>
               </Field>
               <div className="studio-field-grow">
                 <span className="mg-label">Platforms</span>
