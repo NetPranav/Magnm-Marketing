@@ -617,4 +617,129 @@ describe('ReviewSection', () => {
       expect(confBtn.title).toBe('Confidential items cannot be sent to your phone');
     });
   });
+
+  it('places Post with API after manual posting kit, renders exact preview, blocks Enter confirm and unfocused default, and surfaces unknown status', async () => {
+    const payload = makeReviewPayload();
+    let confirmCalls = 0;
+    let shouldFailUnknown = false;
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/review/cnt-rev-1') return jsonResponse(payload);
+      if (url === '/api/roster') return jsonResponse(MOCK_ROSTER);
+      if (url === '/api/phone') return jsonResponse({ enabled: false, running: false, devices: [] });
+      if (url.startsWith('/api/posting/attempts')) {
+        return jsonResponse({
+          attempts: shouldFailUnknown
+            ? [
+                {
+                  id: 'post-unk-1',
+                  content_id: 'cnt-rev-1',
+                  platform: 'linkedin',
+                  payload_hash: 'h1',
+                  status: 'unknown',
+                  error: 'Post status is unknown; check the platform before trying again.',
+                  prepared_at: '2026-11-22T10:00:00Z',
+                  expires_at: '2026-11-22T10:05:00Z',
+                  updated_at: '2026-11-22T10:01:00Z',
+                },
+              ]
+            : [],
+        });
+      }
+      if (url === '/api/posting/prepare' && init?.method === 'POST') {
+        const req = JSON.parse(String(init.body || '{}')) as { ai_generated?: boolean };
+        return jsonResponse({
+          attempt_id: 'post-1',
+          confirmation_id: 'pconf-1',
+          payload_hash: 'hash-1',
+          expires_at: '2026-11-22T12:05:00Z',
+          expires_in_s: 300,
+          content_id: 'cnt-rev-1',
+          content_version: 2,
+          item_status: 'draft',
+          platform: 'linkedin',
+          account: {
+            account_id: 'urn:li:person:abc',
+            display_name: 'Jane Doe',
+          },
+          final_text: SAMPLE_BODY,
+          media: [
+            {
+              kind: 'image',
+              source: 'local',
+              path: 'outputs/posts/cnt-rev-1/4x5.png',
+              bytes: 2048,
+              sha256: 'deadbeef01234567',
+              mime_type: 'image/png',
+              alt_text: 'Cero card',
+            },
+          ],
+          ai_generated: Boolean(req.ai_generated),
+          warnings: [{ code: 'product_rule', severity: 'warn', message: 'Check blocked terms.' }],
+          cost: { estimated_usd: 0, label: '$0.00', summary: 'No per-post fee on LinkedIn API.' },
+        });
+      }
+      if (url === '/api/posting/confirm' && init?.method === 'POST') {
+        confirmCalls += 1;
+        if (shouldFailUnknown) {
+          return jsonResponse(
+            {
+              error: 'Post status is unknown; check the platform before trying again.',
+              error_code: 'provider_5xx',
+              uncertain: true,
+              attempt_status: 'unknown',
+            },
+            502,
+          );
+        }
+        return jsonResponse({
+          ok: true,
+          post_id: 'urn:li:share:1',
+          post_url: 'https://www.linkedin.com/feed/update/urn:li:share:1/',
+          status: 'posted',
+          item: { ...payload.item, status: 'posted' },
+        });
+      }
+      return jsonResponse({});
+    });
+
+    render(<ReviewSection contentId="cnt-rev-1" onNavigate={vi.fn()} />);
+
+    const kitBtn = await screen.findByRole('button', { name: 'Build posting kit' });
+    const apiBtn = screen.getByRole('button', { name: 'Post with API' });
+    // Manual posting kit button MUST come before Post with API in DOM order.
+    expect(kitBtn.compareDocumentPosition(apiBtn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.click(apiBtn);
+
+    const dialog = await screen.findByRole('dialog');
+    const confirmBtn = await within(dialog).findByRole('button', { name: 'Post publicly now' });
+
+    await waitFor(() => {
+      expect(within(dialog).getByText(/Jane Doe/)).toBeTruthy();
+      expect(within(dialog).getByText(/deadbeef01234567/)).toBeTruthy();
+      expect(within(dialog).getByText('Check blocked terms.')).toBeTruthy();
+      expect(within(dialog).getByText('No per-post fee on LinkedIn API.')).toBeTruthy();
+      expect((confirmBtn as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    // "Post publicly now" must NOT be focused by default.
+    expect(document.activeElement).not.toBe(confirmBtn);
+
+    // Pressing Enter inside the dialog or on the button itself must NEVER confirm.
+    const aiBox = within(dialog).getByRole('checkbox', { name: /AI-generated/i }) as HTMLInputElement;
+    expect(aiBox.checked).toBe(false);
+    fireEvent.keyDown(aiBox, { key: 'Enter', code: 'Enter' });
+    fireEvent.keyDown(confirmBtn, { key: 'Enter', code: 'Enter' });
+    expect(confirmCalls).toBe(0);
+
+    // Clicking "Post publicly now" when provider returns uncertain/5xx surfaces "unknown" clearly.
+    shouldFailUnknown = true;
+    fireEvent.click(confirmBtn);
+    await waitFor(() => {
+      expect(confirmCalls).toBe(1);
+      expect(within(dialog).getByText(/Post status: unknown\./i)).toBeTruthy();
+    });
+  });
 });

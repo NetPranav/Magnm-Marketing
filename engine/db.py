@@ -22,7 +22,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -1008,6 +1008,50 @@ def _apply_migration_v23(conn):
     )
 
 
+def _apply_migration_v24(conn):
+    """Add posting_accounts (no secrets) and posting_attempts tables idempotently."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS posting_accounts (
+            platform TEXT PRIMARY KEY,
+            account_id TEXT,
+            username TEXT,
+            display_name TEXT,
+            client_id TEXT,
+            connected_at TEXT NOT NULL,
+            expires_at TEXT,
+            last_refreshed_at TEXT,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS posting_attempts (
+            id TEXT PRIMARY KEY,
+            content_id TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            account_id TEXT,
+            confirmation_id TEXT NOT NULL UNIQUE,
+            payload_hash TEXT NOT NULL,
+            options_json TEXT,
+            status TEXT NOT NULL DEFAULT 'prepared',
+            post_id TEXT,
+            post_url TEXT,
+            error TEXT,
+            prepared_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            confirmed_at TEXT,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_posting_attempts_content
+            ON posting_attempts(content_id, prepared_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_posting_attempts_status
+            ON posting_attempts(status);
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -1032,6 +1076,7 @@ _MIGRATIONS = (
     (21, _apply_migration_v21),
     (22, _apply_migration_v22),
     (23, _apply_migration_v23),
+    (24, _apply_migration_v24),
 )
 
 
@@ -6896,6 +6941,333 @@ def resolve_social_challenges_for_run(run_id, resolved_at, resolution):
             """,
             (str(resolved_at), str(resolution), str(run_id)),
         )
+
+
+def _row_to_posting_account(row):
+    if row is None:
+        return None
+    return {
+        "platform": row["platform"],
+        "account_id": row["account_id"],
+        "username": row["username"],
+        "display_name": row["display_name"],
+        "client_id": row["client_id"],
+        "connected_at": row["connected_at"],
+        "expires_at": row["expires_at"],
+        "last_refreshed_at": row["last_refreshed_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def upsert_posting_account(
+    platform,
+    *,
+    account_id=None,
+    username=None,
+    display_name=None,
+    client_id=None,
+    connected_at=None,
+    expires_at=None,
+    last_refreshed_at=None,
+    updated_at=None,
+):
+    """Insert or update non-secret posting account metadata for platform."""
+    ensure_init()
+    plat = str(platform or "").strip().lower()
+    now = str(updated_at or datetime.now(timezone.utc).isoformat())
+    existing = get_posting_account(plat)
+    conn_ts = str(connected_at or (existing["connected_at"] if existing else now))
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO posting_accounts (
+                platform, account_id, username, display_name, client_id,
+                connected_at, expires_at, last_refreshed_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(platform) DO UPDATE SET
+                account_id = excluded.account_id,
+                username = excluded.username,
+                display_name = excluded.display_name,
+                client_id = COALESCE(excluded.client_id, posting_accounts.client_id),
+                connected_at = excluded.connected_at,
+                expires_at = excluded.expires_at,
+                last_refreshed_at = COALESCE(excluded.last_refreshed_at, posting_accounts.last_refreshed_at),
+                updated_at = excluded.updated_at
+            """,
+            (
+                plat,
+                str(account_id) if account_id is not None else None,
+                str(username) if username is not None else None,
+                str(display_name) if display_name is not None else None,
+                str(client_id) if client_id is not None else None,
+                conn_ts,
+                str(expires_at) if expires_at is not None else None,
+                str(last_refreshed_at) if last_refreshed_at is not None else None,
+                now,
+            ),
+        )
+    return get_posting_account(plat)
+
+
+def get_posting_account(platform):
+    """Return non-secret posting account row for platform, or None."""
+    if not platform:
+        return None
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM posting_accounts WHERE platform = ?",
+        (str(platform).strip().lower(),),
+    ).fetchone()
+    return _row_to_posting_account(row)
+
+
+def list_posting_accounts():
+    """Return all posting_accounts rows keyed by platform."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute("SELECT * FROM posting_accounts").fetchall()
+    return {r["platform"]: _row_to_posting_account(r) for r in rows}
+
+
+def delete_posting_account(platform):
+    """Delete posting_accounts row for platform."""
+    if not platform:
+        return False
+    ensure_init()
+    conn = connect()
+    with conn:
+        cur = conn.execute(
+            "DELETE FROM posting_accounts WHERE platform = ?",
+            (str(platform).strip().lower(),),
+        )
+    return cur.rowcount > 0
+
+
+_UPDATABLE_POSTING_ATTEMPT_FIELDS = frozenset({
+    "status",
+    "post_id",
+    "post_url",
+    "error",
+    "confirmed_at",
+    "finished_at",
+    "updated_at",
+})
+
+
+def _row_to_posting_attempt(row):
+    if row is None:
+        return None
+    opts = {}
+    if row["options_json"]:
+        try:
+            loaded = json.loads(row["options_json"])
+            if isinstance(loaded, dict):
+                opts = loaded
+        except Exception:
+            opts = {}
+    return {
+        "id": row["id"],
+        "content_id": row["content_id"],
+        "platform": row["platform"],
+        "account_id": row["account_id"],
+        "confirmation_id": row["confirmation_id"],
+        "payload_hash": row["payload_hash"],
+        "options": opts,
+        "status": row["status"],
+        "post_id": row["post_id"],
+        "post_url": row["post_url"],
+        "error": row["error"],
+        "prepared_at": row["prepared_at"],
+        "expires_at": row["expires_at"],
+        "confirmed_at": row["confirmed_at"],
+        "finished_at": row["finished_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def create_posting_attempt(attempt):
+    """Insert a new posting_attempts row in prepared status."""
+    ensure_init()
+    now = str(attempt.get("prepared_at") or datetime.now(timezone.utc).isoformat())
+    updated = str(attempt.get("updated_at") or now)
+    opts_json = json.dumps(attempt["options"], ensure_ascii=False) if attempt.get("options") is not None else None
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO posting_attempts (
+                id, content_id, platform, account_id, confirmation_id, payload_hash,
+                options_json, status, post_id, post_url, error, prepared_at, expires_at,
+                confirmed_at, finished_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(attempt["id"]),
+                str(attempt["content_id"]),
+                str(attempt["platform"]).strip().lower(),
+                attempt.get("account_id"),
+                str(attempt["confirmation_id"]),
+                str(attempt["payload_hash"]),
+                opts_json,
+                str(attempt.get("status") or "prepared"),
+                attempt.get("post_id"),
+                attempt.get("post_url"),
+                attempt.get("error"),
+                now,
+                str(attempt["expires_at"]),
+                attempt.get("confirmed_at"),
+                attempt.get("finished_at"),
+                updated,
+            ),
+        )
+    return get_posting_attempt(attempt["id"])
+
+
+def get_posting_attempt(attempt_id):
+    """Return a single posting_attempts dict by id, or None."""
+    if not attempt_id:
+        return None
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM posting_attempts WHERE id = ?",
+        (str(attempt_id),),
+    ).fetchone()
+    return _row_to_posting_attempt(row)
+
+
+def get_posting_attempt_by_confirmation(confirmation_id):
+    """Return a single posting_attempts dict by confirmation_id, or None."""
+    if not confirmation_id:
+        return None
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM posting_attempts WHERE confirmation_id = ?",
+        (str(confirmation_id),),
+    ).fetchone()
+    return _row_to_posting_attempt(row)
+
+
+def list_posting_attempts(content_id=None, platform=None, limit=50):
+    """Return posting attempts newest-first, optionally filtered by content_id or platform."""
+    ensure_init()
+    conn = connect()
+    cap = max(1, min(int(limit or 50), 500))
+    clauses = []
+    params = []
+    if content_id:
+        clauses.append("content_id = ?")
+        params.append(str(content_id))
+    if platform:
+        clauses.append("platform = ?")
+        params.append(str(platform).strip().lower())
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(cap)
+    rows = conn.execute(
+        f"SELECT * FROM posting_attempts {where} ORDER BY prepared_at DESC, rowid DESC LIMIT ?",
+        tuple(params),
+    ).fetchall()
+    return [_row_to_posting_attempt(r) for r in rows]
+
+
+def list_executed_posting_attempts(content_id, platform):
+    """Every attempt that reached sending, newest first (previews never hide an unknown or posted one)."""
+    ensure_init()
+    rows = connect().execute(
+        """
+        SELECT * FROM posting_attempts
+        WHERE content_id = ? AND platform = ? AND status IN ('sending', 'unknown', 'posted', 'failed')
+        ORDER BY confirmed_at DESC, rowid DESC
+        """,
+        (str(content_id), str(platform).strip().lower()),
+    ).fetchall()
+    return [_row_to_posting_attempt(r) for r in rows]
+
+
+def acquire_posting_attempt_atomic(confirmation_id, payload_hash, content_id, platform, confirmed_at):
+    """Atomically consume a prepared posting_attempt and transition prepared -> sending."""
+    ensure_init()
+    ts = str(confirmed_at)
+    plat = str(platform).strip().lower()
+    cid = str(content_id)
+    conn = connect()
+    with conn:
+        cur = conn.execute(
+            """
+            UPDATE posting_attempts
+            SET status = 'sending',
+                confirmed_at = ?,
+                updated_at = ?
+            WHERE confirmation_id = ?
+              AND payload_hash = ?
+              AND content_id = ?
+              AND platform = ?
+              AND status = 'prepared'
+              AND NOT EXISTS (
+                  SELECT 1 FROM posting_attempts
+                  WHERE content_id = ? AND platform = ? AND status = 'sending'
+              )
+            """,
+            (ts, ts, str(confirmation_id), str(payload_hash), cid, plat, cid, plat),
+        )
+    if cur.rowcount != 1:
+        return None
+    return get_posting_attempt_by_confirmation(confirmation_id)
+
+
+def update_posting_attempt(attempt_id, **fields):
+    """Update allowed fields on posting_attempts and return the updated dict."""
+    ensure_init()
+    assignments = []
+    params = []
+    for k, v in fields.items():
+        if k not in _UPDATABLE_POSTING_ATTEMPT_FIELDS:
+            raise ValueError(f"Unsupported posting_attempt field '{k}'")
+        assignments.append(f"{k} = ?")
+        params.append(v)
+    if not assignments:
+        return get_posting_attempt(attempt_id)
+    if "updated_at" not in fields:
+        assignments.append("updated_at = ?")
+        params.append(datetime.now(timezone.utc).isoformat())
+    params.append(str(attempt_id))
+    conn = connect()
+    with conn:
+        conn.execute(
+            f"UPDATE posting_attempts SET {', '.join(assignments)} WHERE id = ?",
+            tuple(params),
+        )
+    return get_posting_attempt(attempt_id)
+
+
+def recover_stale_posting_attempts(finished_at=None):
+    """Mark any posting_attempts left in 'sending' after restart as 'unknown'."""
+    ensure_init()
+    ts = str(finished_at or datetime.now(timezone.utc).isoformat())
+    msg = "Post status is unknown (engine restarted while sending); check the platform before trying again."
+    conn = connect()
+    with conn:
+        rows = conn.execute(
+            "SELECT id FROM posting_attempts WHERE status = 'sending'"
+        ).fetchall()
+        ids = [r["id"] for r in rows]
+        if ids:
+            conn.execute(
+                """
+                UPDATE posting_attempts
+                SET status = 'unknown',
+                    error = COALESCE(error, ?),
+                    finished_at = ?,
+                    updated_at = ?
+                WHERE status = 'sending'
+                """,
+                (msg, ts, ts),
+            )
+    return [get_posting_attempt(aid) for aid in ids]
+
 
 
 
