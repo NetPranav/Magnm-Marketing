@@ -54,7 +54,7 @@ begin
 end;
 $$;
 
-revoke all on function public.stamp_team_repo() from public, anon;
+revoke all on function public.stamp_team_repo() from public, anon, authenticated;
 
 create trigger trg_team_repos_stamp
   before insert or update on public.team_repos
@@ -98,7 +98,7 @@ begin
 end;
 $$;
 
-revoke all on function public.audit_team_repo_change() from public, anon;
+revoke all on function public.audit_team_repo_change() from public, anon, authenticated;
 
 create trigger trg_audit_team_repos
   after insert or update or delete on public.team_repos

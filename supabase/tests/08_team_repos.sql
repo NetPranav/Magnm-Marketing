@@ -231,6 +231,8 @@ reset role;
 do $$
 begin
   if has_function_privilege('anon', 'public.stamp_team_repo()', 'EXECUTE')
+     or has_function_privilege('authenticated', 'public.stamp_team_repo()', 'EXECUTE')
+     or has_function_privilege('anon', 'public.audit_team_repo_change()', 'EXECUTE')
      or has_function_privilege('authenticated', 'public.audit_team_repo_change()', 'EXECUTE') then
     raise exception 'FAIL: team_repos trigger functions are executable by clients';
   end if;
