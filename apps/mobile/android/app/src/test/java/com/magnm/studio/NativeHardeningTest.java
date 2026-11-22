@@ -31,6 +31,18 @@ public class NativeHardeningTest {
     }
 
     @Test
+    public void startingAShareKeepsFilesAnotherShareIsUsing() throws Exception {
+        java.io.File dir = Files.createTempDirectory("share").toFile();
+        java.io.File recent = new java.io.File(dir, "recent.mp4");
+        java.io.File old = new java.io.File(dir, "old.mp4");
+        assertTrue(recent.createNewFile() && old.createNewFile());
+        assertTrue(old.setLastModified(System.currentTimeMillis() - 2L * 60 * 60 * 1000));
+        ShareOutPolicy.clearShareDir(dir);
+        assertTrue(recent.exists());
+        assertTrue(!old.exists());
+    }
+
+    @Test
     public void sharedCookieJarIsSwitchedOff() throws Exception {
         assertTrue(read("src/main/java/com/magnm/studio/MagnmNativePlugin.java").contains("CookieHandler.setDefault(null)"));
     }
@@ -38,7 +50,17 @@ public class NativeHardeningTest {
     @Test
     public void noFileProviderAndNoScannerTelemetry() throws Exception {
         String manifest = read("src/main/AndroidManifest.xml");
-        assertTrue(!manifest.contains("FileProvider"));
+        assertTrue(manifest.contains("androidx.core.content.FileProvider"));
+        assertTrue(manifest.contains("android:authorities=\"${applicationId}.fileprovider\""));
+        assertTrue(manifest.contains("android:exported=\"false\""));
+        assertTrue(manifest.contains("android:grantUriPermissions=\"true\""));
+        assertTrue(manifest.contains("@xml/file_paths"));
+        String filePaths = read("src/main/res/xml/file_paths.xml");
+        assertTrue(filePaths.contains("<cache-path"));
+        assertTrue(filePaths.contains("path=\"share/\""));
+        assertTrue(!filePaths.contains("files-path"));
+        assertTrue(!filePaths.contains("external-"));
+        assertTrue(!filePaths.contains("root-path"));
         assertTrue(manifest.contains("TransportBackendDiscovery"));
     }
 }

@@ -37,6 +37,7 @@ export interface TodayTabProps {
   onGoToPairing: () => void;
   onMarkReminderDone: (id: string) => void;
   onMarkAllNotificationsRead: () => void;
+  onOpenNotification?: (notif: PhoneNotification) => void;
   onConfirmResult: (
     proposalId: string,
     metrics: Record<string, number | null>,
@@ -70,6 +71,7 @@ export function TodayTab({
   onGoToPairing,
   onMarkReminderDone,
   onMarkAllNotificationsRead,
+  onOpenNotification,
   onConfirmResult,
 }: TodayTabProps) {
   const [editingProposalId, setEditingProposalId] = useState<string | null>(null);
@@ -367,14 +369,22 @@ export function TodayTab({
             <p className="mob-mono">No notifications yet.</p>
           ) : (
             <RowList>
-              {notifications.slice(0, 10).map((notif) => (
-                <Row
-                  key={notif.id}
-                  title={notif.confidential ? 'Confidential notification' : notif.title}
-                  description={notif.confidential ? undefined : notif.body || undefined}
-                  meta={notif.read_at ? 'Read' : 'New'}
-                />
-              ))}
+              {notifications.slice(0, 10).map((notif) => {
+                const route = notif.route || '';
+                const canOpen =
+                  !notif.confidential &&
+                  Boolean(onOpenNotification) &&
+                  (route.startsWith('#/pitch/') || route.startsWith('#/review/'));
+                return (
+                  <Row
+                    key={notif.id}
+                    title={notif.confidential ? 'Confidential notification' : notif.title}
+                    description={notif.confidential ? undefined : notif.body || undefined}
+                    meta={notif.read_at ? 'Read' : 'New'}
+                    onClick={canOpen ? () => onOpenNotification?.(notif) : undefined}
+                  />
+                );
+              })}
             </RowList>
           )}
         </div>

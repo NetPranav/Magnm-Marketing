@@ -207,6 +207,16 @@ export function validateLaptopUrl(rawUrl: string, paired: PairedLaptopEndpoint):
   return `http://${expectedHost}:${expectedPort}${parts.path}${parts.query}`;
 }
 
+/** Validate a paired laptop /phone/v1/files?... download URL strictly. */
+export function validateLaptopFileUrl(rawUrl: string, paired: PairedLaptopEndpoint): string {
+  const normalized = validateLaptopUrl(rawUrl, paired);
+  const parts = splitRawUrl(normalized);
+  if (parts.path !== '/phone/v1/files' || !parts.query.startsWith('?') || parts.query.length <= 1) {
+    throw new NetworkPolicyError('Laptop file share URL must target /phone/v1/files?...', 'forbidden_destination');
+  }
+  return normalized;
+}
+
 /** Return the configured Supabase https origin. */
 export function getConfiguredSupabaseOrigin(overrideUrl?: string): string {
   const raw = (overrideUrl ?? supabaseConfig.url ?? '').trim().replace(/\/+$/, '');
@@ -407,6 +417,31 @@ export async function netJson<T>(
     return null as T;
   }
   return JSON.parse(resp.body) as T;
+}
+
+/** Download and share a laptop media/PDF file via native shareLaptopFile with strict URL and credential isolation. */
+export async function netShareLaptopFile(
+  rawUrl: string,
+  title: string | undefined,
+  creds: NetworkCredentials,
+  bridge: NativeBridge = getNativeBridge(),
+): Promise<void> {
+  if (!creds.laptop) {
+    throw new NetworkPolicyError('No paired laptop is configured.', 'unpaired_laptop');
+  }
+  const validatedUrl = validateLaptopFileUrl(rawUrl, creds.laptop);
+  const token = (creds.laptopToken ?? '').trim();
+  if (!token) {
+    throw new NetworkPolicyError('Laptop device token is missing.', 'missing_credential');
+  }
+  if (typeof bridge.shareLaptopFile !== 'function') {
+    throw new Error('File sharing is unavailable on this platform.');
+  }
+  await bridge.shareLaptopFile({
+    url: validatedUrl,
+    headers: { Authorization: `Bearer ${token}` },
+    title,
+  });
 }
 
 export function getPublicSupabaseConfig(): {

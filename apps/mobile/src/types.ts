@@ -1,4 +1,4 @@
-export type MobileTabId = 'today' | 'drafts' | 'chat' | 'more';
+export type MobileTabId = 'today' | 'drafts' | 'pitch' | 'chat' | 'more';
 
 export type QueueItemKind = 'draft' | 'note' | 'idea';
 
@@ -83,6 +83,14 @@ export interface DraftComment {
   replies?: DraftComment[];
 }
 
+export type DraftFileEntry =
+  | {
+      kind?: string;
+      path: string;
+      alt_text?: string;
+    }
+  | string;
+
 export interface DraftItem {
   id: string;
   type?: string | null;
@@ -97,9 +105,19 @@ export interface DraftItem {
   created_at?: string | null;
   updated_at?: string | null;
   confidential?: boolean;
+  files?: DraftFileEntry[];
   versions?: DraftVersion[];
   comments?: DraftComment[];
   warnings?: Array<{ severity?: string; message?: string; product?: string } | string>;
+}
+
+export interface PitchProposalItem {
+  id: string;
+  name?: string;
+  kind?: string;
+  updated_at?: string;
+  payload?: Record<string, unknown>;
+  confidential?: boolean;
 }
 
 export interface ReminderItem {

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Serve the pinned Magnm-Pitch bundle at /pitch/ with offline fonts and Studio host payload."""
 
+import base64
 from copy import deepcopy
 from html.parser import HTMLParser
 import json
 import os
 import re
+import shutil
 import sys
 import urllib.parse
 
@@ -52,6 +54,20 @@ _GOOGLE_FONTS_RE = re.compile(
 )
 
 _APP_SCRIPT_RE = re.compile(r'<script\s+src="app\.js"\s*>\s*</script>', re.IGNORECASE)
+_CHARSET_META_RE = re.compile(r'<meta\s+charset="utf-8"\s*>', re.IGNORECASE)
+_FONT_URL_RE = re.compile(r'url\(\./fonts/([A-Za-z0-9._-]+\.woff2)\)')
+
+MOBILE_PITCH_CSP = (
+    "default-src 'none'; "
+    "script-src 'self' https://localhost; "
+    "style-src 'self' https://localhost 'unsafe-inline'; "
+    "img-src 'self' https://localhost data: blob:; "
+    "font-src data:; "
+    "connect-src 'none'; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "form-action 'none';"
+)
 
 
 def vendor_dir():
@@ -751,8 +767,8 @@ def safe_json_for_script(payload):
     )
 
 
-def compose_index_html(payload):
-    """Build the hosted Pitch HTML page from vendored index.html with two exact substitutions."""
+def _compose_html_base(script_replacement, extra_head=""):
+    """Build Pitch HTML from vendored index.html with offline fonts, optional head meta, and script tag replacement."""
     index_path = os.path.join(vendor_dir(), "index.html")
     with open(index_path, "r", encoding="utf-8") as f:
         raw_html = f.read()
@@ -764,17 +780,163 @@ def compose_index_html(payload):
     if font_subs != 1:
         raise RuntimeError(f"Expected 1 Google Fonts block in Pitch index.html, matched {font_subs}")
 
+    if extra_head:
+        html, meta_subs = _CHARSET_META_RE.subn(
+            lambda m: f"{m.group(0)}\n  {extra_head}",
+            html,
+            count=1,
+        )
+        if meta_subs != 1:
+            raise RuntimeError(f"Expected 1 charset meta tag in Pitch index.html, matched {meta_subs}")
+
+    html, app_subs = _APP_SCRIPT_RE.subn(lambda _match: script_replacement, html)
+    if app_subs != 1:
+        raise RuntimeError(f"Expected 1 app.js script tag in Pitch index.html, matched {app_subs}")
+
+    return html
+
+
+def compose_index_html(payload):
+    """Build the hosted Pitch HTML page from vendored index.html with two exact substitutions."""
     safe_json = safe_json_for_script(payload)
     replacement = (
         '<script src="app.js"></script>'
         f'<script type="application/json" id="magnm-pitch-data">{safe_json}</script>'
         '<script src="magnm-host.js"></script>'
     )
-    html, app_subs = _APP_SCRIPT_RE.subn(lambda _match: replacement, html)
-    if app_subs != 1:
-        raise RuntimeError(f"Expected 1 app.js script tag in Pitch index.html, matched {app_subs}")
+    return _compose_html_base(replacement)
 
-    return html
+
+def inline_fonts_css():
+    """Return fonts.css with every bundled .woff2 font inlined as a data: URI."""
+    fonts_css, fonts_dir = font_paths()
+    with open(fonts_css, "r", encoding="utf-8") as f:
+        css_text = f.read()
+
+    def _replace_font(match):
+        filename = match.group(1)
+        font_file = _safe_join_inside(fonts_dir, filename)
+        if not font_file:
+            raise RuntimeError(f"Missing bundled font file: {filename}")
+        with open(font_file, "rb") as ff:
+            encoded = base64.b64encode(ff.read()).decode("ascii")
+        return f"url(data:font/woff2;base64,{encoded})"
+
+    inlined, count = _FONT_URL_RE.subn(_replace_font, css_text)
+    if count == 0:
+        raise RuntimeError("No font URLs found to inline in fonts.css")
+    if re.search(r"url\((?!data:)", inlined, re.IGNORECASE):
+        raise RuntimeError("Non-data font URL remains in inlined fonts.css")
+    return inlined
+
+
+def compose_mobile_index_html(csp=MOBILE_PITCH_CSP):
+    """Build the sandboxed mobile Pitch HTML page with CSP and our boot script."""
+    csp_meta = f'<meta http-equiv="Content-Security-Policy" content="{csp}">'
+    return _compose_html_base('<script src="boot.js"></script>', extra_head=csp_meta)
+
+
+def build_mobile_bundle(output_dir, boot_js_path=None):
+    """Compose the offline mobile Pitch bundle into output_dir from pinned vendor files."""
+    out_abs = os.path.abspath(output_dir)
+    boot_src = os.path.abspath(boot_js_path or paths.resource("apps", "mobile", "pitch-boot.js"))
+    if not os.path.isfile(boot_src):
+        raise RuntimeError(f"Missing mobile Pitch boot script: {boot_src}")
+
+    host_src = os.path.realpath(host_js_path())
+    if not os.path.isfile(host_src):
+        raise RuntimeError(f"Missing Pitch host adapter: {host_src}")
+
+    if os.path.exists(out_abs):
+        shutil.rmtree(out_abs)
+    os.makedirs(os.path.join(out_abs, "fonts"), exist_ok=True)
+
+    written = []
+    index_html = compose_mobile_index_html()
+    with open(os.path.join(out_abs, "index.html"), "w", encoding="utf-8") as f:
+        f.write(index_html)
+    written.append("index.html")
+
+    fonts_css = inline_fonts_css()
+    with open(os.path.join(out_abs, "fonts", "fonts.css"), "w", encoding="utf-8") as f:
+        f.write(fonts_css)
+    written.append("fonts/fonts.css")
+
+    vdir = vendor_dir()
+    for rel_path in sorted(ALLOWED_PITCH_FILES):
+        parts = rel_path.split("/")
+        src = _safe_join_inside(vdir, *parts)
+        if not src:
+            raise RuntimeError(f"Missing vendored Pitch asset: {rel_path}")
+        dest = os.path.join(out_abs, *parts)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copyfile(src, dest)
+        written.append(rel_path)
+
+    shutil.copyfile(host_src, os.path.join(out_abs, "magnm-host.js"))
+    written.append("magnm-host.js")
+    shutil.copyfile(boot_src, os.path.join(out_abs, "boot.js"))
+    written.append("boot.js")
+
+    return {"output_dir": out_abs, "files": written}
+
+
+def admin_base_price_overrides():
+    """Return admin base price overrides from the active SQLite database."""
+    import db
+
+    if not os.path.isfile(db.get_db_path()):
+        return {}
+    return {
+        iid: int(entry["price"])
+        for iid, entry in db.list_pitch_base_prices().items()
+    }
+
+
+def proposal_payload_input(prop):
+    """Convert a stored proposal record into the proposal dict expected by build_payload()."""
+    if not isinstance(prop, dict):
+        return None
+    if prop.get("kind") == "default":
+        return {
+            "id": prop["id"],
+            "slug": prop["slug"],
+            "kind": "default",
+        }
+    preset_copy = dict(prop.get("preset") or {})
+    preset_copy["slug"] = prop["slug"]
+    return {
+        "id": prop["id"],
+        "slug": prop["slug"],
+        "kind": prop.get("kind") or "proposal",
+        "client_name": prop.get("client_name") or "",
+        "business_name": prop.get("business_name") or "",
+        "contact": prop.get("contact") or {},
+        "preset": preset_copy,
+        "price_overrides": prop.get("price_overrides") or {},
+        "custom_items": prop.get("custom_items") or [],
+        "hidden_sheets": prop.get("hidden_sheets") or [],
+        "hidden_about": prop.get("hidden_about") or [],
+        "custom_categories": prop.get("custom_categories") or [],
+        "payment_plan": prop.get("payment_plan") or [],
+        "payment_note": prop.get("payment_note") or "",
+        "timeline": prop.get("timeline") or [],
+        "service_plans": prop.get("service_plans") or [],
+    }
+
+
+def build_proposal_payload(prop, mode="preview", price_overrides=None):
+    """Build the hosted Pitch payload for a stored proposal record with admin base prices."""
+    norm_mode = mode if mode in VALID_MODES else "preview"
+    proposal_input = proposal_payload_input(prop)
+    if isinstance(prop, dict) and prop.get("kind") in ("default", "quote_form"):
+        norm_mode = "form"
+    overrides = price_overrides if price_overrides is not None else admin_base_price_overrides()
+    return build_payload(
+        mode=norm_mode,
+        proposal=proposal_input,
+        price_overrides=overrides,
+    )
 
 
 def _safe_join_inside(root_dir, *parts):
@@ -871,54 +1033,17 @@ def serve(handler, url):
         mode = (qs.get("mode", ["preview"])[0] or "preview").strip().lower()
         proposal_id = (qs.get("proposal", [""])[0] or "").strip()
 
-        admin_overrides = {}
-        if os.path.isfile(db.get_db_path()):
-            admin_overrides = {
-                iid: int(entry["price"])
-                for iid, entry in db.list_pitch_base_prices().items()
-            }
-
-        proposal_payload = None
         if proposal_id:
             prop = db.get_pitch_proposal(proposal_id)
             if prop is None:
                 return False
-            if prop.get("kind") == "default":
-                proposal_payload = {
-                    "id": prop["id"],
-                    "slug": prop["slug"],
-                    "kind": "default",
-                }
-                mode = "form"
-            else:
-                preset_copy = dict(prop.get("preset") or {})
-                preset_copy["slug"] = prop["slug"]
-                proposal_payload = {
-                    "id": prop["id"],
-                    "slug": prop["slug"],
-                    "kind": prop["kind"],
-                    "client_name": prop.get("client_name") or "",
-                    "business_name": prop.get("business_name") or "",
-                    "contact": prop.get("contact") or {},
-                    "preset": preset_copy,
-                    "price_overrides": prop.get("price_overrides") or {},
-                    "custom_items": prop.get("custom_items") or [],
-                    "hidden_sheets": prop.get("hidden_sheets") or [],
-                    "hidden_about": prop.get("hidden_about") or [],
-                    "custom_categories": prop.get("custom_categories") or [],
-                    "payment_plan": prop.get("payment_plan") or [],
-                    "payment_note": prop.get("payment_note") or "",
-                    "timeline": prop.get("timeline") or [],
-                    "service_plans": prop.get("service_plans") or [],
-                }
-                if prop.get("kind") == "quote_form":
-                    mode = "form"
-
-        payload = build_payload(
-            mode=mode,
-            proposal=proposal_payload,
-            price_overrides=admin_overrides,
-        )
+            payload = build_proposal_payload(prop, mode=mode)
+        else:
+            payload = build_payload(
+                mode=mode,
+                proposal=None,
+                price_overrides=admin_base_price_overrides(),
+            )
         html = compose_index_html(payload).encode("utf-8")
         _send_bytes(handler, html, "text/html; charset=utf-8", "no-store")
         return True

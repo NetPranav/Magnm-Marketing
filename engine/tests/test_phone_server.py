@@ -7,6 +7,7 @@ from http.server import ThreadingHTTPServer
 import io
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -27,6 +28,8 @@ import notifications
 import paths
 import phone_pairing
 import phone_server
+import pitch
+import pitch_host
 import reminders
 import results_extract
 import server
@@ -605,6 +608,13 @@ class PhoneServerTests(unittest.TestCase):
             out = self._call_as_phone("_handle_post_results_extract", ({"id": "d", "name": "Phone"}, params))
         self.assertNotIn("ProjectNightfall", out)
 
+    def test_send_to_phone_never_claims_success_when_notifications_are_off(self):
+        db.create_content_item(content_id="c_send", content_type="post", platform="linkedin", title="Cero post", body="Cero")
+        with patch.object(phone_pairing, "list_devices", return_value=[{"id": "d"}]), \
+                patch.object(notifications, "notify", return_value=None):
+            with self.assertRaises(phone_server.PhoneApiError):
+                phone_server.send_item_to_phone("content", "c_send")
+
     def test_09_confidential_stubs_and_fail_closed_everywhere(self):
         self._start_phone_server()
         _, token, _ = self._pair_device()
@@ -1055,6 +1065,330 @@ class PhoneServerTests(unittest.TestCase):
             self.assertEqual(st, 200)
             self.assertFalse(body["enabled"])
             self.assertFalse(body["running"])
+
+    def test_15_pitch_get_parity_confidential_limit_and_fail_closed(self):
+        self._start_phone_server()
+        _, tok, _ = self._pair_device("Pixel 9")
+        auth = {"Authorization": f"Bearer {tok}"}
+
+        defaults = pitch_host.parse_index_defaults()
+        db.set_pitch_base_price("w_front", 7777, updated_by="admin")
+
+        def make_preset(slug, title):
+            return {
+                "slug": slug,
+                "name": title,
+                "badge": "Web",
+                "clientName": "Aria",
+                "businessName": "Cero Labs",
+                "title": title,
+                "lead": "Public proposal",
+                "whatWeDo": "Web engineering",
+                "portfolio": "cero.example",
+                "thisPlan": "Cero Plan",
+                "architectureBlock": {
+                    "heading": "Architecture",
+                    "sub": "Layered system",
+                    "roles": [{"label": "Web", "points": ["Landing page"]}],
+                },
+                "initialSelected": ["w_front", "b_db"],
+                "sections": {"p2": ["w_front"], "p3": ["a_base"], "p4": ["b_db"], "p5": ["ai_bot"]},
+            }
+
+        pub_prop = db.create_pitch_proposal(
+            proposal_id="prop_pub_1",
+            slug="cero-pub-1",
+            kind="proposal",
+            status="draft",
+            client_name="Aria",
+            business_name="Cero Labs",
+            contact={},
+            preset=make_preset("cero-pub-1", "Cero Proposal"),
+            price_overrides={},
+            custom_items=[],
+            notes="",
+            created_by="user",
+            share_id="share_pub_1",
+            pitch_commit="test-commit",
+        )
+        form_prop = db.create_pitch_proposal(
+            proposal_id="prop_form_1",
+            slug="cero-form-1",
+            kind="quote_form",
+            status="draft",
+            client_name="Bea",
+            business_name="Cero Studio",
+            contact={},
+            preset=make_preset("cero-form-1", "Cero Form"),
+            price_overrides={},
+            custom_items=[],
+            notes="",
+            created_by="user",
+            share_id="share_form_1",
+            pitch_commit="test-commit",
+        )
+        final_prop = db.create_pitch_proposal(
+            proposal_id="prop_final_1",
+            slug="cero-final-1",
+            kind="final",
+            status="locked",
+            client_name="Cy",
+            business_name="Cero Ops",
+            contact={},
+            preset=make_preset("cero-final-1", "Cero Final"),
+            price_overrides={},
+            custom_items=[],
+            notes="",
+            created_by="user",
+            payment_plan=defaults["payment_plan"],
+            payment_note=defaults["payment_note"],
+            timeline=defaults["timeline"],
+            share_id="share_final_1",
+            pitch_commit="test-commit",
+        )
+        conf_record_prop = db.create_pitch_proposal(
+            proposal_id="prop_conf_rec",
+            slug="cero-conf-rec",
+            kind="proposal",
+            status="draft",
+            client_name="Dan",
+            business_name="Cero",
+            contact={},
+            preset=make_preset("cero-conf-rec", "Clean Name"),
+            price_overrides={},
+            custom_items=[],
+            notes="ProjectNightfall launch brief",
+            created_by="user",
+            share_id="share_conf_rec",
+            pitch_commit="test-commit",
+        )
+
+        for idx in range(98):
+            db.create_pitch_proposal(
+                proposal_id=f"prop_extra_{idx:03d}",
+                slug=f"cero-extra-{idx:03d}",
+                kind="proposal",
+                status="draft",
+                client_name=f"Client {idx}",
+                business_name="Cero",
+                contact={},
+                preset=make_preset(f"cero-extra-{idx:03d}", f"Extra {idx}"),
+                price_overrides={},
+                custom_items=[],
+                notes="",
+                created_by="user",
+                share_id=f"share_extra_{idx:03d}",
+                pitch_commit="test-commit",
+                created_at=f"2026-11-20T00:{idx // 60:02d}:{idx % 60:02d}+00:00",
+            )
+
+        st, _, data = self._phone_req("GET", "/phone/v1/pitch", headers=auth)
+        self.assertEqual(st, 200)
+        proposals = json.loads(data.decode("utf-8"))["proposals"]
+        # Default quotation + max 100 non-default proposals = 101
+        self.assertEqual(len(proposals), 101)
+        by_id = {p["id"]: p for p in proposals}
+        self.assertIn("prop_default", by_id)
+        self.assertEqual(by_id[conf_record_prop["id"]], {"id": conf_record_prop["id"], "confidential": True})
+
+        # Payload parity with pitch_host.serve across default, proposal, quote_form, and final
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.CommandCenterHandler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        port = httpd.server_address[1]
+
+        with patch.object(server, "ENGINE_TOKEN", "secret-eng-tok"):
+            for pid in ("prop_default", pub_prop["id"], form_prop["id"], final_prop["id"]):
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                try:
+                    conn.request(
+                        "GET",
+                        f"/pitch/?proposal={pid}&mode=present",
+                        headers={"X-Magnm-Token": "secret-eng-tok"},
+                    )
+                    resp = conn.getresponse()
+                    html_doc = resp.read().decode("utf-8")
+                    self.assertEqual(resp.status, 200)
+                finally:
+                    conn.close()
+                m = re.search(
+                    r'<script type="application/json" id="magnm-pitch-data">(.*?)</script>',
+                    html_doc,
+                    re.DOTALL,
+                )
+                self.assertIsNotNone(m, f"Missing embedded payload for {pid}")
+                served_payload = json.loads(m.group(1).replace("\\u003c", "<").replace("\\u003e", ">").replace("\\u0026", "&"))
+                self.assertEqual(by_id[pid]["payload"], served_payload)
+                self.assertEqual(by_id[pid]["payload"]["prices"]["w_front"], 7777)
+
+        # Payload-level confidentiality guard redacts even if the stored record seemed public
+        orig_builder = pitch_host.build_proposal_payload
+
+        def sneaky_payload(prop, mode="preview", price_overrides=None):
+            res = orig_builder(prop, mode=mode, price_overrides=price_overrides)
+            if prop.get("id") == pub_prop["id"]:
+                res["custom_items"] = [{"g": "Web & SaaS", "n": "ProjectNightfall add-on", "d": "", "p": 100}]
+            return res
+
+        with patch.object(pitch_host, "build_proposal_payload", side_effect=sneaky_payload):
+            st, _, data = self._phone_req("GET", "/phone/v1/pitch", headers=auth)
+            self.assertEqual(st, 200)
+            payload_redacted = {p["id"]: p for p in json.loads(data.decode("utf-8"))["proposals"]}
+            self.assertEqual(payload_redacted[pub_prop["id"]], {"id": pub_prop["id"], "confidential": True})
+
+        # Fail-closed when product_rules.json cannot be read
+        with open(self.rules_file, "w", encoding="utf-8") as f:
+            f.write("{corrupt")
+        st, _, _ = self._phone_req("GET", "/phone/v1/pitch", headers=auth)
+        self.assertEqual(st, 503)
+
+    def test_16_send_to_phone_auth_pairing_confidential_and_notifications(self):
+        self._start_phone_server()
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.CommandCenterHandler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        port = httpd.server_address[1]
+
+        def main_req(method, path, body=None, token=None):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            hdrs = {}
+            if token:
+                hdrs["X-Magnm-Token"] = token
+            raw = None
+            if body is not None:
+                raw = json.dumps(body).encode("utf-8")
+                hdrs["Content-Type"] = "application/json"
+            try:
+                conn.request(method, path, body=raw, headers=hdrs)
+                resp = conn.getresponse()
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+            finally:
+                conn.close()
+
+        pub_prop = db.create_pitch_proposal(
+            proposal_id="prop_send_pub",
+            slug="cero-send-pub",
+            kind="proposal",
+            status="draft",
+            client_name="Aria",
+            business_name="Cero Labs",
+            contact={},
+            preset={
+                "slug": "cero-send-pub",
+                "name": "Cero Send Pitch",
+                "badge": "Web",
+                "clientName": "Aria",
+                "businessName": "Cero Labs",
+                "title": "Cero Send Pitch",
+                "lead": "Public",
+                "whatWeDo": "Web",
+                "portfolio": "cero.example",
+                "thisPlan": "Plan",
+                "architectureBlock": {"heading": "Arch", "sub": "Sub", "roles": []},
+                "initialSelected": ["w_front"],
+                "sections": {"p2": ["w_front"], "p3": [], "p4": [], "p5": []},
+            },
+            price_overrides={},
+            custom_items=[],
+            notes="",
+            created_by="user",
+            share_id="share_send_pub",
+            pitch_commit="test-commit",
+        )
+        conf_prop = db.create_pitch_proposal(
+            proposal_id="prop_send_conf",
+            slug="nightfall-send",
+            kind="proposal",
+            status="draft",
+            client_name="Agent",
+            business_name="ProjectNightfall",
+            contact={},
+            preset={"slug": "nightfall-send", "name": "Secret", "initialSelected": ["w_front"]},
+            price_overrides={},
+            custom_items=[],
+            notes="",
+            created_by="user",
+            share_id="share_send_conf",
+            pitch_commit="test-commit",
+        )
+        db.create_content_item("cnt_send_pub", "post", "linkedin", "Cero Post", "Cero launch notes", product_id="cero")
+        db.create_content_item("cnt_send_conf", "post", "x", "Nightfall", "Secret notes", product_id="secretproj")
+
+        with patch.object(server, "ENGINE_TOKEN", "secret-eng-tok"):
+            st, _ = main_req("POST", "/api/phone/send", body={"kind": "proposal", "id": pub_prop["id"]})
+            self.assertEqual(st, 401)
+
+            # Fails without a paired phone
+            st, body = main_req(
+                "POST",
+                "/api/phone/send",
+                body={"kind": "proposal", "id": pub_prop["id"]},
+                token="secret-eng-tok",
+            )
+            self.assertEqual(st, 400)
+            self.assertIn("Pair a phone", body["error"])
+
+            # Pair a device, then test rejections and successes
+            _, tok, _ = self._pair_device("Pixel 9")
+            auth = {"Authorization": f"Bearer {tok}"}
+
+            st, _ = main_req(
+                "POST",
+                "/api/phone/send",
+                body={"kind": "proposal", "id": conf_prop["id"]},
+                token="secret-eng-tok",
+            )
+            self.assertEqual(st, 403)
+
+            st, _ = main_req(
+                "POST",
+                "/api/phone/send",
+                body={"kind": "content", "id": "cnt_send_conf"},
+                token="secret-eng-tok",
+            )
+            self.assertEqual(st, 403)
+
+            st, ok_prop = main_req(
+                "POST",
+                "/api/phone/send",
+                body={"kind": "proposal", "id": pub_prop["id"]},
+                token="secret-eng-tok",
+            )
+            self.assertEqual(st, 200)
+            self.assertEqual(ok_prop["route"], f"#/pitch/{pub_prop['id']}/present")
+            self.assertEqual(ok_prop["notification"]["kind"], "sent_to_phone")
+
+            st, ok_cnt = main_req(
+                "POST",
+                "/api/phone/send",
+                body={"kind": "content", "id": "cnt_send_pub"},
+                token="secret-eng-tok",
+            )
+            self.assertEqual(st, 200)
+            self.assertEqual(ok_cnt["route"], "#/review/cnt_send_pub")
+            self.assertEqual(ok_cnt["notification"]["kind"], "sent_to_phone")
+
+        st, _, notif_data = self._phone_req("GET", "/phone/v1/notifications", headers=auth)
+        self.assertEqual(st, 200)
+        notifs = json.loads(notif_data.decode("utf-8"))["notifications"]
+        routes = {n.get("route"): n for n in notifs}
+        self.assertIn(f"#/pitch/{pub_prop['id']}/present", routes)
+        self.assertIn("#/review/cnt_send_pub", routes)
+        self.assertEqual(routes[f"#/pitch/{pub_prop['id']}/present"]["kind"], "sent_to_phone")
+
+        # Fail-closed when product_rules.json cannot be read
+        with open(self.rules_file, "w", encoding="utf-8") as f:
+            f.write("{corrupt")
+        with patch.object(server, "ENGINE_TOKEN", "secret-eng-tok"):
+            st, _ = main_req(
+                "POST",
+                "/api/phone/send",
+                body={"kind": "proposal", "id": pub_prop["id"]},
+                token="secret-eng-tok",
+            )
+        self.assertEqual(st, 503)
 
     def test_14_migration_v22_idempotent(self):
         db._apply_migration_v22(db.connect())

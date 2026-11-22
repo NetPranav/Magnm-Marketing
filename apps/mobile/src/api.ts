@@ -10,6 +10,7 @@ import {
   getPublicSupabaseConfig,
   HttpStatusError,
   netJson,
+  netShareLaptopFile,
   NIM_BASE_URL,
   type NetworkCredentials,
 } from './net';
@@ -27,6 +28,7 @@ import type {
   PairingConfig,
   PhoneAgentInfo,
   PhoneNotification,
+  PitchProposalItem,
   ProductRulesConfig,
   QueuedInboxItem,
   ReminderItem,
@@ -382,6 +384,32 @@ export async function confirmLaptopResults(
     payload,
     bridge,
   );
+}
+
+export async function fetchLaptopPitchProposals(
+  pairing: PairingConfig,
+  bridge: NativeBridge = getNativeBridge(),
+): Promise<PitchProposalItem[]> {
+  const res = await laptopCall<{ proposals: PitchProposalItem[] }>(
+    pairing,
+    'GET',
+    'pitch',
+    undefined,
+    bridge,
+  );
+  return Array.isArray(res?.proposals) ? res.proposals : [];
+}
+
+export async function shareLaptopDraftFile(
+  pairing: PairingConfig,
+  contentId: string,
+  filePath: string,
+  title: string | undefined,
+  bridge: NativeBridge = getNativeBridge(),
+): Promise<void> {
+  const creds = await laptopCreds(pairing, bridge);
+  const url = `http://${pairing.host}:${pairing.port}/phone/v1/files?content_id=${encodeURIComponent(contentId)}&path=${encodeURIComponent(filePath)}`;
+  await netShareLaptopFile(url, title, creds, bridge);
 }
 
 export async function postLaptopInboxBatch(

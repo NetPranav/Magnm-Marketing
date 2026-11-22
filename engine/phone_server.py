@@ -30,6 +30,8 @@ import file_serving
 import notifications
 import paths
 import phone_pairing
+import pitch
+import pitch_host
 import platforms
 import product_rules
 import reminders
@@ -290,12 +292,77 @@ def _stub_reminder(rem):
     }
 
 
-def _notification_is_confidential(notif, conf_cids, checker, repo_patterns):
+def _pitch_proposal_name(prop):
+    """Return a display name for a stored Pitch proposal."""
+    if not isinstance(prop, dict):
+        return "Proposal"
+    if prop.get("kind") == "default":
+        return "Default quotation"
+    biz = str(prop.get("business_name") or "").strip()
+    client = str(prop.get("client_name") or "").strip()
+    joined = " · ".join(p for p in (biz, client) if p)
+    if joined:
+        return joined
+    preset = prop.get("preset") if isinstance(prop.get("preset"), dict) else {}
+    return str(preset.get("name") or prop.get("slug") or prop.get("id") or "Proposal").strip()
+
+
+def _pitch_proposal_is_confidential(prop, payload, conf_sids, conf_cids, conf_pids, checker, repo_patterns):
+    """Return True if a stored Pitch proposal or its built payload triggers the confidential guard."""
+    if not isinstance(prop, dict):
+        return True
+    if prop.get("confidential"):
+        return True
+    if isinstance(payload, dict) and payload.get("confidential"):
+        return True
+    if prop.get("session_id") in conf_sids:
+        return True
+    pid = str(prop.get("product_id") or "").strip().lower()
+    if pid and pid in conf_pids:
+        return True
+    if _text_is_confidential(json.dumps(prop, ensure_ascii=False, default=str), checker, repo_patterns):
+        return True
+    if payload is not None and _text_is_confidential(
+        json.dumps(payload, ensure_ascii=False, default=str), checker, repo_patterns
+    ):
+        return True
+    return False
+
+
+def _stub_pitch_proposal(prop):
+    return {
+        "id": prop["id"],
+        "confidential": True,
+    }
+
+
+def _notification_is_confidential(
+    notif,
+    conf_cids,
+    checker,
+    repo_patterns,
+    conf_sids=None,
+    conf_pids=None,
+):
     route = str(notif.get("route") or "")
     if route.startswith("#/review/"):
         cid = urllib.parse.unquote(route[len("#/review/"):].split("/", 1)[0].split("?", 1)[0])
         if cid and cid in conf_cids:
             return True
+    if route.startswith("#/pitch/"):
+        pid = urllib.parse.unquote(route[len("#/pitch/"):].split("/", 1)[0].split("?", 1)[0])
+        if pid:
+            prop = db.get_pitch_proposal(pid)
+            if prop is not None and _pitch_proposal_is_confidential(
+                prop,
+                None,
+                conf_sids or set(),
+                conf_cids,
+                conf_pids or set(),
+                checker,
+                repo_patterns,
+            ):
+                return True
     text = f"{notif.get('title') or ''}\n{notif.get('body') or ''}"
     return _text_is_confidential(text, checker, repo_patterns)
 
@@ -654,6 +721,8 @@ class PhoneHandler(BaseHTTPRequestHandler):
                 self._handle_get_reminders(qs)
             elif parts == ["notifications"]:
                 self._handle_get_notifications(qs)
+            elif parts == ["pitch"]:
+                self._handle_get_pitch()
             elif parts == ["results", "pending"]:
                 self._handle_get_results_pending()
             else:
@@ -940,7 +1009,6 @@ class PhoneHandler(BaseHTTPRequestHandler):
 
     def _handle_get_notifications(self, qs):
         conf_sids, conf_cids, conf_pids, checker, repo_patterns = _build_confidential_guard()
-        del conf_sids, conf_pids
         try:
             limit = int((qs.get("limit") or ["50"])[0])
         except (TypeError, ValueError):
@@ -948,13 +1016,47 @@ class PhoneHandler(BaseHTTPRequestHandler):
         limit = max(1, min(limit, 200))
         res = notifications.list_notifications(limit=limit)
         safe_notifs = [
-            _stub_notification(n) if _notification_is_confidential(n, conf_cids, checker, repo_patterns) else n
+            _stub_notification(n)
+            if _notification_is_confidential(
+                n, conf_cids, checker, repo_patterns, conf_sids=conf_sids, conf_pids=conf_pids
+            )
+            else n
             for n in res.get("notifications") or []
         ]
         self._send_json({
             "notifications": safe_notifs,
             "unread_count": int(res.get("unread_count") or 0),
         })
+
+    def _handle_get_pitch(self):
+        conf_sids, conf_cids, conf_pids, checker, repo_patterns = _build_confidential_guard()
+        default_prop = pitch.ensure_default_proposal()
+        raw_rows = db.list_pitch_proposals(limit=101)
+        non_default = [r for r in raw_rows if r.get("kind") != "default"][:100]
+        ordered = [default_prop] + non_default
+        admin_overrides = pitch_host.admin_base_price_overrides()
+
+        out = []
+        for row in ordered:
+            prop = pitch._hydrate_proposal(row) if row.get("kind") == "default" else row
+            payload = pitch_host.build_proposal_payload(
+                prop,
+                mode="present",
+                price_overrides=admin_overrides,
+            )
+            if _pitch_proposal_is_confidential(
+                prop, payload, conf_sids, conf_cids, conf_pids, checker, repo_patterns
+            ):
+                out.append(_stub_pitch_proposal(prop))
+            else:
+                out.append({
+                    "id": prop["id"],
+                    "name": _pitch_proposal_name(prop),
+                    "kind": prop.get("kind") or "proposal",
+                    "updated_at": prop.get("updated_at") or "",
+                    "payload": payload,
+                })
+        self._send_json({"proposals": out})
 
     def _handle_get_results_pending(self):
         conf_sids, conf_cids, conf_pids, checker, repo_patterns = _build_confidential_guard()
@@ -1501,3 +1603,82 @@ def enable():
 
 def disable():
     return _DEFAULT_MANAGER.disable()
+
+
+def _require_sent(notif):
+    if notif is None:
+        raise PhoneApiError(
+            "Not sent: turn on 'Sent to my phone' under Settings, Notifications first.",
+            status=400,
+            code="notifications_off",
+        )
+
+
+def send_item_to_phone(kind, item_id):
+    """Create a sent_to_phone notification for a non-confidential proposal or content item."""
+    clean_kind = str(kind or "").strip().lower()
+    clean_id = str(item_id or "").strip()
+    if clean_kind not in ("proposal", "content") or not clean_id:
+        raise PhoneApiError("kind must be 'proposal' or 'content' and id is required.", status=400)
+
+    if not phone_pairing.list_devices():
+        raise PhoneApiError("Pair a phone under Settings, Phone first.", status=400, code="no_paired_phone")
+
+    conf_sids, conf_cids, conf_pids, checker, repo_patterns = _build_confidential_guard()
+
+    if clean_kind == "proposal":
+        row = db.get_pitch_proposal(clean_id)
+        if row is None:
+            raise PhoneApiError("Proposal not found.", status=404)
+        prop = pitch._hydrate_proposal(row) if row.get("kind") == "default" else row
+        payload = pitch_host.build_proposal_payload(prop, mode="present")
+        if _pitch_proposal_is_confidential(
+            prop, payload, conf_sids, conf_cids, conf_pids, checker, repo_patterns
+        ):
+            raise PhoneApiError(
+                "Confidential proposals cannot be sent to your phone.",
+                status=403,
+                code="confidential",
+            )
+        name = _pitch_proposal_name(prop)
+        route = f"#/pitch/{urllib.parse.quote(clean_id, safe='')}/present"
+        notif = notifications.notify(
+            "sent_to_phone",
+            f"Pitch: {name}",
+            body="Tap to open present mode on your phone.",
+            route=route,
+        )
+        _require_sent(notif)
+        return {"ok": True, "route": route, "notification": notif}
+
+    item = db.get_content_item(clean_id, include_versions=True)
+    if item is None:
+        raise PhoneApiError("Content item not found.", status=404)
+    if _content_item_is_confidential(
+        item, conf_sids, conf_cids, conf_pids, checker, repo_patterns
+    ):
+        raise PhoneApiError(
+            "Confidential items cannot be sent to your phone.",
+            status=403,
+            code="confidential",
+        )
+    review_payload = review_studio.get_review(clean_id)
+    others = {k: v for k, v in review_payload.items() if k not in ("comments", "product")}
+    if review_payload.get("confidential") or _text_is_confidential(
+        json.dumps(others, ensure_ascii=False, default=str), checker, repo_patterns
+    ):
+        raise PhoneApiError(
+            "Confidential items cannot be sent to your phone.",
+            status=403,
+            code="confidential",
+        )
+    item_title = str(item.get("title") or "Untitled draft").strip()
+    route = f"#/review/{urllib.parse.quote(clean_id, safe='')}"
+    notif = notifications.notify(
+        "sent_to_phone",
+        f"Draft: {item_title}",
+        body="Tap to open in Drafts on your phone.",
+        route=route,
+    )
+    _require_sent(notif)
+    return {"ok": True, "route": route, "notification": notif}

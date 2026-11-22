@@ -9,6 +9,7 @@ import {
   fetchLaptopDrafts,
   fetchLaptopNotifications,
   fetchLaptopPendingResults,
+  fetchLaptopPitchProposals,
   fetchLaptopReminders,
   fetchLaptopStatus,
   fetchLaptopSummary,
@@ -23,6 +24,7 @@ import {
   postLaptopReminderDone,
   ProductRulesUnavailableError,
   sendPhoneLiteMessage,
+  shareLaptopDraftFile,
 } from './api';
 import {
   fetchAccountProfile,
@@ -34,6 +36,7 @@ import {
   startGoogleSignIn,
 } from './auth';
 import {
+  formatPricesAsOfLabel,
   formatSavedCopyLabel,
   getCachedProductRules,
   loadCache,
@@ -43,6 +46,7 @@ import {
 import { ChatTab, DEFAULT_LITE_AGENTS } from './components/ChatTab';
 import { DraftsTab } from './components/DraftsTab';
 import { MoreTab } from './components/MoreTab';
+import { PitchTab } from './components/PitchTab';
 import { ShareInModal } from './components/ShareInModal';
 import { TodayTab } from './components/TodayTab';
 import { getNativeBridge, type NativeBridge, type SharedItem } from './native';
@@ -74,6 +78,7 @@ import type {
   ParsedQrPayload,
   PhoneAgentInfo,
   PhoneNotification,
+  PitchProposalItem,
   QueueItemKind,
   QueuedInboxItem,
   ReminderItem,
@@ -83,6 +88,7 @@ import type {
 const MOBILE_TABS: TabItem[] = [
   { id: 'today', label: 'Today' },
   { id: 'drafts', label: 'Drafts' },
+  { id: 'pitch', label: 'Pitch' },
   { id: 'chat', label: 'Chat' },
   { id: 'more', label: 'More' },
 ];
@@ -195,6 +201,14 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
   const [pendingResults, setPendingResults] = useState<MetricProposal[]>(
     () => initialCache.laptop?.pendingResults ?? [],
   );
+  const [pitchProposals, setPitchProposals] = useState<PitchProposalItem[]>(
+    () => initialCache.laptop?.pitchProposals ?? [],
+  );
+  const [pitchPricesAsOf, setPitchPricesAsOf] = useState<number | null>(
+    () => initialCache.laptop?.pitchPricesAsOf ?? null,
+  );
+  const [presentingPitch, setPresentingPitch] = useState<PitchProposalItem | null>(null);
+  const [pitchError, setPitchError] = useState<string | null>(null);
   const [agents, setAgents] = useState<PhoneAgentInfo[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState('writer');
   const [chatMessages, setChatMessages] = useState<ChatTurn[]>([]);
@@ -231,12 +245,14 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
   const backStateRef = useRef({
     confirmOpen: false,
     shareOpen: false,
+    pitchPresentOpen: false,
     draftOpen: false,
     tab: initialTab,
   });
   backStateRef.current = {
     confirmOpen: Boolean(confirmDialog),
     shareOpen: sharedQueue.length > 0,
+    pitchPresentOpen: Boolean(presentingPitch),
     draftOpen: Boolean(selectedDraft),
     tab,
   };
@@ -285,6 +301,10 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
     setUnreadCount(0);
     setSummary(null);
     setPendingResults([]);
+    setPitchProposals([]);
+    setPitchPricesAsOf(null);
+    setPresentingPitch(null);
+    setPitchError(null);
     setAgents([]);
     setSelectedAgentId('writer');
     setChatMessages([]);
@@ -327,6 +347,8 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
       setUnreadCount(cache.laptop?.unreadCount ?? 0);
       setSummary(cache.laptop?.summary ?? null);
       setPendingResults(cache.laptop?.pendingResults ?? []);
+      setPitchProposals(cache.laptop?.pitchProposals ?? []);
+      setPitchPricesAsOf(cache.laptop?.pitchPricesAsOf ?? null);
       setCacheVersion((v) => v + 1);
     },
     [],
@@ -395,7 +417,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
         setLaptopReachable(true);
         setLaptopStatus(statusRes);
 
-        const [draftsRes, remRes, notifRes, sumRes, resPending, agentsRes] =
+        const [draftsRes, remRes, notifRes, sumRes, resPending, agentsRes, pitchRes] =
           await Promise.allSettled([
             fetchLaptopDrafts(activePairing, 30, bridge),
             fetchLaptopReminders(activePairing, bridge),
@@ -403,10 +425,11 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
             fetchLaptopSummary(activePairing, bridge),
             fetchLaptopPendingResults(activePairing, bridge),
             fetchLaptopAgents(activePairing, bridge),
+            fetchLaptopPitchProposals(activePairing, bridge),
           ]);
         if (isStale()) return;
 
-        const settled = [draftsRes, remRes, notifRes, sumRes, resPending, agentsRes];
+        const settled = [draftsRes, remRes, notifRes, sumRes, resPending, agentsRes, pitchRes];
         const authErr = settled.find(
           (r): r is PromiseRejectedResult =>
             r.status === 'rejected' && r.reason instanceof LaptopAuthError,
@@ -446,6 +469,13 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
         }
         if (agentsRes.status === 'fulfilled') {
           setAgents(agentsRes.value);
+        }
+        if (pitchRes.status === 'fulfilled') {
+          const syncedAt = Date.now();
+          setPitchProposals(pitchRes.value);
+          setPitchPricesAsOf(syncedAt);
+          snapshotUpdate.pitchProposals = pitchRes.value;
+          snapshotUpdate.pitchPricesAsOf = syncedAt;
         }
 
         saveLaptopSnapshot(activePairing.deviceId, snapshotUpdate);
@@ -585,6 +615,11 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
         setShareError(null);
         return;
       }
+      if (state.pitchPresentOpen) {
+        setPresentingPitch(null);
+        setPitchError(null);
+        return;
+      }
       if (state.draftOpen) {
         setSelectedDraft(null);
         setDraftsError(null);
@@ -623,6 +658,10 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
       (cacheSnapshot.mirrorRecords[0]?.cached_at || null);
     return formatSavedCopyLabel(ts);
   }, [cacheSnapshot]);
+
+  const pricesAsOfLabel = useMemo(() => {
+    return formatPricesAsOfLabel(pitchPricesAsOf ?? cacheSnapshot.laptop?.pitchPricesAsOf ?? null);
+  }, [pitchPricesAsOf, cacheSnapshot]);
 
   const hasProductRules = Boolean(cacheSnapshot.productRules?.rules);
 
@@ -763,6 +802,129 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
       setDraftsError(msg);
       showToast(msg);
       return false;
+    }
+  }
+
+  async function handleShareDraftFile(
+    contentId: string,
+    filePath: string,
+    title?: string,
+  ): Promise<boolean> {
+    const activePairing = pairingRef.current;
+    if (!activePairing) return false;
+    const gen = appGenRef.current;
+    const stateGen = getStateGeneration();
+    setDraftsError(null);
+    setBusyAction(`share-file:${filePath}`);
+    try {
+      await shareLaptopDraftFile(activePairing, contentId, filePath, title, bridge);
+      if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return false;
+      showToast('Opened share sheet');
+      return true;
+    } catch (err) {
+      if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return false;
+      handleLaptopActionError(err);
+      const msg = err instanceof Error ? err.message : 'Could not share file.';
+      setDraftsError(msg);
+      showToast(msg);
+      return false;
+    } finally {
+      if (appGenRef.current === gen && getStateGeneration() === stateGen) {
+        setBusyAction(null);
+      }
+    }
+  }
+
+  async function handleSharePitchPdf(base64: string, title?: string): Promise<void> {
+    setPitchError(null);
+    try {
+      if (typeof bridge.sharePdf !== 'function') {
+        throw new Error('PDF sharing is unavailable on this platform.');
+      }
+      await bridge.sharePdf({ base64, title });
+      showToast('Opened PDF share sheet');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not share quotation PDF.';
+      setPitchError(msg);
+      showToast(msg);
+    }
+  }
+
+  async function handleOpenNotification(notif: PhoneNotification): Promise<void> {
+    if (notif.confidential || !notif.route) return;
+    const route = notif.route;
+    const activePairing = pairingRef.current;
+    const gen = appGenRef.current;
+    const stateGen = getStateGeneration();
+    const isStale = () => appGenRef.current !== gen || getStateGeneration() !== stateGen;
+
+    if (activePairing && laptopReachable && !notif.read_at) {
+      void postLaptopNotificationsRead(activePairing, { ids: [notif.id] }, bridge)
+        .then((res) => {
+          if (isStale()) return;
+          const nowIso = new Date().toISOString();
+          setNotifications((prev) =>
+            prev.map((n) => (n.id === notif.id ? { ...n, read_at: n.read_at || nowIso } : n)),
+          );
+          if (typeof res?.unread_count === 'number') {
+            setUnreadCount(res.unread_count);
+          }
+        })
+        .catch(() => {});
+    }
+
+    if (route.startsWith('#/pitch/')) {
+      const rawSeg = route.slice('#/pitch/'.length).split('/')[0]?.split('?')[0] ?? '';
+      let targetId = rawSeg;
+      try {
+        targetId = decodeURIComponent(rawSeg);
+      } catch {
+        // Keep raw segment if malformed.
+      }
+      if (!targetId) return;
+      let list = pitchProposals;
+      if (!list.some((p) => p.id === targetId) && activePairing && laptopReachable) {
+        try {
+          const fresh = await fetchLaptopPitchProposals(activePairing, bridge);
+          if (isStale()) return;
+          const syncedAt = Date.now();
+          setPitchProposals(fresh);
+          setPitchPricesAsOf(syncedAt);
+          saveLaptopSnapshot(activePairing.deviceId, {
+            pitchProposals: fresh,
+            pitchPricesAsOf: syncedAt,
+          });
+          list = fresh;
+        } catch {
+          // Use existing list if fetch fails.
+        }
+      }
+      if (isStale()) return;
+      const match = list.find((p) => p.id === targetId);
+      setTab('pitch');
+      if (!match) {
+        showToast('Proposal is not available on this phone yet.');
+        return;
+      }
+      if (match.confidential) {
+        showToast('Confidential proposal — open Magnm Studio on your laptop.');
+        return;
+      }
+      setPresentingPitch(match);
+      return;
+    }
+
+    if (route.startsWith('#/review/')) {
+      const rawSeg = route.slice('#/review/'.length).split('/')[0]?.split('?')[0] ?? '';
+      let contentId = rawSeg;
+      try {
+        contentId = decodeURIComponent(rawSeg);
+      } catch {
+        // Keep raw segment if malformed.
+      }
+      if (!contentId) return;
+      setTab('drafts');
+      void handleSelectDraft(contentId);
     }
   }
 
@@ -1113,55 +1275,82 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
     setShareError(null);
   }
 
+  const isPresentingPitch = Boolean(presentingPitch);
+
   return (
     <div className="mg-root mob-shell">
-      {bridge.isPreview && bridge.previewLabel ? (
+      {!isPresentingPitch && bridge.isPreview && bridge.previewLabel ? (
         <div className="mob-preview-banner" role="status">
           {bridge.previewLabel}
         </div>
       ) : null}
 
-      <header className="mob-header">
-        <Wordmark compact />
-        <div className="mob-header-meta">
-          <StatusDot
-            state={
-              laptopAuthError
-                ? 'error'
-                : laptopReachable
-                  ? 'online'
-                  : pairing
-                    ? 'idle'
-                    : 'off'
-            }
-            label={
-              laptopAuthError
-                ? '401 Auth'
-                : laptopReachable
-                  ? 'Laptop'
-                  : pairing
-                    ? 'Phone Lite'
-                    : 'Unpaired'
-            }
+      {!isPresentingPitch ? (
+        <header className="mob-header">
+          <Wordmark compact />
+          <div className="mob-header-meta">
+            <StatusDot
+              state={
+                laptopAuthError
+                  ? 'error'
+                  : laptopReachable
+                    ? 'online'
+                    : pairing
+                      ? 'idle'
+                      : 'off'
+              }
+              label={
+                laptopAuthError
+                  ? '401 Auth'
+                  : laptopReachable
+                    ? 'Laptop'
+                    : pairing
+                      ? 'Phone Lite'
+                      : 'Unpaired'
+              }
+            />
+            {queueItems.length > 0 ? (
+              <span className="mg-chip">{queueItems.length} queued</span>
+            ) : null}
+          </div>
+        </header>
+      ) : null}
+
+      {!isPresentingPitch ? (
+        <nav className="mob-tabs-wrap" aria-label="Mobile sections">
+          <NumberedTabs
+            items={MOBILE_TABS}
+            current={tab}
+            onSelect={(next) => setTab(next as MobileTabId)}
+            orientation="horizontal"
+            ariaLabel="Mobile sections"
           />
-          {queueItems.length > 0 ? (
-            <span className="mg-chip">{queueItems.length} queued</span>
-          ) : null}
-        </div>
-      </header>
+        </nav>
+      ) : null}
 
-      <nav className="mob-tabs-wrap" aria-label="Mobile sections">
-        <NumberedTabs
-          items={MOBILE_TABS}
-          current={tab}
-          onSelect={(next) => setTab(next as MobileTabId)}
-          orientation="horizontal"
-          ariaLabel="Mobile sections"
-        />
-      </nav>
+      <main className={isPresentingPitch ? 'mob-main mob-main--present' : 'mob-main'}>
+        {isPresentingPitch ? (
+          <PitchTab
+            proposals={pitchProposals}
+            presentingProposal={presentingPitch}
+            laptopReachable={laptopReachable}
+            pricesAsOfLabel={pricesAsOfLabel}
+            errorMessage={pitchError}
+            onSelectProposal={(prop) => {
+              if (!prop.confidential) {
+                setPitchError(null);
+                setPresentingPitch(prop);
+              }
+            }}
+            onExitPresent={() => {
+              setPresentingPitch(null);
+              setPitchError(null);
+            }}
+            onSharePdf={handleSharePitchPdf}
+          />
+        ) : null}
 
-      <main className="mob-main">
-        {tab === 'today' ? (
+        {!isPresentingPitch && tab === 'today' ? (
           <TodayTab
             pairing={pairing}
             laptopReachable={laptopReachable}
@@ -1230,6 +1419,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
                   }
                 });
             }}
+            onOpenNotification={(notif) => void handleOpenNotification(notif)}
             onConfirmResult={async (proposalId, metrics, platform, contentId) => {
               const activePairing = pairingRef.current;
               if (!activePairing) return false;
@@ -1264,7 +1454,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
           />
         ) : null}
 
-        {tab === 'drafts' ? (
+        {!isPresentingPitch && tab === 'drafts' ? (
           <DraftsTab
             drafts={drafts}
             selectedDraft={selectedDraft}
@@ -1282,11 +1472,33 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
             onMarkPosted={handleMarkPosted}
             onCopyText={handleCopyText}
             onShareOut={handleShareOut}
+            onShareFile={handleShareDraftFile}
             onCreateOfflineItem={handleSaveInboxOrQueue}
           />
         ) : null}
 
-        {tab === 'chat' ? (
+        {!isPresentingPitch && tab === 'pitch' ? (
+          <PitchTab
+            proposals={pitchProposals}
+            presentingProposal={null}
+            laptopReachable={laptopReachable}
+            pricesAsOfLabel={pricesAsOfLabel}
+            errorMessage={pitchError}
+            onSelectProposal={(prop) => {
+              if (!prop.confidential) {
+                setPitchError(null);
+                setPresentingPitch(prop);
+              }
+            }}
+            onExitPresent={() => {
+              setPresentingPitch(null);
+              setPitchError(null);
+            }}
+            onSharePdf={handleSharePitchPdf}
+          />
+        ) : null}
+
+        {!isPresentingPitch && tab === 'chat' ? (
           <ChatTab
             laptopReachable={laptopReachable}
             agents={agents}
@@ -1303,7 +1515,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
           />
         ) : null}
 
-        {tab === 'more' ? (
+        {!isPresentingPitch && tab === 'more' ? (
           <MoreTab
             pairing={pairing}
             pairingStep={pairingStep}

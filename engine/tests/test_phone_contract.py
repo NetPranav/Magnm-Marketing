@@ -314,6 +314,87 @@ class PhoneContractTests(unittest.TestCase):
             status="pending",
         )
 
+        # Public and confidential pitch proposals
+        db.create_pitch_proposal(
+            proposal_id="prop_pub",
+            slug="cero-web",
+            kind="proposal",
+            status="draft",
+            client_name="Aria",
+            business_name="Cero Labs",
+            contact={
+                "name": "Aria",
+                "business": "Cero Labs",
+                "phone": "+91 9800000001",
+                "email": "aria@cero.example",
+                "notes": "Launch soon",
+            },
+            preset={
+                "slug": "cero-web",
+                "name": "Cero Web Launch",
+                "badge": "Web",
+                "clientName": "Aria",
+                "businessName": "Cero Labs",
+                "title": "Cero Web Launch",
+                "lead": "Public launch proposal",
+                "whatWeDo": "Web platform",
+                "portfolio": "cero.example",
+                "thisPlan": "Cero Web Plan",
+                "architectureBlock": {
+                    "heading": "Architecture",
+                    "sub": "Layered system",
+                    "roles": [{"label": "Frontend", "points": ["Marketing site"]}],
+                },
+                "initialSelected": ["w_front", "b_db"],
+                "sections": {
+                    "p2": ["w_front"],
+                    "p3": ["a_base"],
+                    "p4": ["b_db"],
+                    "p5": ["ai_bot"],
+                },
+            },
+            price_overrides={},
+            custom_items=[],
+            notes="",
+            created_by="user",
+            share_id="share_prop_pub",
+            pitch_commit="test-commit",
+        )
+        db.create_pitch_proposal(
+            proposal_id="prop_conf",
+            slug="nightfall-secret",
+            kind="proposal",
+            status="draft",
+            client_name="Hidden",
+            business_name="ProjectNightfall",
+            contact={},
+            preset={
+                "slug": "nightfall-secret",
+                "name": "ProjectNightfall Pitch",
+                "badge": "",
+                "clientName": "Hidden",
+                "businessName": "ProjectNightfall",
+                "title": "ProjectNightfall Pitch",
+                "lead": "Secret",
+                "whatWeDo": "Secret",
+                "portfolio": "",
+                "thisPlan": "Secret",
+                "architectureBlock": {
+                    "heading": "Arch",
+                    "sub": "Sub",
+                    "roles": [{"label": "Web", "points": ["Page"]}],
+                },
+                "initialSelected": ["w_front"],
+                "sections": {"p2": ["w_front"], "p3": [], "p4": [], "p5": []},
+            },
+            price_overrides={},
+            custom_items=[],
+            notes="nightfall_internal",
+            created_by="user",
+            share_id="share_prop_conf",
+            pitch_commit="test-commit",
+        )
+
         # 3. Call every route and verify contract match against phone_contract.json
         st, status_res = self._phone_req("GET", "/phone/v1/status", headers=auth)
         self.assertEqual(st, 200)
@@ -445,7 +526,7 @@ class PhoneContractTests(unittest.TestCase):
         self.assertEqual(st, 200)
         self._assert_contract_shape(confirm_res, self.fixture["results_confirm"], "results_confirm")
 
-        st, inbox_res = self._phone_req(
+        st = self._phone_req(
             "POST",
             "/phone/v1/inbox",
             body={
@@ -467,8 +548,18 @@ class PhoneContractTests(unittest.TestCase):
             },
             headers=auth,
         )
+        self.assertEqual(st[0], 200)
+        self._assert_contract_shape(st[1], self.fixture["inbox"], "inbox")
+
+        st, pitch_res = self._phone_req("GET", "/phone/v1/pitch", headers=auth)
         self.assertEqual(st, 200)
-        self._assert_contract_shape(inbox_res, self.fixture["inbox"], "inbox")
+        pitch_by_id = {p["id"]: p for p in pitch_res["proposals"]}
+        self.assertIn("prop_default", pitch_by_id)
+        self.assertIn("prop_pub", pitch_by_id)
+        self.assertIn("prop_conf", pitch_by_id)
+        self._assert_contract_shape(pitch_by_id["prop_default"], self.fixture["pitch"]["proposals"][0], "pitch.default")
+        self._assert_contract_shape(pitch_by_id["prop_pub"], self.fixture["pitch"]["proposals"][1], "pitch.public")
+        self._assert_contract_shape(pitch_by_id["prop_conf"], self.fixture["pitch"]["proposals"][2], "pitch.conf")
 
 
 if __name__ == "__main__":

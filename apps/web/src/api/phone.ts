@@ -108,3 +108,11 @@ export function revokePhoneDevice(
     device_id: deviceId,
   });
 }
+
+/** Send a non-confidential proposal or content item to the paired phone(s). */
+export function sendToPhone(
+  kind: 'proposal' | 'content',
+  id: string,
+): Promise<{ ok: boolean; route: string }> {
+  return api.post<{ ok: boolean; route: string }>('/api/phone/send', { kind, id });
+}

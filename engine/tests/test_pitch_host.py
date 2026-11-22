@@ -200,6 +200,33 @@ class PitchHostTests(unittest.TestCase):
         self.assertIn("magnm:pitch-pdf-saved", js)
         self.assertIn("magnm:pitch-exit-present", js)
 
+    def test_08_mobile_bundle_has_strict_csp_data_fonts_and_no_network_refs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            written = pitch_host.build_mobile_bundle(tmpdir)
+            files = written["files"]
+            self.assertIn("index.html", files)
+            self.assertIn("boot.js", files)
+            self.assertIn("app.js", files)
+            self.assertIn("magnm-host.js", files)
+            self.assertIn("fonts/fonts.css", files)
+
+            with open(os.path.join(tmpdir, "index.html"), "r", encoding="utf-8") as f:
+                html_text = f.read()
+            self.assertIn("http-equiv=\"Content-Security-Policy\"", html_text)
+            self.assertIn("connect-src 'none'", html_text)
+            self.assertIn("font-src data:", html_text)
+            self.assertIn("fonts/fonts.css", html_text)
+            self.assertIn("src=\"boot.js\"", html_text)
+            self.assertNotIn("fonts.googleapis.com", html_text)
+            self.assertNotIn("fonts.gstatic.com", html_text)
+            self.assertNotIn("src=\"app.js\"", html_text)
+
+            with open(os.path.join(tmpdir, "fonts", "fonts.css"), "r", encoding="utf-8") as f:
+                fonts_css = f.read()
+            self.assertIn("data:font/woff2;base64,", fonts_css)
+            self.assertNotIn("http://", fonts_css)
+            self.assertNotIn("https://", fonts_css)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -274,6 +274,29 @@ public final class NativeUrlPolicy {
         throw new PolicyException("Destination host is not allowed.");
     }
 
+    /**
+     * Validate that rawUrl is strictly GET-able from paired laptop /phone/v1/files?...
+     */
+    public String validateLaptopFileUrl(String rawUrl) {
+        String normalized = validateUrl(rawUrl);
+        if (!normalized.startsWith("http://")) {
+            throw new PolicyException("Shareable laptop files must use paired Tailscale HTTP.");
+        }
+        int schemeEnd = "http://".length();
+        int slashIdx = normalized.indexOf('/', schemeEnd);
+        if (slashIdx < 0) {
+            throw new PolicyException("Laptop file URL path is missing.");
+        }
+        String remainder = normalized.substring(slashIdx);
+        int qIdx = remainder.indexOf('?');
+        String path = qIdx < 0 ? remainder : remainder.substring(0, qIdx);
+        String query = qIdx < 0 ? "" : remainder.substring(qIdx);
+        if (!"/phone/v1/files".equals(path) || query.length() <= 1) {
+            throw new PolicyException("Laptop file URL must target /phone/v1/files?...");
+        }
+        return normalized;
+    }
+
     private static boolean isAllowedSupabasePath(String path) {
         return path.startsWith("/auth/v1/")
                 || path.startsWith("/rest/v1/")

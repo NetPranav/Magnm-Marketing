@@ -484,5 +484,155 @@
         "warnings": []
       }
     ]
+  },
+  "pitch": {
+    "proposals": [
+      {
+        "id": "prop_default",
+        "name": "Default quotation",
+        "kind": "default",
+        "updated_at": "2026-11-22T09:00:00+00:00",
+        "payload": {
+          "mode": "form",
+          "kind": "default",
+          "locked": false,
+          "prices": {
+            "w_front": 6000, "w_anim": 1800, "w_lang": 800, "w_portal": 1500, "w_shop": 2500,
+            "w_search": 600, "w_coupon": 400, "w_seo": 700, "w_blog": 600, "w_forms": 400,
+            "w_chat": 200, "w_book": 1200, "w_gallery": 400, "w_account": 700, "w_reviews": 550,
+            "w_faq": 300, "w_map": 350, "w_wa": 150, "a_base": 6500, "a_ios": 2200,
+            "a_store": 1200, "a_push": 700, "a_pay": 1200, "a_bio": 500, "a_offline": 1100,
+            "a_share": 350, "a_support": 300, "a_splash": 400, "a_prov": 2500, "a_book": 1300,
+            "a_live": 1300, "a_addr": 350, "a_rate": 450, "a_login": 350, "a_hi": 200,
+            "b_db": 2000, "b_google": 600, "b_email": 500, "b_otp": 900, "b_roles": 750,
+            "b_admin": 3000, "b_pay": 1800, "b_files": 400, "b_analytics": 700, "b_backup": 300,
+            "b_notif": 500, "b_commission": 650, "b_coupon": 400, "b_reviews": 450,
+            "ai_bot": 2500, "ai_doc": 2200, "ai_search": 1800, "ai_workflow": 1400,
+            "ops_cicd": 1200, "ops_cloud": 1500, "ops_monitor": 800, "ops_maint": 2000
+          },
+          "custom_items": [],
+          "preset": {
+            "slug": "general",
+            "name": "General Software Cost Planner",
+            "badge": "",
+            "clientName": "",
+            "businessName": "",
+            "title": "magnm Software Cost Planner",
+            "lead": "Default planner",
+            "whatWeDo": "Full-Stack Web & Mobile",
+            "portfolio": "magnm-org.vercel.app",
+            "thisPlan": "Custom software",
+            "architectureBlock": {
+              "heading": "Architecture",
+              "sub": "Layered system",
+              "roles": [
+                {
+                  "label": "User Experience",
+                  "points": ["Responsive web"]
+                }
+              ]
+            },
+            "initialSelected": ["w_front", "b_db"],
+            "sections": {
+              "p2": ["w_front"],
+              "p3": ["a_base"],
+              "p4": ["b_db"],
+              "p5": ["ai_bot"]
+            }
+          },
+          "proposal_id": "default",
+          "contact": {
+            "name": "",
+            "business": "",
+            "phone": "",
+            "email": "",
+            "notes": ""
+          },
+          "payment_plan": [],
+          "payment_note": "",
+          "timeline": [],
+          "service_plans": [],
+          "hidden_sheets": [],
+          "hidden_about": [],
+          "custom_categories": [],
+          "included_from_hidden": []
+        }
+      },
+      {
+        "id": "prop_pub",
+        "name": "Cero Web Launch",
+        "kind": "proposal",
+        "updated_at": "2026-11-22T09:15:00+00:00",
+        "payload": {
+          "mode": "present",
+          "kind": "proposal",
+          "locked": false,
+          "prices": {
+            "w_front": 6000, "w_anim": 1800, "w_lang": 800, "w_portal": 1500, "w_shop": 2500,
+            "w_search": 600, "w_coupon": 400, "w_seo": 700, "w_blog": 600, "w_forms": 400,
+            "w_chat": 200, "w_book": 1200, "w_gallery": 400, "w_account": 700, "w_reviews": 550,
+            "w_faq": 300, "w_map": 350, "w_wa": 150, "a_base": 6500, "a_ios": 2200,
+            "a_store": 1200, "a_push": 700, "a_pay": 1200, "a_bio": 500, "a_offline": 1100,
+            "a_share": 350, "a_support": 300, "a_splash": 400, "a_prov": 2500, "a_book": 1300,
+            "a_live": 1300, "a_addr": 350, "a_rate": 450, "a_login": 350, "a_hi": 200,
+            "b_db": 2000, "b_google": 600, "b_email": 500, "b_otp": 900, "b_roles": 750,
+            "b_admin": 3000, "b_pay": 1800, "b_files": 400, "b_analytics": 700, "b_backup": 300,
+            "b_notif": 500, "b_commission": 650, "b_coupon": 400, "b_reviews": 450,
+            "ai_bot": 2500, "ai_doc": 2200, "ai_search": 1800, "ai_workflow": 1400,
+            "ops_cicd": 1200, "ops_cloud": 1500, "ops_monitor": 800, "ops_maint": 2000
+          },
+          "custom_items": [],
+          "preset": {
+            "slug": "cero-web",
+            "name": "Cero Web Launch",
+            "badge": "Web",
+            "clientName": "Aria",
+            "businessName": "Cero Labs",
+            "title": "Cero Web Launch",
+            "lead": "Public launch proposal",
+            "whatWeDo": "Web platform",
+            "portfolio": "cero.example",
+            "thisPlan": "Cero Web Plan",
+            "architectureBlock": {
+              "heading": "Architecture",
+              "sub": "Layered system",
+              "roles": [
+                {
+                  "label": "Frontend",
+                  "points": ["Marketing site"]
+                }
+              ]
+            },
+            "initialSelected": ["w_front", "b_db"],
+            "sections": {
+              "p2": ["w_front"],
+              "p3": ["a_base"],
+              "p4": ["b_db"],
+              "p5": ["ai_bot"]
+            }
+          },
+          "proposal_id": "prop_pub",
+          "contact": {
+            "name": "Aria",
+            "business": "Cero Labs",
+            "phone": "+91 9800000001",
+            "email": "aria@cero.example",
+            "notes": "Launch soon"
+          },
+          "payment_plan": [],
+          "payment_note": "",
+          "timeline": [],
+          "service_plans": [],
+          "hidden_sheets": [],
+          "hidden_about": [],
+          "custom_categories": [],
+          "included_from_hidden": []
+        }
+      },
+      {
+        "id": "prop_conf",
+        "confidential": true
+      }
+    ]
   }
 }

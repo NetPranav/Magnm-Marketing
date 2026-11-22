@@ -37,6 +37,17 @@ export interface ShareOutOptions {
   fileUrl?: string;
 }
 
+export interface ShareLaptopFileOptions {
+  url: string;
+  headers?: Record<string, string>;
+  title?: string;
+}
+
+export interface SharePdfOptions {
+  base64: string;
+  title?: string;
+}
+
 export interface SecureStore {
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
@@ -51,6 +62,8 @@ export interface NativeBridge {
   takeSharedItems(): Promise<SharedItem[]>;
   dictate(): Promise<string | null>;
   shareOut(options: ShareOutOptions): Promise<void>;
+  shareLaptopFile?(options: ShareLaptopFileOptions): Promise<void>;
+  sharePdf?(options: SharePdfOptions): Promise<void>;
   openBrowser(url: string): Promise<void>;
   closeBrowser(): Promise<void>;
   scanQrCode(): Promise<string | null>;
@@ -70,6 +83,8 @@ interface MagnmNativePlugin {
   takeSharedItems(): Promise<{ items: SharedItem[] }>;
   dictate(): Promise<{ text: string | null }>;
   shareOut(options: ShareOutOptions): Promise<void>;
+  shareLaptopFile(options: ShareLaptopFileOptions): Promise<void>;
+  sharePdf(options: SharePdfOptions): Promise<void>;
 }
 
 const MagnmNative = registerPlugin<MagnmNativePlugin>('MagnmNative');
@@ -82,6 +97,8 @@ export interface PreviewBridgeOptions {
   scanQrResult?: string | null;
   onOpenBrowser?: (url: string) => void;
   onShareOut?: (options: ShareOutOptions) => void;
+  onShareLaptopFile?: (options: ShareLaptopFileOptions) => Promise<void> | void;
+  onSharePdf?: (options: SharePdfOptions) => Promise<void> | void;
   onMinimize?: () => void;
 }
 
@@ -139,6 +156,20 @@ export function createPreviewNativeBridge(
     },
     async shareOut(opts: ShareOutOptions): Promise<void> {
       options.onShareOut?.(opts);
+    },
+    async shareLaptopFile(opts: ShareLaptopFileOptions): Promise<void> {
+      if (options.onShareLaptopFile) {
+        await options.onShareLaptopFile(opts);
+        return;
+      }
+      throw new Error(`${PREVIEW_BANNER_LABEL}: file sharing is available in the Android app.`);
+    },
+    async sharePdf(opts: SharePdfOptions): Promise<void> {
+      if (options.onSharePdf) {
+        await options.onSharePdf(opts);
+        return;
+      }
+      throw new Error(`${PREVIEW_BANNER_LABEL}: PDF sharing is available in the Android app.`);
     },
     async openBrowser(url: string): Promise<void> {
       options.onOpenBrowser?.(url);
@@ -255,6 +286,12 @@ export function createCapacitorNativeBridge(): NativeBridge {
     },
     async shareOut(options: ShareOutOptions): Promise<void> {
       await MagnmNative.shareOut(options);
+    },
+    async shareLaptopFile(options: ShareLaptopFileOptions): Promise<void> {
+      await MagnmNative.shareLaptopFile(options);
+    },
+    async sharePdf(options: SharePdfOptions): Promise<void> {
+      await MagnmNative.sharePdf(options);
     },
     async openBrowser(url: string): Promise<void> {
       await Browser.open({ url });

@@ -102,6 +102,34 @@ describe('review regressions', () => {
     expect(screen.getByText('Laptop connected')).toBeTruthy();
   });
 
+  it('a pitch fetched for a tapped notification is not saved after unpairing', async () => {
+    let calls = 0;
+    let release: (res: NativeHttpResponse) => void = () => {};
+    const note = { ...contract.notifications.notifications[0], title: 'Pitch: late', route: '#/pitch/late/present' };
+    const bridge = await pairedBridge(async (req) => {
+      if (req.url.includes('/notifications?')) return ok({ notifications: [note], unread_count: 1 });
+      if (req.url.endsWith('/notifications/read')) return ok({ ok: true, unread_count: 0 });
+      if (req.url.endsWith('/pitch')) {
+        calls += 1;
+        if (calls === 1) return ok({ proposals: [] });
+        return new Promise<NativeHttpResponse>((resolve) => {
+          release = resolve;
+        });
+      }
+      return laptop(req);
+    });
+    render(<App bridge={bridge} />);
+    fireEvent.click(await screen.findByText('Pitch: late'));
+    await waitFor(() => expect(calls).toBe(2));
+    fireEvent.click(screen.getByRole('tab', { name: /More/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Unpair laptop' }));
+    await screen.findByLabelText(/Pairing code/);
+    release(ok({ proposals: [{ id: 'late', name: 'Late client', kind: 'proposal', payload: {} }] }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(window.localStorage.getItem('magnm.mobile.contextCache.v1') ?? '').not.toContain('Late client');
+    expect(screen.queryByTestId('pitch-present-screen')).toBeNull();
+  });
+
   it('chat can be used again after unpairing during a reply', async () => {
     let sent = false;
     const bridge = await pairedBridge(async (req) => {

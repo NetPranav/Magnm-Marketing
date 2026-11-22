@@ -10,7 +10,35 @@ import {
   TextArea,
   TextInput,
 } from '@magnm/design/react';
-import type { DraftComment, DraftItem, QueueItemKind } from '../types';
+import type { DraftComment, DraftFileEntry, DraftItem, QueueItemKind } from '../types';
+
+const SHAREABLE_EXTENSIONS = ['.mp4', '.webm', '.png', '.jpg', '.jpeg', '.webp', '.pdf'];
+
+export interface ShareableDraftFile {
+  path: string;
+  label: string;
+  kind: string;
+}
+
+export function extractShareableDraftFiles(files: DraftFileEntry[] | undefined): ShareableDraftFile[] {
+  if (!Array.isArray(files)) return [];
+  const out: ShareableDraftFile[] = [];
+  const seen = new Set<string>();
+  for (const entry of files) {
+    const rawPath = typeof entry === 'string' ? entry : entry?.path;
+    if (typeof rawPath !== 'string') continue;
+    const cleanPath = rawPath.trim();
+    if (!cleanPath || seen.has(cleanPath)) continue;
+    const lower = cleanPath.toLowerCase();
+    if (!SHAREABLE_EXTENSIONS.some((ext) => lower.endsWith(ext))) continue;
+    seen.add(cleanPath);
+    const parts = cleanPath.split(/[\\/]/);
+    const label = parts[parts.length - 1] || cleanPath;
+    const kind = typeof entry === 'object' && entry?.kind ? String(entry.kind) : 'file';
+    out.push({ path: cleanPath, label, kind });
+  }
+  return out;
+}
 
 export interface DraftsTabProps {
   drafts: DraftItem[];
@@ -26,6 +54,7 @@ export interface DraftsTabProps {
   onMarkPosted: (contentId: string, url?: string) => Promise<boolean>;
   onCopyText: (text: string) => Promise<boolean>;
   onShareOut: (title: string, text: string) => Promise<boolean>;
+  onShareFile?: (contentId: string, filePath: string, title?: string) => Promise<boolean>;
   onCreateOfflineItem: (input: {
     kind: QueueItemKind;
     title: string;
@@ -103,6 +132,7 @@ export function DraftsTab({
   onMarkPosted,
   onCopyText,
   onShareOut,
+  onShareFile,
   onCreateOfflineItem,
 }: DraftsTabProps) {
   const [commentText, setCommentText] = useState('');
@@ -159,6 +189,7 @@ export function DraftsTab({
     const warnings = selectedDraft.warnings ?? [];
     const comments = selectedDraft.comments ?? [];
     const totalCommentCount = countComments(comments);
+    const shareableFiles = extractShareableDraftFiles(selectedDraft.files);
 
     return (
       <section aria-label="Draft detail" className="mob-stack">
@@ -203,6 +234,45 @@ export function DraftsTab({
             </div>
           </div>
         </Card>
+
+        {shareableFiles.length > 0 ? (
+          <Card>
+            <div className="mob-stack-sm">
+              <Label>Files ({shareableFiles.length})</Label>
+              <RowList>
+                {shareableFiles.map((file) => {
+                  const fileBusy = busyAction === `share-file:${file.path}`;
+                  return (
+                    <Row
+                      key={file.path}
+                      title={file.label}
+                      description={file.kind}
+                      meta={
+                        <PillButton
+                          variant="outline"
+                          size="sm"
+                          disabled={!laptopReachable || fileBusy || !onShareFile}
+                          title={laptopReachable ? undefined : 'Connect to laptop to share files'}
+                          onClick={() => {
+                            if (onShareFile) {
+                              void onShareFile(
+                                selectedDraft.id,
+                                file.path,
+                                selectedDraft.title || file.label,
+                              );
+                            }
+                          }}
+                        >
+                          {fileBusy ? 'Preparing...' : 'Share'}
+                        </PillButton>
+                      }
+                    />
+                  );
+                })}
+              </RowList>
+            </div>
+          </Card>
+        ) : null}
 
         {warnings.length > 0 ? (
           <Card outline>

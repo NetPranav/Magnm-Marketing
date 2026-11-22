@@ -184,4 +184,30 @@ public class NativeUrlPolicyTest {
         assertTrue(bodyEx.getMessage().contains("size limit"));
         assertFalse(bodyEx.getMessage().contains("aaaa"));
     }
+
+    @Test
+    public void validatesLaptopFileUrlsStrictly() {
+        assertEquals(
+                "http://100.64.0.1:8788/phone/v1/files?path=outputs%2Fdemo.mp4",
+                policy.validateLaptopFileUrl("http://100.64.0.1:8788/phone/v1/files?path=outputs%2Fdemo.mp4")
+        );
+
+        String[] badFileUrls = {
+                "https://100.64.0.1:8788/phone/v1/files?path=a.mp4",
+                "http://100.64.0.1:8788/phone/v1/status",
+                "http://100.64.0.1:8788/phone/v1/files/../drafts",
+                "http://100.64.0.1:8788/api/files?path=a.mp4",
+                "http://192.168.1.5:8788/phone/v1/files?path=a.mp4",
+                "http://user@100.64.0.1:8788/phone/v1/files?path=a.mp4",
+                "http://100.64.0.1:8788/phone/v1/files?path=a.mp4#frag",
+                SUPA_ORIGIN + "/rest/v1/profiles",
+        };
+        for (String url : badFileUrls) {
+            assertThrows(
+                    "Expected laptop file URL rejection for " + url,
+                    NativeUrlPolicy.PolicyException.class,
+                    () -> policy.validateLaptopFileUrl(url)
+            );
+        }
+    }
 }

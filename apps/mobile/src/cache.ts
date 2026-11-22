@@ -11,6 +11,7 @@ import type {
   MetricProposal,
   MirrorRecord,
   PhoneNotification,
+  PitchProposalItem,
   ProductRulesConfig,
   ReminderItem,
   WeeklySummary,
@@ -30,6 +31,8 @@ export interface LaptopCachedSnapshot {
   unreadCount: number;
   summary: WeeklySummary | null;
   pendingResults: MetricProposal[];
+  pitchProposals?: PitchProposalItem[];
+  pitchPricesAsOf?: number | null;
   cachedAt: number;
 }
 
@@ -128,6 +131,14 @@ export function sanitizeProposalForCache(prop: MetricProposal): MetricProposal {
   };
 }
 
+export function sanitizePitchProposalForCache(item: PitchProposalItem): PitchProposalItem {
+  if (!item.confidential) return item;
+  return {
+    id: item.id,
+    confidential: true,
+  };
+}
+
 /** Ensure confidential mirror_records keep only stub metadata and never unstub. */
 export function sanitizeMirrorRecordForCache(rec: MirrorRecord): MirrorRecord {
   const dataObj = rec.data && typeof rec.data === 'object' ? rec.data : {};
@@ -214,6 +225,11 @@ function pruneCache(raw: ContextCacheState, nowMs: number): ContextCacheState {
           notifications: (raw.laptop.notifications ?? []).map(sanitizeNotificationForCache),
           summary: sanitizeSummaryForCache(raw.laptop.summary),
           pendingResults: (raw.laptop.pendingResults ?? []).map(sanitizeProposalForCache),
+          pitchProposals: (raw.laptop.pitchProposals ?? []).map(sanitizePitchProposalForCache),
+          pitchPricesAsOf:
+            typeof raw.laptop.pitchPricesAsOf === 'number' && Number.isFinite(raw.laptop.pitchPricesAsOf)
+              ? raw.laptop.pitchPricesAsOf
+              : null,
         }
       : null;
 
@@ -388,6 +404,8 @@ export function saveLaptopSnapshot(
           unreadCount: 0,
           summary: null,
           pendingResults: [],
+          pitchProposals: [],
+          pitchPricesAsOf: null,
           cachedAt: nowMs,
         };
   const nextLaptop: LaptopCachedSnapshot = {
@@ -400,6 +418,9 @@ export function saveLaptopSnapshot(
     unreadCount: partial.unreadCount !== undefined ? partial.unreadCount : prev.unreadCount,
     summary: partial.summary !== undefined ? partial.summary : prev.summary,
     pendingResults: partial.pendingResults !== undefined ? partial.pendingResults : prev.pendingResults,
+    pitchProposals: partial.pitchProposals !== undefined ? partial.pitchProposals : prev.pitchProposals ?? [],
+    pitchPricesAsOf:
+      partial.pitchPricesAsOf !== undefined ? partial.pitchPricesAsOf : prev.pitchPricesAsOf ?? null,
     cachedAt: nowMs,
   };
   const next = { ...current, laptop: nextLaptop };
@@ -469,4 +490,16 @@ export function formatSavedCopyLabel(timestampMs: number | null | undefined): st
     minute: '2-digit',
   });
   return `Saved copy from ${formatted}`;
+}
+
+/** Format "Prices as of <time>" label for Pitch proposals. */
+export function formatPricesAsOfLabel(timestampMs: number | null | undefined): string | null {
+  if (!timestampMs || !Number.isFinite(timestampMs)) return null;
+  const formatted = new Date(timestampMs).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  return `Prices as of ${formatted}`;
 }

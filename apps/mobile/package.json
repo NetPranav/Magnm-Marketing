@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build:pitch": "python3 ../../scripts/build_mobile_pitch.py",
+    "build": "pnpm run build:pitch && tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "android:sync": "cap sync android",

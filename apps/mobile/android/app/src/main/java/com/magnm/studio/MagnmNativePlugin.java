@@ -2,6 +2,7 @@ package com.magnm.studio;
 
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
+import android.content.ClipData;
 import android.content.ContentResolver;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -13,6 +14,7 @@ import android.os.Build;
 import android.speech.RecognizerIntent;
 import android.util.Base64;
 import androidx.activity.result.ActivityResult;
+import androidx.core.content.FileProvider;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -21,6 +23,8 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.CookieHandler;
@@ -294,6 +298,183 @@ public class MagnmNativePlugin extends Plugin {
                 call.resolve();
             } catch (ActivityNotFoundException ex) {
                 call.reject("No app available to share text.");
+            }
+        });
+    }
+
+    @PluginMethod
+    public void shareLaptopFile(PluginCall call) {
+        final String validatedUrl;
+        final Map<String, String> validatedHeaders;
+        final String cleanTitle;
+        try {
+            validatedUrl = urlPolicy.validateLaptopFileUrl(call.getString("url"));
+            validatedHeaders = urlPolicy.validateHeaders(extractHeaders(call.getObject("headers")));
+            String title = call.getString("title");
+            cleanTitle = (title != null && !title.trim().isEmpty()) ? title.trim() : null;
+        } catch (NativeUrlPolicy.PolicyException ex) {
+            call.reject(ex.getMessage());
+            return;
+        } catch (Exception ex) {
+            call.reject("Invalid file share request.");
+            return;
+        }
+
+        executor.execute(() -> executeShareLaptopFile(call, validatedUrl, validatedHeaders, cleanTitle));
+    }
+
+    @PluginMethod
+    public void sharePdf(PluginCall call) {
+        final byte[] pdfBytes;
+        final String cleanTitle;
+        try {
+            pdfBytes = ShareOutPolicy.decodeAndValidatePdfBase64(call.getString("base64"));
+            String title = call.getString("title");
+            cleanTitle = (title != null && !title.trim().isEmpty()) ? title.trim() : null;
+        } catch (IllegalArgumentException ex) {
+            call.reject(ex.getMessage());
+            return;
+        }
+
+        executor.execute(() -> {
+            File targetFile = null;
+            boolean launched = false;
+            try {
+                File shareDir = ShareOutPolicy.resolveShareDir(getContext().getCacheDir());
+                ShareOutPolicy.clearShareDir(shareDir);
+                targetFile = ShareOutPolicy.createSafeShareFile(shareDir, "application/pdf");
+                try (FileOutputStream fos = new FileOutputStream(targetFile)) {
+                    fos.write(pdfBytes);
+                    fos.flush();
+                }
+                launchFileShareChooser(targetFile, "application/pdf", cleanTitle, call);
+                launched = true;
+            } catch (Exception ex) {
+                call.reject("Could not share PDF.");
+            } finally {
+                if (!launched && targetFile != null && targetFile.exists()) {
+                    targetFile.delete();
+                }
+            }
+        });
+    }
+
+    private void executeShareLaptopFile(
+            PluginCall call,
+            String validatedUrl,
+            Map<String, String> headers,
+            String cleanTitle
+    ) {
+        HttpURLConnection conn = null;
+        File tempFile = null;
+        File targetFile = null;
+        boolean launched = false;
+        try {
+            URL url = new URL(validatedUrl);
+            conn = (HttpURLConnection) url.openConnection(Proxy.NO_PROXY);
+            conn.setInstanceFollowRedirects(false);
+            conn.setUseCaches(false);
+            conn.setConnectTimeout(30_000);
+            conn.setReadTimeout(120_000);
+            conn.setRequestMethod("GET");
+            for (Map.Entry<String, String> h : headers.entrySet()) {
+                conn.setRequestProperty(h.getKey(), h.getValue());
+            }
+
+            int status = conn.getResponseCode();
+            URL finalUrl = conn.getURL();
+            if (finalUrl != null && !url.getHost().equalsIgnoreCase(finalUrl.getHost())) {
+                call.reject("HTTP redirects are refused.");
+                return;
+            }
+            if (status != 200) {
+                call.reject("Laptop refused file download (" + status + ").");
+                return;
+            }
+
+            long contentLength = conn.getContentLengthLong();
+            if (contentLength > ShareOutPolicy.MAX_SHARE_FILE_BYTES) {
+                call.reject("File exceeds 200 MB limit.");
+                return;
+            }
+
+            String contentType = conn.getContentType();
+            ShareOutPolicy.normalizeAndValidateShareMime(contentType);
+
+            File shareDir = ShareOutPolicy.resolveShareDir(getContext().getCacheDir());
+            ShareOutPolicy.clearShareDir(shareDir);
+            tempFile = new File(shareDir, "tmp-" + UUID.randomUUID() + ".part");
+
+            ShareOutPolicy.StreamResult streamRes;
+            try (InputStream is = conn.getInputStream(); FileOutputStream fos = new FileOutputStream(tempFile)) {
+                streamRes = ShareOutPolicy.streamBounded(is, fos, ShareOutPolicy.MAX_SHARE_FILE_BYTES);
+            }
+
+            String verifiedMime = ShareOutPolicy.verifyShareableTypeAndMagic(
+                    contentType, streamRes.header, streamRes.headerLength);
+            targetFile = ShareOutPolicy.createSafeShareFile(shareDir, verifiedMime);
+            if (!tempFile.renameTo(targetFile)) {
+                call.reject("Could not prepare shared file.");
+                return;
+            }
+            tempFile = null;
+
+            launchFileShareChooser(targetFile, verifiedMime, cleanTitle, call);
+            launched = true;
+        } catch (SocketTimeoutException ex) {
+            call.reject("File download timed out.");
+        } catch (IllegalArgumentException ex) {
+            call.reject(ex.getMessage());
+        } catch (Exception ex) {
+            call.reject("Could not download or share file.");
+        } finally {
+            if (tempFile != null && tempFile.exists()) {
+                tempFile.delete();
+            }
+            if (!launched && targetFile != null && targetFile.exists()) {
+                targetFile.delete();
+            }
+            if (conn != null) {
+                conn.disconnect();
+            }
+        }
+    }
+
+    private void launchFileShareChooser(File shareFile, String mimeType, String cleanTitle, PluginCall call) {
+        Activity activity = getActivity();
+        if (activity == null) {
+            if (shareFile.exists()) {
+                shareFile.delete();
+            }
+            call.reject("Activity is unavailable.");
+            return;
+        }
+
+        String authority = getContext().getPackageName() + ".fileprovider";
+        Uri contentUri = FileProvider.getUriForFile(getContext(), authority, shareFile);
+        String label = cleanTitle != null ? cleanTitle : "Share";
+
+        Intent sendIntent = new Intent(Intent.ACTION_SEND);
+        sendIntent.setType(mimeType);
+        sendIntent.putExtra(Intent.EXTRA_STREAM, contentUri);
+        sendIntent.setClipData(ClipData.newUri(getContext().getContentResolver(), label, contentUri));
+        sendIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        if (cleanTitle != null) {
+            sendIntent.putExtra(Intent.EXTRA_SUBJECT, cleanTitle);
+        }
+
+        Intent chooser = Intent.createChooser(sendIntent, label);
+        chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+        activity.runOnUiThread(() -> {
+            try {
+                activity.startActivity(chooser);
+                call.resolve();
+            } catch (ActivityNotFoundException ex) {
+                if (shareFile.exists()) {
+                    shareFile.delete();
+                }
+                call.reject("No app available to share this file.");
             }
         });
     }

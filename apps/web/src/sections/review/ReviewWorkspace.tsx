@@ -23,6 +23,7 @@ import {
   updateChecklistItem,
   updateReviewComment,
 } from '../../api/review';
+import { getPhoneStatus, sendToPhone, type PhoneStatus } from '../../api/phone';
 import { getRoster, type RosterAgent } from '../../api/team';
 import { AddResultsDialog } from '../../components/AddResultsDialog';
 import { useFallbackPoll, useStudioEvents } from '../../events';
@@ -152,7 +153,17 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
   const [trackedJobIds, setTrackedJobIds] = useState<string[]>([]);
   const [inlineWarnings, setInlineWarnings] = useState<ReviewFinding[]>([]);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [phoneStatus, setPhoneStatus] = useState<PhoneStatus | null>(null);
   const [videoSeekRequest, setVideoSeekRequest] = useState<VideoSeekRequest | null>(null);
+
+  const loadPhoneStatus = useCallback(async () => {
+    try {
+      const res = await getPhoneStatus();
+      setPhoneStatus(res);
+    } catch {
+      setPhoneStatus(null);
+    }
+  }, []);
 
   const loadWorkspace = useCallback(async () => {
     setError(null);
@@ -185,7 +196,8 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
     setActiveJob(null);
     setTrackedJobIds([]);
     void loadWorkspace();
-  }, [loadWorkspace]);
+    void loadPhoneStatus();
+  }, [loadWorkspace, loadPhoneStatus]);
 
   const reloadReviewOnly = useCallback(async () => {
     try {
@@ -199,6 +211,10 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
   const eventsState = useStudioEvents(
     useCallback(
       (eventName, data) => {
+        if (eventName === 'phone.updated') {
+          void loadPhoneStatus();
+          return;
+        }
         if (eventName === 'review.updated' && data && typeof data === 'object') {
           const payload = data as { content_id?: string; warnings?: ReviewFinding[] };
           if (payload.content_id === contentId) {
@@ -221,7 +237,7 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
           }
         }
       },
-      [contentId, trackedJobIds, activeJob?.id, reloadReviewOnly],
+      [contentId, trackedJobIds, activeJob?.id, reloadReviewOnly, loadPhoneStatus],
     ),
   );
 
@@ -535,6 +551,23 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
       setNotice('Marked as posted.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to mark as posted.');
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const hasPairedPhone = (phoneStatus?.devices ?? []).length > 0;
+  const isConfidential = Boolean(review?.confidential);
+
+  const handleSendToPhone = async () => {
+    if (!hasPairedPhone || isConfidential) return;
+    setError(null);
+    setBusyAction('phone-send');
+    try {
+      await sendToPhone('content', contentId);
+      setNotice('Sent to your phone.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not send draft to your phone.');
     } finally {
       setBusyAction(null);
     }
@@ -878,10 +911,17 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
         <PillButton
           variant="outline"
           size="sm"
-          disabled
-          title="Available after phone pairing (Phase 4)"
+          disabled={!hasPairedPhone || isConfidential || busyAction !== null}
+          title={
+            isConfidential
+              ? 'Confidential items cannot be sent to your phone'
+              : hasPairedPhone
+                ? undefined
+                : 'Pair a phone under Settings, Phone first'
+          }
+          onClick={() => void handleSendToPhone()}
         >
-          Send to my phone
+          {busyAction === 'phone-send' ? 'Sending...' : 'Send to my phone'}
         </PillButton>
         <PillButton
           size="sm"

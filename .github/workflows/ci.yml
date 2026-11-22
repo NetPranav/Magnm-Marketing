@@ -155,6 +155,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Typecheck
         run: pnpm typecheck
+      - name: Build bundled Pitch
+        run: pnpm run build:pitch
       - name: Unit tests
         run: pnpm test
       - name: Build web bundle

@@ -927,7 +927,13 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 device = phone_pairing.revoke_device(parts[3])
                 self.send_json({"device": device, "status": mgr.status()})
                 return
+            if path == "/api/phone/send":
+                res = phone_server.send_item_to_phone(params.get("kind"), params.get("id"))
+                self.send_json(res)
+                return
             self.send_json({"error": "Not found"}, status=404)
+        except phone_server.PhoneApiError as exc:
+            self.send_json({"error": exc.message, "code": exc.code}, status=exc.status)
         except phone_server.PhoneServerError as exc:
             self.send_json(
                 {
