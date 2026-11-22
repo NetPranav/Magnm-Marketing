@@ -1110,11 +1110,20 @@ class PhoneReviewGapTests(unittest.TestCase):
 
     def test_name_after_a_serialized_newline_is_found(self):
         pattern = phone_server.product_rules._word_pattern("SecretProduct")
-        check = lambda text: bool(pattern.search(text))
+        check = lambda text: phone_server.product_rules.any_match([pattern], text)
         once = json.dumps({"notes": "Launch:\nSecretProduct"})
         twice = json.dumps({"tool_result": once})
         for text in (once, twice):
             self.assertTrue(phone_server._text_is_confidential(text, check, []), text)
+
+    def test_one_device_cannot_lock_out_pairing_for_others(self):
+        mgr = phone_pairing.PairingManager()
+        started = mgr.start_pairing("100.64.0.1", 8788)
+        for _ in range(phone_pairing.MAX_BAD_CODES_PER_MIN + 1):
+            with self.assertRaises(phone_pairing.PairingError):
+                mgr.submit_pair_request("wrong", "Other", "100.64.0.66")
+        code = phone_pairing.parse_qr_payload(started["qr_payload"])["code"]
+        self.assertTrue(mgr.submit_pair_request(code, "Phone", "100.64.0.2")["request_id"])
 
     def test_proposal_checked_as_a_whole(self):
         prop = {"id": "p", "content_id": None, "notes": "SecretProduct launch"}

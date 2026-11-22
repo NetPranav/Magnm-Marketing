@@ -24,6 +24,8 @@ import team_auth
 PAIRING_TTL_S = 300.0
 RATE_WINDOW_S = 60.0
 MAX_BAD_CODES_PER_MIN = 5
+# The code is 256-bit, so the overall cap only limits noise. Kept high so one device can't lock out pairing.
+MAX_BAD_CODES_ALL_IPS_PER_MIN = 60
 MAX_DEVICE_NAME_LEN = 80
 QR_PREFIX = "magnm-pair:"
 
@@ -237,7 +239,7 @@ class PairingManager:
         with self._lock:
             self._purge_expired_locked(now_ts)
             if (
-                len(self._bad_attempts_global) >= MAX_BAD_CODES_PER_MIN
+                len(self._bad_attempts_global) >= MAX_BAD_CODES_ALL_IPS_PER_MIN
                 or len(self._bad_attempts_by_ip.get(ip_key, ())) >= MAX_BAD_CODES_PER_MIN
             ):
                 raise PairingError(

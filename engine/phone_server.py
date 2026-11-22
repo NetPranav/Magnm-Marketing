@@ -178,12 +178,7 @@ def _build_confidential_guard():
 def _text_is_confidential(text, checker, repo_patterns):
     if not text:
         return False
-    # Serialized text hides word boundaries: a newline before a name becomes the letter n.
-    unescaped = re.sub(r"\\+(?:u[0-9a-fA-F]{4}|[nrtbf])", " ", text)
-    for candidate in {text, unescaped}:
-        if checker(candidate) or any(pat.search(candidate) for pat in repo_patterns):
-            return True
-    return False
+    return bool(checker(text)) or product_rules.any_match(repo_patterns, text)
 
 
 def _content_item_is_confidential(item, conf_sids, conf_cids, conf_pids, checker, repo_patterns):
@@ -408,6 +403,10 @@ def _is_valid_http_url(raw_url):
     except ValueError:
         return False
     return parsed.scheme.lower() in ("http", "https") and bool(parsed.netloc)
+
+
+# A retry can arrive while the first attempt is still saving, so check-then-create runs one request at a time.
+_INBOX_LOCK = threading.Lock()
 
 
 class PhoneHTTPServer(ThreadingHTTPServer):
@@ -723,7 +722,8 @@ class PhoneHandler(BaseHTTPRequestHandler):
         try:
             if parts == ["inbox"]:
                 params = self._read_json_body(max_body)
-                self._handle_post_inbox(device, params)
+                with _INBOX_LOCK:
+                    self._handle_post_inbox(device, params)
             elif len(parts) == 3 and parts[0] == "drafts" and parts[2] == "comments":
                 params = self._read_json_body(max_body)
                 self._handle_post_draft_comment(device, parts[1], params)
