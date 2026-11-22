@@ -19,6 +19,7 @@ import agents
 import ai_gateway
 import assets_manager
 import coding_agents
+import confidential_guard
 import db
 import paths
 import product_rules
@@ -154,8 +155,13 @@ def chat_with_agent(agent_id, user_message, attached_assets=None):
         prompt_parts.append(str(user_message))
         full_user_msg = "\n\n".join(prompt_parts)
 
-        confidential = product_rules.mentions_confidential(user_message, path=_rules_path())
-        system_prompt = agents.build_system_prompt(canon_id)
+        # Names (products and repos) in the message, or replayed turns that came from a confidential session,
+        # keep this chat on local AI even when the text itself names nothing.
+        scope = confidential_guard.scope()
+        confidential = scope.text(str(user_message)) or any(
+            scope.session(t.get("session_id")) for t in recent_turns if t.get("session_id")
+        )
+        system_prompt = agents.build_system_prompt(canon_id, confidential=confidential)
         session = agent_runtime.start_session(
             canon_id,
             full_user_msg,

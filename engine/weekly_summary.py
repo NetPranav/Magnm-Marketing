@@ -13,6 +13,7 @@ if _ENGINE_DIR not in sys.path:
 
 import ai_gateway
 import cloud_sync
+import confidential_guard
 import db
 from ist import IST
 import notifications
@@ -637,22 +638,29 @@ def _rules_path():
 
 
 def _data_mentions_confidential(data):
+    """True if anything that goes into the weekly prompts is confidential, by name or by session."""
     try:
         checker = cloud_sync.confidential_checker()
     except Exception:
         return True
+    scope = confidential_guard.scope()
+    if scope.broken:
+        return True
     parts = [data.get("week_label") or ""]
-    for post in data.get("posts") or []:
-        parts.append(post.get("title") or "")
-        parts.append(post.get("product_id") or "")
-    for post in (data.get("previous_week") or {}).get("posts") or []:
-        parts.append(post.get("title") or "")
-        parts.append(post.get("product_id") or "")
-    for draft in data.get("drafts_created") or []:
-        parts.append(draft.get("title") or "")
+    entries = list(data.get("posts") or [])
+    entries += list((data.get("previous_week") or {}).get("posts") or [])
+    entries += list(data.get("drafts_created") or [])
+    for entry in entries:
+        parts.append(entry.get("title") or "")
+        parts.append(entry.get("product_id") or "")
+        # A post written in a confidential session is confidential even when its title names nothing.
+        if scope.content_id(entry.get("content_id")):
+            return True
     for note in data.get("research_notes") or []:
         parts.append(note.get("title") or "")
-    return checker("\n".join(parts))
+    text = "\n".join(parts)
+    # The product checker misses a repo that is confidential on its own, so ask about repos too.
+    return bool(checker(text)) or scope.text(text)
 
 
 def _build_narrative_prompts(data, highlights):

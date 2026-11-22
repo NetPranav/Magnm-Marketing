@@ -19,6 +19,7 @@ if _ENGINE_DIR not in sys.path:
 import agent_runtime
 import agents
 import assets_manager
+import confidential_guard
 import db
 import events
 import paths
@@ -170,7 +171,7 @@ def post_message(sender, text, attached_assets=None, depth=0):
         return [new_msg]
 
     asset_ctx, attachment_paths = _prepare_attachments(attached_assets)
-    confidential = product_rules.mentions_confidential(text, path=_rules_path())
+    confidential = confidential_guard.mentions(str(text or ""))
     replies = [new_msg]
     prior_context = []
 
@@ -183,7 +184,7 @@ def post_message(sender, text, attached_assets=None, depth=0):
             prompt_parts.append("Earlier replies in this thread:\n" + "\n".join(prior_context))
         user_prompt = "\n\n".join(prompt_parts)
 
-        system_prompt = agents.build_system_prompt(cid)
+        system_prompt = agents.build_system_prompt(cid, confidential=confidential)
         sess = agent_runtime.start_session(
             cid,
             user_prompt,
@@ -198,6 +199,10 @@ def post_message(sender, text, attached_assets=None, depth=0):
         if status == "failed":
             replies.append(_post_system_error(sess.get("error") or "Agent session failed"))
             break
+
+        # Earlier replies are passed on to the next agent, so a confidential session keeps the rest local.
+        if sess.get("confidential"):
+            confidential = True
 
         content_ids = db.list_content_ids_for_session(sess["id"])
         if status == "waiting_user":

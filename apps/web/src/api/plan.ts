@@ -62,6 +62,8 @@ export function toggleSchedule(id: string): Promise<{ success: boolean }> {
 export function updateSchedule(payload: {
   id: string;
   interval_hours?: number | null;
+  time?: string;
+  day?: string;
   enabled?: boolean;
 }): Promise<{ success: boolean }> {
   return api.post<{ success: boolean }>('/api/schedule/update', payload);

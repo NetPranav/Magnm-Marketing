@@ -248,10 +248,10 @@ def _rules_path():
 def _is_content_confidential(item):
     if not isinstance(item, dict):
         return False
-    return product_rules.mentions_confidential(
-        f"{item.get('title') or ''}\n{item.get('product_id') or ''}",
-        path=_rules_path(),
-    )
+    import confidential_guard
+
+    # The shared definition: names, product, repos and inheritance through sessions. Fails closed.
+    return confidential_guard.scope().item(item)
 
 
 def notify_pending_proposal(proposal):

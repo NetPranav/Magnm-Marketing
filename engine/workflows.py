@@ -9,6 +9,7 @@ import re
 import sys
 import threading
 import time
+from types import SimpleNamespace
 import uuid
 
 _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -18,6 +19,7 @@ if _ENGINE_DIR not in sys.path:
 import agent_runtime
 import agents
 import ai_gateway
+import confidential_guard
 import db
 import events
 from ist import IST as _IST
@@ -518,6 +520,10 @@ class PostWorkflow(BaseWorkflow):
         return StepResult.done()
 
 
+# Stands in for a session on local AI when workflow code calls the research search directly.
+_LOCAL_SEARCH_CTX = SimpleNamespace(confidential=True)
+
+
 class BlogWorkflow(BaseWorkflow):
     """Long-form engineering blog workflow with outline gate, section-by-section drafting, review, SEO, and repurpose."""
 
@@ -559,9 +565,13 @@ class BlogWorkflow(BaseWorkflow):
         audience = inputs.get("audience") or "developers and technical builders"
 
         if not state.get("grounding"):
-            state["grounding"] = self._fetch_grounding_material(inputs["topic"], product_id=product_id)
+            state["grounding"] = self._fetch_grounding_material(
+                inputs["topic"], product_id=product_id, allow_confidential=self._blog_is_confidential(run)
+            )
             _persist_state(run["id"], state)
-        grounding_text = self._format_grounding_block(state["grounding"])
+        grounding_text = self._format_grounding_block(
+            state["grounding"], allow_confidential=self._blog_is_confidential(run)
+        )
 
         previous = ""
         if existing_id and feedback:
@@ -583,7 +593,7 @@ class BlogWorkflow(BaseWorkflow):
         )
         t0 = time.monotonic()
         res = ai_gateway.generate_completion_with_meta(
-            system_prompt=agents.build_system_prompt("writer"),
+            system_prompt=agents.build_system_prompt("writer", confidential=self._blog_is_confidential(run)),
             user_prompt=prompt,
             agent_role="writer",
             confidential=self._blog_is_confidential(run),
@@ -761,12 +771,23 @@ class BlogWorkflow(BaseWorkflow):
         return specs
 
     @staticmethod
-    def _fetch_grounding_material(topic, product_id=None):
-        """Fetch facts, rules, shipped repo changes, and research notes once via tool functions."""
-        facts_res = core_tools.read_product_facts(None, product_id=product_id)
-        repo_res = core_tools.read_repo_changes(None, repo_id=product_id, limit=10)
+    def _fetch_grounding_material(topic, product_id=None, allow_confidential=False):
+        """Fetch facts, rules, shipped repo changes, and research notes once via tool functions.
+
+        Confidential repos, facts and notes are included only with `allow_confidential`, when the
+        prompt built from this goes to local AI.
+        """
+        facts_res = core_tools.read_product_facts(None, product_id=product_id, _allow_confidential=allow_confidential)
+        repo_res = core_tools.read_repo_changes(
+            None, repo_id=product_id, limit=10, _allow_confidential=allow_confidential
+        )
         if isinstance(repo_res, dict) and repo_res.get("error"):
             repo_res = {"synced_at": None, "repositories": []}
+        if not allow_confidential and isinstance(repo_res, dict) and "repositories" in repo_res:
+            repo_res["repositories"] = [
+                r for r in repo_res["repositories"] if not confidential_guard.is_confidential_repo(r)
+            ]
+        search_ctx = _LOCAL_SEARCH_CTX if allow_confidential else None
 
         research_notes = []
         seen = set()
@@ -776,7 +797,7 @@ class BlogWorkflow(BaseWorkflow):
         if product_id and str(product_id).lower() not in [q.lower() for q in queries]:
             queries.append(str(product_id))
         for q in queries:
-            res = core_tools.search_research(None, query=q, limit=6)
+            res = core_tools.search_research(search_ctx, query=q, limit=6)
             for item in (res or {}).get("results") or []:
                 key = (item.get("title") or "", item.get("url") or "")
                 if key not in seen:
@@ -795,16 +816,28 @@ class BlogWorkflow(BaseWorkflow):
         }
 
     @staticmethod
-    def _format_grounding_block(grounding):
-        """Format cached grounding dict into a plain-text prompt block."""
+    def _format_grounding_block(grounding, allow_confidential=False):
+        """Format cached grounding dict into a plain-text prompt block.
+
+        Grounding saved by an older run may hold confidential text, so it is filtered here as well,
+        unless the prompt goes to local AI (`allow_confidential`).
+        """
         parts = []
-        pf = (grounding.get("product_facts") or "").strip()
+        names_confidential = (lambda text: False) if allow_confidential else confidential_guard.matcher()
+        raw_facts = grounding.get("product_facts") or ""
+        if not allow_confidential:
+            raw_facts = confidential_guard.drop_confidential_sections(raw_facts)
+        pf = raw_facts.strip()
         if pf:
             parts.append(f"Verified product facts:\n{pf}")
         pr = (grounding.get("product_rules") or "").strip()
         if pr:
             parts.append(f"Product rules:\n{pr}")
         repos = (grounding.get("repo_changes") or {}).get("repositories") or []
+        if not allow_confidential:
+            repos = [r for r in repos if not confidential_guard.is_confidential_repo(r) and not names_confidential(
+                f"{r.get('name') or ''}\n{r.get('id') or ''}"
+            )]
         if repos:
             repo_lines = ["Shipped items / recent repo changes:"]
             for r in repos:
@@ -815,6 +848,7 @@ class BlogWorkflow(BaseWorkflow):
                     repo_lines.append(f"  * {c.get('date', '')} {c.get('hash', '')}: {c.get('message', '')}".strip())
             parts.append("\n".join(repo_lines))
         notes = grounding.get("research_notes") or []
+        notes = [n for n in notes if not names_confidential(f"{n.get('title') or ''}\n{n.get('summary') or ''}")]
         if notes:
             note_lines = ["Relevant research notes:"]
             for n in notes[:6]:
@@ -864,10 +898,14 @@ class BlogWorkflow(BaseWorkflow):
         outline_body = state["outline_body"]
 
         if not state.get("grounding"):
-            state["grounding"] = self._fetch_grounding_material(inputs["topic"], product_id=product_id)
+            state["grounding"] = self._fetch_grounding_material(
+                inputs["topic"], product_id=product_id, allow_confidential=self._blog_is_confidential(run)
+            )
             _persist_state(run["id"], state)
         grounding = state["grounding"]
-        grounding_text = self._format_grounding_block(grounding)
+        grounding_text = self._format_grounding_block(
+            grounding, allow_confidential=self._blog_is_confidential(run)
+        )
 
         length_target = self._parse_length_words_target(inputs.get("length_words"))
         state["length_words_target"] = length_target
@@ -896,11 +934,8 @@ class BlogWorkflow(BaseWorkflow):
         completed = state.setdefault("completed_sections", [])
         step_timings = state.setdefault("step_timings_ms", {})
         tldr_block = self._extract_tldr_block(outline_body)
-        writer_sys_prompt = agents.build_system_prompt("writer")
-        is_confidential = bool(
-            (product_id and product_id in product_rules.confidential_product_ids())
-            or product_rules.mentions_confidential(inputs["topic"])
-        )
+        is_confidential = self._blog_is_confidential(run)
+        writer_sys_prompt = agents.build_system_prompt("writer", confidential=is_confidential)
         total_sections = len(section_specs)
 
         for idx, spec in enumerate(section_specs):
@@ -1037,7 +1072,10 @@ class BlogWorkflow(BaseWorkflow):
         if item is None:
             return StepResult.fail(f"Blog '{blog_id}' not found")
         body = item.get("body") or ""
-        grounding_text = self._format_grounding_block(state.get("grounding") or {}) if state.get("grounding") else ""
+        grounding_text = (
+            self._format_grounding_block(state["grounding"], allow_confidential=self._blog_is_confidential(run))
+            if state.get("grounding") else ""
+        )
         prompt = (
             "Revise this blog article to fix ONLY the reviewer's points below. Keep everything else, "
             "including all sections, headings and verified facts. Output the COMPLETE revised article "
@@ -1047,7 +1085,7 @@ class BlogWorkflow(BaseWorkflow):
             + f"### Article\n{body}"
         )
         res = ai_gateway.generate_completion_with_meta(
-            system_prompt=agents.build_system_prompt("writer"),
+            system_prompt=agents.build_system_prompt("writer", confidential=self._blog_is_confidential(run)),
             user_prompt=prompt,
             agent_role="writer",
             tier="longform",
@@ -1072,9 +1110,11 @@ class BlogWorkflow(BaseWorkflow):
     def _blog_is_confidential(self, run):
         inputs = run["inputs"]
         product_id = inputs.get("product_id")
+        topic = inputs.get("topic") or ""
         return bool(
-            (product_id and product_id in product_rules.confidential_product_ids())
-            or product_rules.mentions_confidential(inputs["topic"])
+            (product_id and confidential_guard.product_is_confidential(product_id))
+            or product_rules.mentions_confidential(topic)
+            or confidential_guard.mentions(topic)
         )
 
     def step_seo_pass(self, run, state):
@@ -1097,7 +1137,7 @@ class BlogWorkflow(BaseWorkflow):
         )
         t0 = time.monotonic()
         res = ai_gateway.generate_completion_with_meta(
-            system_prompt=agents.build_system_prompt("writer"),
+            system_prompt=agents.build_system_prompt("writer", confidential=self._blog_is_confidential(run)),
             user_prompt=prompt,
             agent_role="writer",
             confidential=self._blog_is_confidential(run),

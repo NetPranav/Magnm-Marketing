@@ -23,6 +23,10 @@ MAX_ARG_VALUE_CHARS = 2000
 _TRUNCATION_NOTE = "Output truncated to 12,000 characters."
 
 
+def _do_nothing():
+    return None
+
+
 @dataclass
 class ToolContext:
     """Execution context passed to every tool invocation."""
@@ -33,9 +37,17 @@ class ToolContext:
     depth: int = 0
     confidential: bool = False
     publish: Callable[[str, Any], None] = field(default=events.publish)
-    mark_confidential: Callable[[], None] = field(default=lambda: None)
+    mark_confidential: Callable[[], None] = field(default=_do_nothing)
     is_cancelled: Callable[[], bool] = field(default=lambda: False)
     attachments: list[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.mark_confidential is _do_nothing:
+            # No runtime behind this context: switching still has to stick for the rest of the context.
+            def _switch():
+                self.confidential = True
+
+            self.mark_confidential = _switch
 
 
 @dataclass

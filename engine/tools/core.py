@@ -15,6 +15,7 @@ if _ENGINE_DIR not in sys.path:
 
 import agents
 import cloud_sync
+import confidential_guard
 import db
 import paths
 import private_files
@@ -91,12 +92,24 @@ def _format_single_product_rule(product_id):
         "required": [],
     },
 )
-def read_product_facts(ctx, product_id=None):
+def read_product_facts(ctx, product_id=None, _allow_confidential=False):
+    """Facts and rules. Confidential products' facts only reach a session already on local AI.
+
+    `_allow_confidential` is for code that has already decided the prompt goes to local AI.
+    """
+    allow = bool(_allow_confidential) or bool(getattr(ctx, "confidential", False))
+    if product_id and not allow and confidential_guard.product_is_confidential(product_id):
+        if ctx is not None and callable(getattr(ctx, "mark_confidential", None)):
+            ctx.mark_confidential()  # Asked for by id: the answer goes to local AI from here on.
+            allow = True
+
     facts_path = _resolve_readable_path("research", "product-facts.md")
     facts_text = ""
     if os.path.exists(facts_path):
         with open(facts_path, "r", encoding="utf-8") as f:
             facts_text = f.read()
+    if not allow:
+        facts_text = confidential_guard.drop_confidential_sections(facts_text)
 
     rules_path = _resolve_readable_path("config", "product_rules.json")
     if product_id:
@@ -106,6 +119,10 @@ def read_product_facts(ctx, product_id=None):
 
     approved = db.list_product_facts(product_id=product_id, status="approved", limit=200)
     pending = db.list_product_facts(product_id=product_id, status="pending", limit=200)
+    if not allow:
+        names_confidential = confidential_guard.matcher()
+        approved = [f for f in approved if not _fact_is_confidential(f, names_confidential)]
+        pending = [f for f in pending if not _fact_is_confidential(f, names_confidential)]
 
     return {
         "product_facts": facts_text,
@@ -129,6 +146,12 @@ def read_product_facts(ctx, product_id=None):
     }
 
 
+def _fact_is_confidential(fact, names_confidential):
+    return confidential_guard.product_is_confidential(fact.get("product_id")) or names_confidential(
+        f"{fact.get('text') or ''}\n{fact.get('source_url') or ''}"
+    )
+
+
 @tool(
     name="list_repos",
     description="List tracked product repositories from config/repos.json with id, name, product_id, kind, confidential, status, and version.",
@@ -139,17 +162,19 @@ def read_product_facts(ctx, product_id=None):
     },
 )
 def list_repos(ctx):
+    """Names only for confidential repos, unless the session already runs on local AI."""
     out = []
     for r in repos.list_repos():
+        hidden = _is_confidential_repo(r) and not _may_list_confidential(ctx)
         out.append(
             {
                 "id": r.get("id"),
                 "name": r.get("name"),
                 "product_id": r.get("product_id"),
-                "kind": r.get("kind"),
-                "confidential": bool(r.get("confidential")),
-                "status": r.get("status"),
-                "version": r.get("version"),
+                "kind": None if hidden else r.get("kind"),
+                "confidential": bool(r.get("confidential")) or hidden,
+                "status": None if hidden else r.get("status"),
+                "version": None if hidden else r.get("version"),
             }
         )
     return {"repositories": out}
@@ -158,17 +183,23 @@ def list_repos(ctx):
 def _taint_if_confidential(ctx, repo_obj):
     if not ctx or not repo_obj:
         return
-    is_conf = bool(repo_obj.get("confidential"))
-    if not is_conf:
-        pid = (repo_obj.get("product_id") or repo_obj.get("id") or "").lower()
-        try:
-            rules_path = _resolve_readable_path("config", "product_rules.json")
-            if os.path.exists(rules_path) and pid in product_rules.confidential_product_ids(rules_path):
-                is_conf = True
-        except Exception:
-            pass
-    if is_conf and callable(getattr(ctx, "mark_confidential", None)):
+    if _is_confidential_repo(repo_obj) and callable(getattr(ctx, "mark_confidential", None)):
         ctx.mark_confidential()
+
+
+def _switch_or_refuse(ctx, repo_obj):
+    """Switch the session to local AI before a confidential repo's data is returned; refuse if it can't switch."""
+    return confidential_guard.local_or_refusal(ctx, _is_confidential_repo(repo_obj))
+
+
+def _is_confidential_repo(repo_obj):
+    """True if flagged confidential, or its product is. Fails closed when the rules can't be read."""
+    return confidential_guard.is_confidential_repo(repo_obj)
+
+
+def _may_list_confidential(ctx):
+    """Lists hold confidential repos only in a session that already runs on local AI."""
+    return bool(getattr(ctx, "confidential", False))
 
 
 @tool(
@@ -189,9 +220,16 @@ def _taint_if_confidential(ctx, repo_obj):
         "required": [],
     },
 )
-def read_repo_changes(ctx, repo_id=None, limit=10):
+def read_repo_changes(ctx, repo_id=None, limit=10, _allow_confidential=False):
+    """Recent changes. Confidential repos are left out of lists, and only come back when asked for by id.
+
+    Asking by id switches the session to local AI first. With no session to switch (ctx is None) or
+    without `_allow_confidential`, they are left out entirely.
+    """
     max_commits = max(1, min(int(limit or 10), 50))
     configured = repos.list_repos()
+    allow = bool(_allow_confidential) or _may_list_confidential(ctx)
+    can_switch = callable(getattr(ctx, "mark_confidential", None))
 
     if repo_id:
         target = repo_id.strip().lower()
@@ -201,8 +239,10 @@ def read_repo_changes(ctx, repo_id=None, limit=10):
         ]
         if not matched:
             return {"error": f"Repository '{repo_id}' not found"}
+        if not (allow or can_switch):
+            matched = [r for r in matched if not _is_confidential_repo(r)]
     else:
-        matched = configured
+        matched = [r for r in configured if allow or not _is_confidential_repo(r)]
 
     sync_path = _resolve_readable_path("research", "repo-sync.json")
     file_data = {}
@@ -233,7 +273,7 @@ def read_repo_changes(ctx, repo_id=None, limit=10):
                 "name": cfg.get("name"),
                 "product_id": cfg.get("product_id"),
                 "kind": cfg.get("kind"),
-                "confidential": bool(cfg.get("confidential")),
+                "confidential": _is_confidential_repo(cfg),
                 "status": cfg.get("status"),
                 "version": src.get("version") or cfg.get("version"),
                 "branch": src.get("branch") or cfg.get("branch"),
@@ -309,7 +349,9 @@ def read_repo_file(ctx, repo_id, path):
     except UnicodeDecodeError:
         return {"error": "Binary or non-UTF-8 files are not supported"}
 
-    _taint_if_confidential(ctx, repo)
+    refusal = _switch_or_refuse(ctx, repo)
+    if refusal:
+        return refusal
     rel = os.path.relpath(candidate, repo_root).replace("\\", "/")
     return {
         "repo_id": repo["id"],
@@ -334,7 +376,9 @@ def list_repo_media(ctx, repo_id):
     repo = repos.get_repo(repo_id)
     if repo is None:
         return {"error": f"Repository '{repo_id}' not found"}
-    _taint_if_confidential(ctx, repo)
+    refusal = _switch_or_refuse(ctx, repo)
+    if refusal:
+        return refusal
 
     snap = db.get_latest_repo_snapshot(repo["id"])
     media = None
@@ -363,6 +407,11 @@ def shipped_this_week(ctx, days=7):
     days_int = max(1, min(int(days or 7), 365))
     items = repos.shipped(days=days_int)
     by_id = {r["id"]: r for r in repos.list_repos()}
+    if not _may_list_confidential(ctx):
+        items = [
+            i for i in items
+            if by_id.get(i.get("repo_id")) and not _is_confidential_repo(by_id[i.get("repo_id")])
+        ]
     for item in items:
         r = by_id.get(item.get("repo_id"))
         if r:
@@ -385,7 +434,9 @@ def draft_repo_facts(ctx, repo_id):
     repo = repos.get_repo(repo_id)
     if repo is None:
         return {"error": f"Repository '{repo_id}' not found"}
-    _taint_if_confidential(ctx, repo)
+    refusal = _switch_or_refuse(ctx, repo)
+    if refusal:
+        return refusal
 
     snap = db.get_latest_repo_snapshot(repo["id"])
     data = snap.get("data") if snap else None
@@ -464,10 +515,19 @@ def search_research(ctx, query, limit=8):
     max_hits = max(1, min(int(limit or 8), 50))
     tokens = [t for t in str(query or "").lower().split() if t]
     hits = []
+    allow = _may_list_confidential(ctx)
+    names_confidential = (lambda text: False) if allow else confidential_guard.matcher()
+
+    def add_hit(hit):
+        """Keep a hit unless it names a confidential product or repo and the session is not on local AI."""
+        if not names_confidential("\n".join(str(v) for v in hit.values())):
+            hits.append(hit)
+
+    fetch = max_hits if allow else max_hits * 4
 
     # 1. Search saved research_notes in SQLite
-    for note in db.search_research_notes(query, limit=max_hits):
-        hits.append(
+    for note in db.search_research_notes(query, limit=fetch):
+        add_hit(
             {
                 "title": note["title"],
                 "url": note.get("url") or "",
@@ -481,8 +541,8 @@ def search_research(ctx, query, limit=8):
         return {"query": query, "results": hits[:max_hits]}
 
     # 2. Search watch-topic research_items in SQLite
-    for ritem in db.search_research_items(query, limit=max_hits):
-        hits.append(
+    for ritem in db.search_research_items(query, limit=fetch):
+        add_hit(
             {
                 "title": ritem["title"],
                 "url": ritem.get("url") or "",
@@ -530,7 +590,7 @@ def search_research(ctx, query, limit=8):
             query_tag = str(item.get("query") or "")
             haystack = " ".join((title, summary, source, url, query_tag)).lower()
             if not tokens or all(tok in haystack for tok in tokens):
-                hits.append(
+                add_hit(
                     {
                         "title": title,
                         "url": url,
@@ -692,8 +752,9 @@ def recall_memory(ctx):
     raw_aid = ctx.agent_id if ctx and ctx.agent_id else ""
     ag = agents.get_agent(raw_aid)
     canon_id = ag["id"] if ag else str(raw_aid).strip().lower()
-    own_items, team_feedback = agents.get_visible_memory(canon_id, limit=12)
-    block = agents.memory_block(canon_id)
+    local = confidential_guard.is_local(ctx)
+    own_items, team_feedback = agents.get_visible_memory(canon_id, limit=12, allow_confidential=local)
+    block = agents.memory_block(canon_id, allow_confidential=local)
     return {
         "agent_id": canon_id,
         "items": own_items,
@@ -768,4 +829,7 @@ def list_reminders(ctx, status="open"):
         rows = reminders.list_reminders(status=status)
     except reminders.ReminderError as exc:
         return {"error": exc.message}
+    if not confidential_guard.is_local(ctx):
+        scope = confidential_guard.scope()
+        rows = [r for r in rows if not scope.linked(r, "title", "note")]
     return {"reminders": rows}

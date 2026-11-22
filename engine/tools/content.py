@@ -11,6 +11,7 @@ _ENGINE_DIR = os.path.dirname(_TOOLS_DIR)
 if _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
 
+import confidential_guard
 import db
 import paths
 import platforms
@@ -173,6 +174,10 @@ def read_content(ctx, content_id, version=None):
     item = db.get_content_item(content_id, version=version, include_versions=False)
     if item is None:
         return {"error": f"Content item '{content_id}' not found"}
+    if not confidential_guard.is_local(ctx):
+        refusal = confidential_guard.local_or_refusal(ctx, confidential_guard.scope().item(item))
+        if refusal:
+            return refusal
     return item
 
 
@@ -201,8 +206,13 @@ def read_content(ctx, content_id, version=None):
     },
 )
 def list_content(ctx, status=None, type=None, limit=20):
-    items = db.list_content_items(status=status, content_type=type, limit=limit)
-    return {"items": items}
+    if confidential_guard.is_local(ctx):
+        return {"items": db.list_content_items(status=status, content_type=type, limit=limit)}
+    # Confidential items are left out of lists, even their titles and ids.
+    max_items = max(1, min(int(limit or 20), 500))
+    scope = confidential_guard.scope()
+    items = [i for i in db.list_content_items(status=status, content_type=type, limit=500) if not scope.item(i)]
+    return {"items": items[:max_items]}
 
 
 @tool(
@@ -231,6 +241,11 @@ def write_review(ctx, content_id, verdict, notes):
     target = db.get_content_item(content_id, include_versions=True)
     if target is None:
         return {"error": f"Content item '{content_id}' not found"}
+    # The result carries findings drawn from the item's text, so a confidential item switches the session first.
+    if not confidential_guard.is_local(ctx):
+        refusal = confidential_guard.local_or_refusal(ctx, confidential_guard.scope().item(target))
+        if refusal:
+            return refusal
 
     auto = review.auto_review(target)
     auto_findings = list(auto.get("findings") or [])
@@ -418,5 +433,14 @@ def record_metrics(ctx, content_id, platform, metrics, source, captured_at=None)
     },
 )
 def read_metrics(ctx, content_id=None, limit=20):
-    rows = db.list_metrics(content_id=content_id, limit=limit)
-    return {"metrics": rows}
+    if confidential_guard.is_local(ctx):
+        return {"metrics": db.list_metrics(content_id=content_id, limit=limit)}
+    scope = confidential_guard.scope()
+    if content_id:
+        refusal = confidential_guard.local_or_refusal(ctx, scope.content_id(content_id))
+        if refusal:
+            return refusal
+        return {"metrics": db.list_metrics(content_id=content_id, limit=limit)}
+    max_rows = max(1, min(int(limit or 20), 500))
+    rows = [r for r in db.list_metrics(limit=500) if not scope.linked(r)]
+    return {"metrics": rows[:max_rows]}

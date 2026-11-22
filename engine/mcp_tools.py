@@ -710,9 +710,9 @@ def build_cli_snippets(clis=None):
             snippets.append({
                 "id": cid,
                 "name": name,
-                "format": "json",
-                "config_hint": "Add to ~/.gemini/antigravity/mcp_config.json",
-                "snippet": json_snippet,
+                "format": "cli",
+                "config_hint": "Run in your terminal",
+                "snippet": f"agy mcp add magnm python3 {shlex.quote(mcp_path)} --data-dir {shlex.quote(data_dir)}",
             })
     return snippets
 

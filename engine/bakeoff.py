@@ -16,6 +16,7 @@ if _ENGINE_DIR not in sys.path:
 
 import agents
 import ai_gateway
+import confidential_guard
 import db
 import paths
 import product_rules
@@ -49,11 +50,15 @@ def _grounding_facts_block(product_id="cero"):
     if os.path.exists(facts_path):
         with open(facts_path, "r", encoding="utf-8") as f:
             raw = f.read().strip()
+        # Facts of confidential products never go to the cloud models being compared.
+        raw = confidential_guard.drop_confidential_sections(raw).strip()
         if raw:
             parts.append(f"Verified product-facts.md:\n{raw}")
 
     try:
         approved = db.list_product_facts(product_id=product_id, status="approved", limit=200)
+        if confidential_guard.product_is_confidential(product_id):
+            approved = []
         if approved:
             lines = []
             for f in approved:

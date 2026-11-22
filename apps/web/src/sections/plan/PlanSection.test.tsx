@@ -15,6 +15,32 @@ describe('PlanSection', () => {
     vi.restoreAllMocks();
   });
 
+  it('changes the time and day of a timed schedule', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/status') {
+        return jsonResponse({
+          schedules: [{ id: 'cmo_daily', name: 'Daily CMO Cycle', command: 'daily_cycle', cron: '46 8 * * *', enabled: true }],
+          editorial_plan: [],
+        });
+      }
+      if (url === '/api/schedule/update') return jsonResponse({ success: true });
+      return jsonResponse([]);
+    });
+    render(<PlanSection />);
+    expect(await screen.findByText('Every day at 08:46 IST · never run')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByLabelText('Time (IST)'), { target: { value: '07:15' } });
+    fireEvent.change(screen.getByLabelText('Day'), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/schedule/update',
+        expect.objectContaining({ body: JSON.stringify({ id: 'cmo_daily', enabled: true, time: '07:15', day: '5' }) }),
+      );
+    });
+  });
+
   it('renders weekly plan, briefs, editorial calendar, schedules, and triggers main actions', async () => {
     const todayIso = new Date().toISOString().slice(0, 10);
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {

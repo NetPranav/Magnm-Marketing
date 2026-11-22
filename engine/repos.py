@@ -793,7 +793,7 @@ def enqueue_fact_draft_session(repo, version=None):
     session = agent_runtime.create_session(
         "researcher",
         user_message,
-        system_prompt=agents.build_system_prompt("researcher"),
+        system_prompt=agents.build_system_prompt("researcher", confidential=bool(repo.get("confidential"))),
         allowed_tools=list(agent_cfg.get("tools") or []),
         confidential=bool(repo.get("confidential")),
         title=f"Draft product facts for {repo_name}{ver_str}".strip(),
