@@ -63,7 +63,8 @@ def clear_caches():
 def _is_disallowed_ip(ip_obj):
     """Return True if ip_obj is private, loopback, link-local, multicast, reserved, or unspecified."""
     if (
-        ip_obj.is_private
+        not ip_obj.is_global  # Also covers 100.64.0.0/10 (Tailscale, carrier NAT), which is not "private".
+        or ip_obj.is_private
         or ip_obj.is_loopback
         or ip_obj.is_link_local
         or ip_obj.is_multicast
@@ -71,10 +72,25 @@ def _is_disallowed_ip(ip_obj):
         or ip_obj.is_unspecified
     ):
         return True
-    mapped = getattr(ip_obj, "ipv4_mapped", None)
-    if mapped is not None and _is_disallowed_ip(mapped):
-        return True
+    if ip_obj.version == 6:
+        embedded = [ip_obj.ipv4_mapped, ip_obj.sixtofour]
+        if ip_obj in _NAT64_NET:
+            embedded.append(ipaddress.IPv4Address(ip_obj.packed[-4:]))
+        if any(v4 is not None and _is_disallowed_ip(v4) for v4 in embedded):
+            return True
     return False
+
+
+def is_disallowed_address(ip_str):
+    """Return True if an address string is unparsable or not a public address."""
+    try:
+        ip_obj = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return True
+    return _is_disallowed_ip(ip_obj)
+
+
+_NAT64_NET = ipaddress.IPv6Network("64:ff9b::/96")
 
 
 def _domain_in_blocklist(host, blocked_domains):
@@ -196,7 +212,14 @@ def _open_url_with_redirects(url, timeout=FETCH_TIMEOUT_S, headers=None):
     if urllib.request.urlopen is _ORIG_URLOPEN:
         limiter.wait(url)
         req = urllib.request.Request(url, headers=req_headers, method="GET")
-        opener = urllib.request.build_opener(_SafeRedirectHandler(max_redirects=MAX_REDIRECTS))
+        from research import egress  # egress imports this module
+
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            egress.PublicHTTPHandler(),
+            egress.PublicHTTPSHandler(),
+            _SafeRedirectHandler(max_redirects=MAX_REDIRECTS),
+        )
         resp = opener.open(req, timeout=timeout)
         final_url = resp.geturl() if hasattr(resp, "geturl") else url
         if final_url != url:

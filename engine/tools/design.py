@@ -21,6 +21,7 @@ import db
 import key_pool
 import model_registry
 import paths
+import private_files
 from tools import tool
 
 VALID_CARD_FORMATS = ("4x5", "1x1", "16x9", "9x16")
@@ -304,6 +305,8 @@ def check_image(ctx, path, question):
 
     if not os.path.isfile(real_target):
         return {"error": f"Image file not found: {raw_path}"}
+    if private_files.is_private(real_target, real_root) or not private_files.is_image(real_target):
+        return {"error": "check_image only reads PNG, JPEG, WebP or GIF images"}
 
     res = ai_gateway.generate_completion_with_meta(
         system_prompt=(
