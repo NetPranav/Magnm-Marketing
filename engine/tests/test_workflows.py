@@ -806,6 +806,40 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(done_run["status"], "done")
         self.assertEqual(len(done_run["state"]["draft_ids"]), 1)
 
+    def _run_one_wait_step(self, step):
+        """Run a one-step workflow on this thread, without the job worker."""
+        run = workflows.start("post", {"brief": "Cero", "platforms": ["x"]}, start_worker=False)
+
+        class OneStep:
+            steps = [("wait", step)]
+
+        with patch.dict(workflows.WORKFLOWS, {"post": OneStep}), patch.object(jobs, "start_worker"):
+            workflows.execute_workflow_job({"run_id": run["id"]})
+        return db.get_workflow_run(run["id"])
+
+    def test_answer_while_waiting_job_is_still_closing_resumes(self):
+        run = workflows.start("post", {"brief": "Cero", "platforms": ["x"]}, start_worker=False)
+        job = db.get_next_queued_job()
+        db.update_job(job["id"], status="running")
+        sess = _create_fake_session("writer")
+        db.update_workflow_run(run["id"], status="waiting_user", state={"waiting_session_id": sess["id"]})
+        with patch.object(jobs, "start_worker"):
+            workflows.on_session_finished(sess)
+        self.assertIsNotNone(db.get_next_queued_job(), "resume was dropped")
+
+    def test_session_finished_before_wait_was_saved_resumes(self):
+        sess = _create_fake_session("writer")
+        run = self._run_one_wait_step(lambda run, state: workflows.StepResult("wait_user", session_id=sess["id"]))
+        self.assertEqual(run["status"], "running")
+
+    def test_gate_answered_before_wait_was_saved_resumes(self):
+        def step(run, state):
+            gate = db.create_gate(run["id"], step=0, question="Post it?", options=["yes", "no"])
+            workflows.answer_gate(gate["id"], "yes", start_worker=False)
+            return workflows.StepResult("wait_user", gate_id=gate["id"])
+
+        self.assertEqual(self._run_one_wait_step(step)["status"], "running")
+
     def test_07_cancel_workflow_stops_further_steps(self):
         """Cancelling a workflow run stops further steps from executing."""
         entered_step0 = threading.Event()
