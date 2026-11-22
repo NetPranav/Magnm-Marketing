@@ -23,11 +23,13 @@ MAX_TITLE_CHARS = 120
 MAX_BODY_CHARS = 300
 SYNC_PAUSED_THRESHOLD_S = 30 * 60
 KEY_FAILING_INTERVAL_S = 10 * 60
+KEYS_EXHAUSTED_INTERVAL_S = 60 * 60
 STORAGE_CHECK_INTERVAL_S = 60 * 60
 STORAGE_WARNING_PERCENT = 80
 LINK_FAILURE_THRESHOLD = 3
 CURSOR_LIMIT = 200
 MAX_CURSOR_IDS = 500
+NIM_MODEL_WATCH_META_KEY = "notif_nim_model_watch"
 
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]+")
 _SECRET_SCRUB_RE = re.compile(
@@ -162,6 +164,30 @@ NOTIFICATION_KINDS = (
         "default": True,
         "admin_only": False,
         "route": "#/research",
+    },
+    {
+        "kind": "key_rejected",
+        "label": "Local AI key rejected",
+        "description": "When one of this laptop's NVIDIA keys gets 401 or 403",
+        "default": True,
+        "admin_only": False,
+        "route": "#/settings",
+    },
+    {
+        "kind": "keys_exhausted",
+        "label": "Local AI keys cooling down",
+        "description": "When every local NVIDIA key is rate limited or cooling down",
+        "default": True,
+        "admin_only": False,
+        "route": "#/settings",
+    },
+    {
+        "kind": "models_changed",
+        "label": "NIM model catalog changes",
+        "description": "When a configured NIM model leaves or returns to the catalog",
+        "default": True,
+        "admin_only": False,
+        "route": "#/settings",
     },
 )
 
@@ -927,3 +953,174 @@ def run_sync_checks(user_id, user_role, is_signed_out=None, now_ts=None):
             raise
     except Exception:
         pass
+
+
+# --- Local key & NIM catalog alerts ---
+
+def notify_local_key_rejected(label, all_rejected=False, today_utc=None):
+    """Notify once per key per UTC day when a local NVIDIA key returns 401/403."""
+    clean_label = _clean_text(label or "NVIDIA_NIM_API_KEY", 80) or "NVIDIA_NIM_API_KEY"
+    # Guard against callers ever passing a secret or masked key instead of its safe env label.
+    if "..." in clean_label or clean_label.startswith("nvapi-"):
+        clean_label = "NVIDIA key"
+    day_key = str(today_utc or _today_utc())
+    meta_key = f"notif_key_rejected:{day_key}:{clean_label}"
+    if db.get_meta(meta_key):
+        return None
+    if not is_kind_enabled("key_rejected"):
+        return None
+    if all_rejected:
+        title = "All local NVIDIA keys were rejected"
+        body = f"{clean_label} returned HTTP 401/403 and no working local NVIDIA keys remain."
+    else:
+        title = f"Local NVIDIA key rejected: {clean_label}"
+        body = f"{clean_label} returned HTTP 401/403. Check Settings > Keys."
+    row = notify("key_rejected", title, body=body, route="#/settings")
+    if row is not None:
+        db.set_meta(meta_key, "1")
+    return row
+
+
+def notify_local_keys_exhausted(now_ts=None):
+    """Notify at most once per hour when every local NVIDIA key is rate limited or cooling."""
+    if not is_kind_enabled("keys_exhausted"):
+        return None
+    now = float(time.time() if now_ts is None else now_ts)
+    meta_key = "notif_keys_exhausted_at"
+    raw_last = db.get_meta(meta_key)
+    if raw_last:
+        try:
+            if (now - float(raw_last)) < KEYS_EXHAUSTED_INTERVAL_S:
+                return None
+        except (TypeError, ValueError):
+            pass
+    row = notify(
+        "keys_exhausted",
+        "All local NVIDIA keys are cooling down",
+        body="Every local NVIDIA key is rate-limited right now. Requests will resume after cooldown.",
+        route="#/settings",
+    )
+    if row is not None:
+        db.set_meta(meta_key, str(now))
+    return row
+
+
+def _watched_nim_models(models_cfg=None, role_overrides=None):
+    """Return ordered unique NIM model IDs configured in models.json or saved role overrides."""
+    import model_registry
+
+    cfg = models_cfg
+    if not isinstance(cfg, dict):
+        try:
+            cfg = model_registry.load_models_config()
+        except Exception:
+            cfg = {}
+
+    overrides = role_overrides
+    if overrides is None:
+        try:
+            import ai_gateway
+            gw_cfg = ai_gateway.get_config()
+            overrides = gw_cfg.get("ROLE_MODEL_OVERRIDES") or {}
+            file_env = ai_gateway.load_env()
+        except Exception:
+            overrides = {}
+            file_env = {}
+    else:
+        file_env = {}
+
+    seen = []
+    seen_set = set()
+
+    def _add(model_id):
+        val = str(model_id or "").strip()
+        if val and val not in seen_set:
+            seen_set.add(val)
+            seen.append(val)
+
+    tiers = cfg.get("tiers") if isinstance(cfg.get("tiers"), dict) else {}
+    for tier_spec in tiers.values():
+        if not isinstance(tier_spec, dict):
+            continue
+        _add(tier_spec.get("primary"))
+        _add(tier_spec.get("backup"))
+
+    if isinstance(overrides, dict):
+        for val in overrides.values():
+            _add(val)
+
+    roles_map = cfg.get("roles") if isinstance(cfg.get("roles"), dict) else {}
+    for role_id in roles_map.keys():
+        env_var = model_registry._role_env_name(role_id)
+        if env_var:
+            val = file_env.get(env_var) or os.environ.get(env_var) or ""
+            _add(val)
+
+    return seen
+
+
+def evaluate_nim_catalog_changes(catalog, models_cfg=None, role_overrides=None):
+    """Detect watched NIM models leaving or returning to the catalog without alerting on baseline."""
+    if not isinstance(catalog, (set, frozenset, list, tuple)):
+        return []
+    catalog_set = {str(m).strip() for m in catalog if m and str(m).strip()}
+    if not catalog_set:
+        return []
+
+    watched = _watched_nim_models(models_cfg=models_cfg, role_overrides=role_overrides)
+    if not watched:
+        return []
+
+    prev_state = _get_json_meta(NIM_MODEL_WATCH_META_KEY)
+    if not isinstance(prev_state, dict):
+        prev_state = None
+
+    prev_healthy = sum(1 for m in watched if prev_state and prev_state.get(m) is True)
+    newly_missing = [
+        m for m in watched
+        if (prev_state is None or prev_state.get(m) is True) and m not in catalog_set
+    ]
+
+    # Guard against partial/tiny catalog responses raising mass "removed" alerts.
+    if len(catalog_set) < 5 and len(watched) >= 4 and len(catalog_set & set(watched)) == 0:
+        return []
+    if prev_healthy >= 4 and len(catalog_set) < 10 and len(newly_missing) >= max(3, int(prev_healthy * 0.75)):
+        return []
+
+    created_notifs = []
+    next_state = {}
+    for model_id in watched:
+        in_catalog = model_id in catalog_set
+        prev_val = prev_state.get(model_id) if prev_state is not None else None
+        if prev_val is None:
+            if not in_catalog:
+                notif = notify(
+                    "models_changed",
+                    f"NIM model unavailable: {model_id}",
+                    body=f"{model_id} is not in the NVIDIA NIM catalog. Check Settings > Engines and models.",
+                    route="#/settings",
+                )
+                if notif is not None:
+                    created_notifs.append(notif)
+        elif prev_val is True and not in_catalog:
+            notif = notify(
+                "models_changed",
+                f"NIM model left catalog: {model_id}",
+                body=f"{model_id} is no longer in the NVIDIA NIM catalog. Check Settings > Engines and models.",
+                route="#/settings",
+            )
+            if notif is not None:
+                created_notifs.append(notif)
+        elif prev_val is False and in_catalog:
+            notif = notify(
+                "models_changed",
+                f"NIM model returned: {model_id}",
+                body=f"{model_id} is back in the NVIDIA NIM catalog.",
+                route="#/settings",
+            )
+            if notif is not None:
+                created_notifs.append(notif)
+        next_state[model_id] = in_catalog
+
+    _set_json_meta(NIM_MODEL_WATCH_META_KEY, next_state)
+    return created_notifs

@@ -366,6 +366,7 @@ class KeyPool:
         """
         start = self._now()
         slept_total = 0.0
+        notify_exhausted = False
 
         while True:
             with self._lock:
@@ -401,17 +402,57 @@ class KeyPool:
                 elapsed = max(now - start, slept_total)
                 remaining = self._acquire_timeout_s - elapsed
                 if remaining <= 0:
-                    raise AINotConnected(
-                        "All NVIDIA keys are busy or rate-limited right now. Try again in a minute."
-                    )
+                    notify_exhausted = self._all_keys_cooling_locked(now)
+                    break
 
                 wait_s = min(max(0.001, soonest - now), remaining)
 
             self._do_sleep(wait_s, sleep_fn=sleep_fn)
             slept_total += wait_s
 
+        if notify_exhausted:
+            self._notify_keys_exhausted()
+        raise AINotConnected(
+            "All NVIDIA keys are busy or rate-limited right now. Try again in a minute."
+        )
+
+    def _all_keys_cooling_locked(self, now):
+        if not self._entries:
+            return False
+        has_non_disabled = False
+        for entry in self._entries.values():
+            if entry.disabled_reason is None:
+                has_non_disabled = True
+            if self._is_healthy(entry, now):
+                return False
+        return has_non_disabled
+
+    def _notify_key_rejected(self, label, all_rejected):
+        try:
+            import notifications
+            notifications.notify_local_key_rejected(label, all_rejected=all_rejected)
+        except Exception:
+            pass
+
+    def _notify_keys_exhausted(self):
+        try:
+            import notifications
+            notifications.notify_local_keys_exhausted()
+        except Exception:
+            pass
+
+    def notify_if_all_cooling(self):
+        """Emit keys_exhausted outside the pool lock if every local key is cooling down."""
+        with self._lock:
+            now = self._now()
+            should_notify = self._all_keys_cooling_locked(now)
+        if should_notify:
+            self._notify_keys_exhausted()
+        return should_notify
+
     def report(self, label, outcome, retry_after=None):
         """Record request outcome ('ok', 'rate_limited', 'auth_failed', 'error') for a key label."""
+        auth_alert_info = None
         with self._lock:
             entry = self._entries.get(label)
             if entry is None:
@@ -434,10 +475,17 @@ class KeyPool:
             elif outcome == "auth_failed":
                 entry.errors += 1
                 entry.disabled_reason = "key rejected (HTTP 401/403)"
+                all_rejected = bool(self._entries) and all(
+                    e.disabled_reason is not None for e in self._entries.values()
+                )
+                auth_alert_info = (entry.label, all_rejected)
             elif outcome == "error":
                 entry.errors += 1
             else:
                 raise ValueError(f"Unknown key_pool outcome: {outcome!r}")
+
+        if auth_alert_info is not None:
+            self._notify_key_rejected(*auth_alert_info)
 
     def status(self):
         """Return safe per-key status dicts without any raw secret values."""

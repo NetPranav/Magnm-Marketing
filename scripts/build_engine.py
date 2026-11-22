@@ -37,11 +37,25 @@ def _rustc_host_triple():
 
 def _discover_hidden_imports(engine_dir):
     modules = []
-    for path in sorted(glob.glob(os.path.join(engine_dir, "*.py"))):
-        stem = os.path.splitext(os.path.basename(path))[0]
-        if stem == "__init__":
-            continue
-        modules.append(stem)
+    skip_dirs = {"tests", "__pycache__"}
+    for root_dir, dirnames, filenames in os.walk(engine_dir):
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if d not in skip_dirs and not d.startswith(".")
+        )
+        rel_dir = os.path.relpath(root_dir, engine_dir)
+        pkg_prefix = "" if rel_dir == "." else rel_dir.replace(os.sep, ".")
+        for fname in sorted(filenames):
+            if not fname.endswith(".py"):
+                continue
+            stem = os.path.splitext(fname)[0]
+            if stem == "__init__":
+                if pkg_prefix:
+                    modules.append(pkg_prefix)
+                continue
+            mod_name = f"{pkg_prefix}.{stem}" if pkg_prefix else stem
+            modules.append(mod_name)
+    modules.sort()
     for extra_mod in (
         "PIL",
         "PIL.Image",
