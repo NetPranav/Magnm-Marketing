@@ -38,6 +38,7 @@ import { useFallbackPoll, useStudioEvents } from '../../events';
 import { AccountPanel } from './AccountPanel';
 import { CodingAgentsPanel } from './CodingAgentsPanel';
 import { NotificationsPanel } from './NotificationsPanel';
+import { PhonePanel } from './PhonePanel';
 import { PitchBasePricesPanel } from './PitchBasePricesPanel';
 import { TeamKnowledgePanel } from './TeamKnowledgePanel';
 import type {
@@ -1122,6 +1123,8 @@ export function SettingsSection() {
       </section>
 
       <PitchBasePricesPanel />
+
+      <PhonePanel />
 
       <Dialog
         open={Boolean(confirmRemoveKey)}

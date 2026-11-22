@@ -22,7 +22,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -907,6 +907,39 @@ def _apply_migration_v21(conn):
     )
 
 
+def _apply_migration_v22(conn):
+    """Add phone_devices and phone_inbox_receipts tables idempotently."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS phone_devices (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            last_seen_at TEXT,
+            last_ip TEXT,
+            revoked_at TEXT,
+            owner_user_id TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_phone_devices_token_hash
+            ON phone_devices(token_hash);
+
+        CREATE INDEX IF NOT EXISTS idx_phone_devices_created
+            ON phone_devices(created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS phone_inbox_receipts (
+            device_id TEXT NOT NULL,
+            client_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (device_id, client_id)
+        );
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -929,6 +962,7 @@ _MIGRATIONS = (
     (19, _apply_migration_v19),
     (20, _apply_migration_v20),
     (21, _apply_migration_v21),
+    (22, _apply_migration_v22),
 )
 
 
@@ -6135,4 +6169,193 @@ def fail_stale_running_coding_runs(finished_at, error="engine restarted"):
                 (str(finished_at), str(error)),
             )
     return [get_coding_run(rid) for rid in ids]
+
+
+def _row_to_phone_device(row, *, include_hash=False):
+    if row is None:
+        return None
+    out = {
+        "id": row["id"],
+        "name": row["name"],
+        "created_at": row["created_at"],
+        "last_seen_at": row["last_seen_at"],
+        "last_ip": row["last_ip"],
+        "revoked_at": row["revoked_at"],
+        "owner_user_id": row["owner_user_id"],
+    }
+    if include_hash:
+        out["token_hash"] = row["token_hash"]
+    return out
+
+
+def create_phone_device(
+    device_id,
+    name,
+    token_hash,
+    *,
+    created_at=None,
+    last_seen_at=None,
+    last_ip=None,
+    owner_user_id=None,
+):
+    """Insert a paired phone device record storing only the SHA-256 token hash."""
+    ensure_init()
+    now = str(created_at or datetime.now(timezone.utc).isoformat())
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO phone_devices (
+                id, name, token_hash, created_at, last_seen_at, last_ip, revoked_at, owner_user_id
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+            """,
+            (
+                str(device_id),
+                str(name),
+                str(token_hash),
+                now,
+                last_seen_at,
+                last_ip,
+                owner_user_id,
+            ),
+        )
+    return get_phone_device(device_id)
+
+
+def get_phone_device(device_id):
+    """Return a phone device dict (without token_hash) by ID, or None."""
+    if not device_id:
+        return None
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        """
+        SELECT id, name, created_at, last_seen_at, last_ip, revoked_at, owner_user_id
+        FROM phone_devices
+        WHERE id = ?
+        """,
+        (str(device_id),),
+    ).fetchone()
+    return _row_to_phone_device(row, include_hash=False)
+
+
+def get_phone_device_by_token_hash(token_hash):
+    """Look up a phone device row by sha256(token) hex digest."""
+    if not token_hash:
+        return None
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM phone_devices WHERE token_hash = ?",
+        (str(token_hash),),
+    ).fetchone()
+    return _row_to_phone_device(row, include_hash=False)
+
+
+def list_phone_devices(include_revoked=False):
+    """Return paired phone devices ordered newest-created first (without token_hash)."""
+    ensure_init()
+    conn = connect()
+    if include_revoked:
+        rows = conn.execute(
+            """
+            SELECT id, name, created_at, last_seen_at, last_ip, revoked_at, owner_user_id
+            FROM phone_devices
+            ORDER BY created_at DESC, rowid DESC
+            """
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT id, name, created_at, last_seen_at, last_ip, revoked_at, owner_user_id
+            FROM phone_devices
+            WHERE revoked_at IS NULL
+            ORDER BY created_at DESC, rowid DESC
+            """
+        ).fetchall()
+    return [_row_to_phone_device(r, include_hash=False) for r in rows]
+
+
+def touch_phone_device(device_id, last_seen_at=None, last_ip=None):
+    """Update last_seen_at and last_ip on an active phone device."""
+    if not device_id:
+        return None
+    ensure_init()
+    ts = str(last_seen_at or datetime.now(timezone.utc).isoformat())
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            UPDATE phone_devices
+            SET last_seen_at = ?, last_ip = COALESCE(?, last_ip)
+            WHERE id = ? AND revoked_at IS NULL
+            """,
+            (ts, last_ip, str(device_id)),
+        )
+    return get_phone_device(device_id)
+
+
+def revoke_phone_device(device_id, revoked_at=None):
+    """Mark a paired phone device as revoked; returns updated dict or None."""
+    if not device_id:
+        return None
+    ensure_init()
+    ts = str(revoked_at or datetime.now(timezone.utc).isoformat())
+    conn = connect()
+    with conn:
+        cur = conn.execute(
+            """
+            UPDATE phone_devices
+            SET revoked_at = ?
+            WHERE id = ? AND revoked_at IS NULL
+            """,
+            (ts, str(device_id)),
+        )
+    if cur.rowcount == 0:
+        existing = get_phone_device(device_id)
+        return existing
+    return get_phone_device(device_id)
+
+
+def get_phone_inbox_receipt(device_id, client_id):
+    """Return an existing inbox receipt for (device_id, client_id), or None."""
+    if not device_id or not client_id:
+        return None
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        """
+        SELECT device_id, client_id, kind, target_id, created_at
+        FROM phone_inbox_receipts
+        WHERE device_id = ? AND client_id = ?
+        """,
+        (str(device_id), str(client_id)),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "device_id": row["device_id"],
+        "client_id": row["client_id"],
+        "kind": row["kind"],
+        "target_id": row["target_id"],
+        "created_at": row["created_at"],
+    }
+
+
+def save_phone_inbox_receipt(device_id, client_id, kind, target_id, created_at=None):
+    """Persist an idempotency receipt for a phone inbox item."""
+    ensure_init()
+    now = str(created_at or datetime.now(timezone.utc).isoformat())
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO phone_inbox_receipts (
+                device_id, client_id, kind, target_id, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (str(device_id), str(client_id), str(kind), str(target_id), now),
+        )
+    return get_phone_inbox_receipt(device_id, client_id)
+
 

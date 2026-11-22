@@ -35,6 +35,7 @@ export const STUDIO_EVENT_NAMES = [
   'notification',
   'coding_run.log',
   'coding_run.status',
+  'phone.updated',
 ] as const;
 
 export type StudioEventHandler = (eventName: string, data: unknown) => void;
