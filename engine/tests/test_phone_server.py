@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -564,6 +565,46 @@ class PhoneServerTests(unittest.TestCase):
 
     # --- 4. Confidential stubs & fail-closed, file traversal, inbox, agents, reminders, notifications, results ---
 
+    def _call_as_phone(self, method, args):
+        """Run one real handler and return what it would send to the phone."""
+        handler = object.__new__(phone_server.PhoneHandler)
+        handler.server = SimpleNamespace(check_agent_rate_limit=lambda _id: True)
+        sent = []
+        handler._send_json = lambda data, status=200: sent.append(data)
+        getattr(handler, method)(*args)
+        return json.dumps(sent)
+
+    def test_review_comment_replies_are_filtered(self):
+        item = db.create_content_item(content_id="c_replies", content_type="post", platform="linkedin", title="Cero post", body="Cero")
+        thread = {"id": "1", "body": "Looks good", "replies": [{"id": "2", "body": "Hold for ProjectNightfall", "replies": []}]}
+        payload = {"item": item, "comments": [thread]}
+        with patch.object(phone_server.review_studio, "get_review", return_value=payload):
+            out = self._call_as_phone("_handle_get_draft_detail", ("c_replies",))
+        self.assertNotIn("ProjectNightfall", out)
+        self.assertIn("Looks good", out)
+
+    def test_agent_question_and_options_are_filtered(self):
+        res = {
+            "success": True, "response": "I need one answer.", "waiting_user": True,
+            "question": "Which launch?", "options": ["Cero", "ProjectNightfall"],
+        }
+        with patch.object(agent_chat, "chat_with_agent", return_value=res):
+            out = self._call_as_phone(
+                "_handle_post_agent_message", ({"id": "d", "name": "Phone"}, "writer", {"text": "Plan a launch"})
+            )
+        self.assertNotIn("ProjectNightfall", out)
+
+    def test_extracted_screenshot_is_filtered(self):
+        res = {
+            "proposal": {"id": "p1", "content_id": None, "metrics": {"views": 9}},
+            "period": "7 days",
+            "notes": "ProjectNightfall teaser",
+        }
+        params = {"image_base64": base64.b64encode(_PNG_BYTES).decode("ascii")}
+        with patch.object(results_extract, "extract_from_image", return_value=res):
+            out = self._call_as_phone("_handle_post_results_extract", ({"id": "d", "name": "Phone"}, params))
+        self.assertNotIn("ProjectNightfall", out)
+
     def test_09_confidential_stubs_and_fail_closed_everywhere(self):
         self._start_phone_server()
         _, token, _ = self._pair_device()
@@ -1066,6 +1107,14 @@ class PhoneReviewGapTests(unittest.TestCase):
                 with open(path, "wb") as f:
                     f.write(body)
                 self.assertEqual(phone_server._file_is_confidential(path, check, []), expected)
+
+    def test_name_after_a_serialized_newline_is_found(self):
+        pattern = phone_server.product_rules._word_pattern("SecretProduct")
+        check = lambda text: bool(pattern.search(text))
+        once = json.dumps({"notes": "Launch:\nSecretProduct"})
+        twice = json.dumps({"tool_result": once})
+        for text in (once, twice):
+            self.assertTrue(phone_server._text_is_confidential(text, check, []), text)
 
     def test_proposal_checked_as_a_whole(self):
         prop = {"id": "p", "content_id": None, "notes": "SecretProduct launch"}

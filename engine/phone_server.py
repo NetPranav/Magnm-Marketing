@@ -178,9 +178,12 @@ def _build_confidential_guard():
 def _text_is_confidential(text, checker, repo_patterns):
     if not text:
         return False
-    if checker(text):
-        return True
-    return any(pat.search(text) for pat in repo_patterns)
+    # Serialized text hides word boundaries: a newline before a name becomes the letter n.
+    unescaped = re.sub(r"\\+(?:u[0-9a-fA-F]{4}|[nrtbf])", " ", text)
+    for candidate in {text, unescaped}:
+        if checker(candidate) or any(pat.search(candidate) for pat in repo_patterns):
+            return True
+    return False
 
 
 def _content_item_is_confidential(item, conf_sids, conf_cids, conf_pids, checker, repo_patterns):
@@ -199,6 +202,8 @@ def _content_item_is_confidential(item, conf_sids, conf_cids, conf_pids, checker
         item.get("product_id") or "",
         item.get("body") or "",
         item.get("notes") or "",
+        item.get("posted_url") or "",
+        json.dumps(item.get("files") or [], ensure_ascii=False, default=str),
     ]
     for ver in item.get("versions") or []:
         if isinstance(ver, dict):
@@ -324,6 +329,20 @@ def _proposal_is_confidential(prop, conf_cids, conf_sids, conf_pids, checker, re
             return True
     text = json.dumps(prop, ensure_ascii=False, default=str)
     return _text_is_confidential(text, checker, repo_patterns)
+
+
+def _safe_comment(comment, checker, repo_patterns):
+    """Return a comment and all its nested replies, with confidential ones replaced by stubs."""
+    replies = [_safe_comment(reply, checker, repo_patterns) for reply in comment.get("replies") or []]
+    own = {key: value for key, value in comment.items() if key != "replies"}
+    if _text_is_confidential(json.dumps(own, ensure_ascii=False, default=str), checker, repo_patterns):
+        own = {
+            "id": own.get("id"),
+            "created_at": own.get("created_at"),
+            "body": "Confidential comment",
+            "confidential": True,
+        }
+    return {**own, "replies": replies}
 
 
 def _stub_proposal(prop):
@@ -804,13 +823,9 @@ class PhoneHandler(BaseHTTPRequestHandler):
             return
 
         payload = review_studio.get_review(content_id)
-        safe_comments = []
-        for cmt in payload.get("comments") or []:
-            if _text_is_confidential(cmt.get("body") or "", checker, repo_patterns):
-                safe_comments.append({**cmt, "body": "Confidential comment", "confidential": True})
-            else:
-                safe_comments.append(cmt)
-        payload["comments"] = safe_comments
+        payload["comments"] = [
+            _safe_comment(cmt, checker, repo_patterns) for cmt in payload.get("comments") or []
+        ]
         # Suggestions, findings and notes can name what the item itself doesn't.
         others = {k: v for k, v in payload.items() if k not in ("comments", "product")}
         if payload.get("confidential") or _text_is_confidential(
@@ -1170,6 +1185,11 @@ class PhoneHandler(BaseHTTPRequestHandler):
             or bool(sess_obj and sess_obj.get("confidential"))
             or _chat_read_confidential(sess_obj, checker, repo_patterns)
             or _text_is_confidential(reply_text, checker, repo_patterns)
+            or _text_is_confidential(
+                json.dumps([res.get("question"), res.get("options")], ensure_ascii=False, default=str),
+                checker,
+                repo_patterns,
+            )
         )
 
         if is_conf:
@@ -1256,6 +1276,12 @@ class PhoneHandler(BaseHTTPRequestHandler):
             f"phone_results_extract:{prop.get('id') or ''}",
             clean_cid or prop.get("id") or "",
         )
+        if prop and (
+            _proposal_is_confidential(prop, conf_cids, conf_sids, conf_pids, checker, repo_patterns)
+            or _text_is_confidential(json.dumps(res, ensure_ascii=False, default=str), checker, repo_patterns)
+        ):
+            self._send_json({"proposal": _stub_proposal(prop)})
+            return
         self._send_json(res)
 
     def _handle_post_results_confirm(self, device, proposal_id, params):
