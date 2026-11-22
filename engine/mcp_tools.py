@@ -379,9 +379,7 @@ def _build_confidential_guard():
 def _text_is_confidential(text, checker, repo_patterns):
     if not text:
         return False
-    if checker(text):
-        return True
-    return any(pat.search(text) for pat in repo_patterns)
+    return bool(checker(text)) or product_rules.any_match(repo_patterns, text)
 
 
 def _content_item_is_confidential(item, conf_sids, conf_cids, conf_pids, checker, repo_patterns):

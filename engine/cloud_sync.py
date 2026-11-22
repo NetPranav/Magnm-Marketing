@@ -685,7 +685,7 @@ def confidential_checker():
         raise RuntimeError("Sync paused: product rules could not be read.") from exc
     names = [p.get("name") or p.get("id") for p in rules.get("products", []) if p.get("confidential")]
     patterns = [product_rules._word_pattern(n) for n in names if n]
-    return lambda text: any(pat.search(text or "") for pat in patterns)
+    return lambda text: product_rules.any_match(patterns, text)
 
 
 def _mentions(checker, *parts):
