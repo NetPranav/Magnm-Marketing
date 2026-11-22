@@ -188,7 +188,7 @@ def post_message(sender, text, attached_assets=None, depth=0):
             cid,
             user_prompt,
             system_prompt=system_prompt,
-            allowed_tools=target.get("tools") or [],
+            allowed_tools=agents.effective_tools(cid),
             attachments=attachment_paths or None,
             confidential=confidential,
             title=str(text or "")[:100],

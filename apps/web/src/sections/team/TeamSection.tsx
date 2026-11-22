@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Card, PillButton, SheetHeader, StatusDot, TextInput } from '@magnm/design/react';
+import { Card, NumberedTabs, PillButton, SheetHeader, StatusDot, TextInput } from '@magnm/design/react';
 import {
   answerSession,
   cancelSession,
@@ -19,6 +19,7 @@ import { useStudioEvents } from '../../events';
 import type { AgentSession } from '../../types';
 import { MentionComposer } from '../../ui/MentionComposer';
 import { AgentRoster } from './AgentRoster';
+import { CodingRunsPanel } from './CodingRunsPanel';
 import { MemoryPanel } from './MemoryPanel';
 import { MessageList, type DisplayMessage } from './MessageList';
 
@@ -30,8 +31,9 @@ interface StepProgress {
   preview: string;
 }
 
-/** Team section: 7-agent roster, shared Team Room, 1-on-1 chat, live progress, and memory. */
+/** Team section: 7-agent roster, shared Team Room, 1-on-1 chat, coding runs, live progress, and memory. */
 export function TeamSection() {
+  const [teamTab, setTeamTab] = useState<'chat' | 'coding'>('chat');
   const [roster, setRoster] = useState<RosterAgent[]>([]);
   const [selectedTarget, setSelectedTarget] = useState<'room' | string>('room');
   const [roomMessages, setRoomMessages] = useState<TeamMessage[]>([]);
@@ -296,14 +298,28 @@ export function TeamSection() {
         total={10}
         subtitle="AI Team"
         title="Team"
-        lead="Shared team room with @mentions, direct specialist chats, and editable agent memory."
+        lead="Shared team room with @mentions, direct specialist chats, coding runs, and editable agent memory."
       />
 
-      {error ? (
-        <div className="mg-notice" role="alert">
-          {error}
-        </div>
-      ) : null}
+      <NumberedTabs
+        ariaLabel="Team views"
+        items={[
+          { id: 'chat', label: 'Team chat' },
+          { id: 'coding', label: 'Coding runs' },
+        ]}
+        current={teamTab}
+        onSelect={(id) => setTeamTab(id === 'coding' ? 'coding' : 'chat')}
+      />
+
+      {teamTab === 'coding' ? (
+        <CodingRunsPanel />
+      ) : (
+        <>
+          {error ? (
+            <div className="mg-notice" role="alert">
+              {error}
+            </div>
+          ) : null}
 
       <div className="studio-team-grid">
         <AgentRoster
@@ -457,6 +473,8 @@ export function TeamSection() {
           ) : null}
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }

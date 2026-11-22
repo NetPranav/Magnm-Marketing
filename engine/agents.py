@@ -78,6 +78,22 @@ def get_agent(id_or_legacy_id):
     return None
 
 
+def effective_tools(agent_id):
+    """Return configured tools plus run_coding_agent when a confined coding CLI is selected for agent_id."""
+    agent = get_agent(agent_id)
+    if agent is None:
+        return []
+    base = list(agent.get("tools") or [])
+    try:
+        import coding_agents
+        eng = coding_agents.get_agent_engine(agent["id"])
+        if eng == coding_agents.CONFINED_ENGINE_ID and "run_coding_agent" not in base:
+            base.append("run_coding_agent")
+    except Exception:
+        pass
+    return base
+
+
 def _extract_markdown_sections(md_text, heading_prefixes):
     """Extract ## sections from markdown whose heading starts with one of heading_prefixes."""
     if not md_text:
@@ -221,6 +237,16 @@ def build_system_prompt(agent_id):
         lr_block = learnings.prompt_block(canon_id)
         if lr_block:
             blocks.append(lr_block)
+    except Exception:
+        pass
+
+    try:
+        import coding_agents
+        coding_eng = coding_agents.get_agent_engine(canon_id)
+        if coding_eng == coding_agents.CONFINED_ENGINE_ID:
+            blocks.append(
+                f"You have confined coding CLI engine '{coding_eng}' enabled. Keep ordinary conversation here, and use run_coding_agent to queue coding runs for user approval."
+            )
     except Exception:
         pass
 

@@ -350,6 +350,60 @@ export interface ReviewDiffOp {
   text: string;
 }
 
+export interface CodingAgentInfo {
+  id: string;
+  name: string;
+  command: string;
+  vendor?: string | null;
+  installed: boolean;
+  path?: string | null;
+  version?: string | null;
+  enabled?: boolean;
+  confined?: boolean;
+  reason?: string | null;
+  acp?: boolean;
+  install_command?: string;
+}
+
+export interface CodingOutFile {
+  name: string;
+  size: number;
+}
+
+export interface CodingRunRecord {
+  id: string;
+  engine: string;
+  mode: 'read_only' | 'write_out' | string;
+  prompt: string;
+  repo_ids?: string[];
+  status: 'awaiting_approval' | 'queued' | 'running' | 'done' | 'failed' | 'cancelled' | string;
+  workspace?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  exit_code?: number | null;
+  summary?: string | null;
+  log_path?: string | null;
+  out_files?: CodingOutFile[];
+  error?: string | null;
+  transport?: string | null;
+  log_tail?: string;
+  approval_hash?: string | null;
+  approved_at?: string | null;
+  approval_consumed?: boolean;
+  confidential?: boolean;
+  requested_by?: string | null;
+  session_id?: string | null;
+}
+
+export interface CodingRunLogResponse {
+  run_id: string;
+  content: string;
+  from: number;
+  next_offset: number;
+  status: string;
+}
+
 export interface ReviewDiffResponse {
   content_id: string;
   from_version: number;

@@ -2350,3 +2350,24 @@
   align-items: center;
   gap: var(--s-2);
 }
+
+.studio-repo-checks {
+  display: grid;
+  gap: var(--s-2);
+}
+
+.studio-coding-log,
+.studio-coding-summary-text {
+  margin: 0;
+  padding: var(--s-3);
+  background: var(--tint);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 280px;
+  overflow-y: auto;
+}

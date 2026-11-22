@@ -115,6 +115,9 @@ def main(argv=None):
     import agent_runtime
     agent_runtime.recover_stale_sessions()
 
+    import coding_agents
+    coding_agents.recover_stale_runs()
+
     import jobs
     jobs.start_worker()
 

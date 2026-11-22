@@ -22,7 +22,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 21
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -850,6 +850,63 @@ def _apply_migration_v19(conn):
     )
 
 
+def _apply_migration_v20(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS coding_runs (
+            id TEXT PRIMARY KEY,
+            engine TEXT NOT NULL,
+            mode TEXT NOT NULL DEFAULT 'read_only',
+            prompt TEXT NOT NULL,
+            repo_ids_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'queued',
+            workspace TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            exit_code INTEGER,
+            summary TEXT,
+            log_path TEXT,
+            out_files_json TEXT NOT NULL DEFAULT '[]',
+            error TEXT,
+            transport TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_coding_runs_created
+            ON coding_runs(created_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_coding_runs_status_engine
+            ON coding_runs(status, engine);
+        """
+    )
+
+
+def _apply_migration_v21(conn):
+    """Add single-use approval, confidentiality, and requester columns to coding_runs idempotently."""
+    existing_cols = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(coding_runs)").fetchall()
+    }
+    columns_to_add = (
+        ("approval_hash", "TEXT"),
+        ("approved_at", "TEXT"),
+        ("approval_consumed", "INTEGER NOT NULL DEFAULT 0"),
+        ("confidential", "INTEGER NOT NULL DEFAULT 0"),
+        ("requested_by", "TEXT"),
+        ("session_id", "TEXT"),
+    )
+    for col_name, col_def in columns_to_add:
+        if col_name not in existing_cols:
+            conn.execute(f"ALTER TABLE coding_runs ADD COLUMN {col_name} {col_def}")
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_coding_runs_status_approved
+            ON coding_runs(status, approval_consumed)
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -870,6 +927,8 @@ _MIGRATIONS = (
     (17, _apply_migration_v17),
     (18, _apply_migration_v18),
     (19, _apply_migration_v19),
+    (20, _apply_migration_v20),
+    (21, _apply_migration_v21),
 )
 
 
@@ -5755,3 +5814,259 @@ def delete_pending_learnings_for_summary(source_summary_id):
             (str(source_summary_id).strip(),),
         )
     return int(cur.rowcount or 0)
+
+
+_UPDATABLE_CODING_RUN_FIELDS = {
+    "status",
+    "started_at",
+    "finished_at",
+    "exit_code",
+    "summary",
+    "log_path",
+    "out_files_json",
+    "out_files",
+    "error",
+    "transport",
+}
+
+
+def _row_to_coding_run(row):
+    if row is None:
+        return None
+    keys = row.keys()
+    try:
+        repo_ids = json.loads(row["repo_ids_json"]) if row["repo_ids_json"] else []
+    except Exception:
+        repo_ids = []
+    try:
+        out_files = json.loads(row["out_files_json"]) if row["out_files_json"] else []
+    except Exception:
+        out_files = []
+    return {
+        "id": row["id"],
+        "engine": row["engine"],
+        "mode": row["mode"],
+        "prompt": row["prompt"],
+        "repo_ids": repo_ids if isinstance(repo_ids, list) else [],
+        "status": row["status"],
+        "workspace": row["workspace"],
+        "created_at": row["created_at"],
+        "started_at": row["started_at"],
+        "finished_at": row["finished_at"],
+        "exit_code": row["exit_code"],
+        "summary": row["summary"],
+        "log_path": row["log_path"],
+        "out_files": out_files if isinstance(out_files, list) else [],
+        "error": row["error"],
+        "transport": row["transport"],
+        "approval_hash": row["approval_hash"] if "approval_hash" in keys else None,
+        "approved_at": row["approved_at"] if "approved_at" in keys else None,
+        "approval_consumed": bool(row["approval_consumed"]) if "approval_consumed" in keys else False,
+        "confidential": bool(row["confidential"]) if "confidential" in keys else False,
+        "requested_by": row["requested_by"] if "requested_by" in keys else None,
+        "session_id": row["session_id"] if "session_id" in keys else None,
+    }
+
+
+def create_coding_run(run):
+    """Insert a new coding_runs row and return the serialized run dict."""
+    ensure_init()
+    conn = connect()
+    repo_ids_json = json.dumps(list(run.get("repo_ids") or []), ensure_ascii=False)
+    out_files_json = json.dumps(list(run.get("out_files") or []), ensure_ascii=False)
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO coding_runs (
+                id, engine, mode, prompt, repo_ids_json, status, workspace,
+                created_at, started_at, finished_at, exit_code, summary,
+                log_path, out_files_json, error, transport,
+                approval_hash, approved_at, approval_consumed,
+                confidential, requested_by, session_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(run["id"]),
+                str(run["engine"]),
+                str(run.get("mode") or "read_only"),
+                str(run["prompt"]),
+                repo_ids_json,
+                str(run.get("status") or "awaiting_approval"),
+                str(run["workspace"]),
+                str(run["created_at"]),
+                run.get("started_at"),
+                run.get("finished_at"),
+                run.get("exit_code"),
+                run.get("summary"),
+                run.get("log_path"),
+                out_files_json,
+                run.get("error"),
+                run.get("transport"),
+                run.get("approval_hash"),
+                run.get("approved_at"),
+                1 if run.get("approval_consumed") else 0,
+                1 if run.get("confidential") else 0,
+                run.get("requested_by"),
+                run.get("session_id"),
+            ),
+        )
+    return get_coding_run(run["id"])
+
+
+def get_coding_run(run_id):
+    """Return a single coding_runs dict by ID, or None if missing."""
+    if not run_id:
+        return None
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM coding_runs WHERE id = ?",
+        (str(run_id),),
+    ).fetchone()
+    return _row_to_coding_run(row)
+
+
+def list_coding_runs(limit=50, engine=None, status=None):
+    """Return coding runs ordered newest-first, optionally filtered by engine or status."""
+    ensure_init()
+    conn = connect()
+    cap = max(1, min(int(limit or 50), 500))
+    clauses = []
+    params = []
+    if engine:
+        clauses.append("engine = ?")
+        params.append(str(engine))
+    if status:
+        clauses.append("status = ?")
+        params.append(str(status))
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(cap)
+    rows = conn.execute(
+        f"SELECT * FROM coding_runs {where} ORDER BY created_at DESC, rowid DESC LIMIT ?",
+        tuple(params),
+    ).fetchall()
+    return [_row_to_coding_run(r) for r in rows]
+
+
+def get_next_queued_coding_run(engine):
+    """Return the oldest approved, queued coding run for engine in FIFO order, or None."""
+    ensure_init()
+    conn = connect()
+    row = conn.execute(
+        """
+        SELECT * FROM coding_runs
+        WHERE engine = ?
+          AND status = 'queued'
+          AND approval_consumed = 1
+          AND approved_at IS NOT NULL
+        ORDER BY created_at ASC, rowid ASC
+        LIMIT 1
+        """,
+        (str(engine),),
+    ).fetchone()
+    return _row_to_coding_run(row)
+
+
+def approve_coding_run(run_id, approval_hash, approved_at, confidential=None):
+    """Atomically consume single-use approval and transition awaiting_approval -> queued."""
+    ensure_init()
+    conn = connect()
+    with conn:
+        if confidential is None:
+            cur = conn.execute(
+                """
+                UPDATE coding_runs
+                SET status = 'queued',
+                    approved_at = ?,
+                    approval_consumed = 1
+                WHERE id = ?
+                  AND status = 'awaiting_approval'
+                  AND approval_consumed = 0
+                  AND approved_at IS NULL
+                  AND approval_hash = ?
+                """,
+                (str(approved_at), str(run_id), str(approval_hash)),
+            )
+        else:
+            cur = conn.execute(
+                """
+                UPDATE coding_runs
+                SET status = 'queued',
+                    approved_at = ?,
+                    approval_consumed = 1,
+                    confidential = ?
+                WHERE id = ?
+                  AND status = 'awaiting_approval'
+                  AND approval_consumed = 0
+                  AND approved_at IS NULL
+                  AND approval_hash = ?
+                """,
+                (str(approved_at), 1 if confidential else 0, str(run_id), str(approval_hash)),
+            )
+    if cur.rowcount != 1:
+        return None
+    return get_coding_run(run_id)
+
+
+def update_coding_run(run_id, **fields):
+    """Update allowed fields on coding_runs and return the updated dict."""
+    ensure_init()
+    assignments = []
+    params = []
+    for k, v in fields.items():
+        if k not in _UPDATABLE_CODING_RUN_FIELDS:
+            raise ValueError(f"Unsupported coding_run field '{k}'")
+        if k == "out_files":
+            assignments.append("out_files_json = ?")
+            params.append(json.dumps(list(v or []), ensure_ascii=False))
+        else:
+            assignments.append(f"{k} = ?")
+            params.append(v)
+    if not assignments:
+        return get_coding_run(run_id)
+    params.append(str(run_id))
+    conn = connect()
+    with conn:
+        conn.execute(
+            f"UPDATE coding_runs SET {', '.join(assignments)} WHERE id = ?",
+            tuple(params),
+        )
+    return get_coding_run(run_id)
+
+
+def cancel_coding_run_queued(run_id, finished_at):
+    """Cancel an awaiting_approval or queued coding run immediately; returns updated dict or None."""
+    ensure_init()
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            UPDATE coding_runs
+            SET status = 'cancelled', finished_at = ?, error = COALESCE(error, 'cancelled by user')
+            WHERE id = ? AND status IN ('awaiting_approval', 'queued')
+            """,
+            (str(finished_at), str(run_id)),
+        )
+    return get_coding_run(run_id)
+
+
+def fail_stale_running_coding_runs(finished_at, error="engine restarted"):
+    """Mark any coding runs left in 'running' state after restart as failed."""
+    ensure_init()
+    conn = connect()
+    with conn:
+        rows = conn.execute(
+            "SELECT id FROM coding_runs WHERE status = 'running'"
+        ).fetchall()
+        ids = [r["id"] for r in rows]
+        if ids:
+            conn.execute(
+                """
+                UPDATE coding_runs
+                SET status = 'failed', finished_at = ?, error = ?
+                WHERE status = 'running'
+                """,
+                (str(finished_at), str(error)),
+            )
+    return [get_coding_run(rid) for rid in ids]
+

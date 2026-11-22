@@ -33,6 +33,8 @@ export const STUDIO_EVENT_NAMES = [
   'research_digest',
   'browser_frame',
   'notification',
+  'coding_run.log',
+  'coding_run.status',
 ] as const;
 
 export type StudioEventHandler = (eventName: string, data: unknown) => void;

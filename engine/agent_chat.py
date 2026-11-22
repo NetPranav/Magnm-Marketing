@@ -18,6 +18,7 @@ import agent_runtime
 import agents
 import ai_gateway
 import assets_manager
+import coding_agents
 import db
 import paths
 import product_rules
@@ -38,6 +39,7 @@ def get_roster_status():
     model_matrix = {m["role_id"]: m for m in ai_gateway.get_role_model_matrix()}
     chat_counts = db.get_agent_chat_counts()
     live_statuses = db.get_agent_live_statuses()
+    agent_engines = coding_agents.get_agent_engines()
 
     roster = []
     for member in roster_configs:
@@ -51,6 +53,7 @@ def get_roster_status():
             "latest_output": "None yet",
             "message_count": chat_counts.get(aid, 0),
             "model_info": m_info,
+            "coding_engine": agent_engines.get(aid, "ai"),
         })
     return roster
 
@@ -157,7 +160,7 @@ def chat_with_agent(agent_id, user_message, attached_assets=None):
             canon_id,
             full_user_msg,
             system_prompt=system_prompt,
-            allowed_tools=agent_info.get("tools") or [],
+            allowed_tools=agents.effective_tools(canon_id),
             attachments=attachment_paths or None,
             confidential=confidential,
             title=str(user_message or "")[:100],
