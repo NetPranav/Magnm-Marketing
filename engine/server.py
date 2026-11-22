@@ -58,6 +58,7 @@ import reminders
 import repo_sync
 import repos
 import results_extract
+import request_guard
 import review
 import review_studio
 import scheduler
@@ -226,6 +227,16 @@ def _get_latest_research_findings():
 
 
 class CommandCenterHandler(BaseHTTPRequestHandler):
+    def parse_request(self):
+        """Parse the request, then refuse other websites before any do_* handler (of any method) runs."""
+        if not super().parse_request():
+            return False
+        if request_guard.is_trusted(self.command, self.path, self.headers):
+            return True
+        self.close_connection = True
+        self.send_json({"error": "Request refused: it did not come from Magnm Studio."}, status=403)
+        return False
+
     def log_message(self, format, *args):
         pass
 

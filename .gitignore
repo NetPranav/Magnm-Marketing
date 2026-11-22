@@ -40,3 +40,13 @@ state/team_session_*.tmp
 state/device_id
 cache/previews/
 state/knowledge_backups/
+
+# The data folder can be this (public) repo: never commit what the app writes there.
+/state/*
+/assets/uploads/
+/assets/results/
+/cache/
+/workspaces/
+/queue/
+/outputs/pitch/
+/outputs/**/browser-shots/
