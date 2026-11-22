@@ -244,11 +244,12 @@ class NotificationsTests(unittest.TestCase):
 
         # Re-enable and verify 200-row cap keeps newest 200
         notifications.update_setting("quote_request", True, is_admin=False)
+        # Far-future timestamps: these must sort after the rows created above with the real clock.
         for i in range(215):
             notifications.notify(
                 "quote_request",
                 f"Item {i:03d}",
-                created_at=f"2026-11-22T00:{i // 60:02d}:{i % 60:02d}Z",
+                created_at=f"2099-01-01T00:{i // 60:02d}:{i % 60:02d}Z",
             )
         listed = notifications.list_notifications(limit=200)
         self.assertEqual(len(listed["notifications"]), 200)
@@ -334,14 +335,15 @@ class NotificationsTests(unittest.TestCase):
         self.assertEqual(len([n for n in notifications.list_notifications()["notifications"] if n["kind"] == "link_failed"]), 2)
 
     def test_03_ai_limit_90_and_100_once_per_day_and_proxy_429(self):
+        # The fixed days are in the past so they can never equal the real today used at the end of this test.
         # 90% triggers once per day
         status_90 = {
             "mode": "team",
             "today": {"requests": 180, "prompt_tokens": 0, "completion_tokens": 0},
             "limit": {"daily_requests": 200, "daily_tokens": 400000},
         }
-        notifications.evaluate_ai_limit(status_90, today_utc="2026-11-22")
-        notifications.evaluate_ai_limit(status_90, today_utc="2026-11-22")
+        notifications.evaluate_ai_limit(status_90, today_utc="2001-01-22")
+        notifications.evaluate_ai_limit(status_90, today_utc="2001-01-22")
         ai_notifs = [n for n in notifications.list_notifications()["notifications"] if n["kind"] == "ai_limit"]
         self.assertEqual(len(ai_notifs), 1)
         self.assertEqual(ai_notifs[0]["title"], "AI limit almost reached")
@@ -353,20 +355,20 @@ class NotificationsTests(unittest.TestCase):
             "today": {"requests": 50, "prompt_tokens": 300000, "completion_tokens": 100000},
             "limit": {"daily_requests": 200, "daily_tokens": 400000},
         }
-        notifications.evaluate_ai_limit(status_100, today_utc="2026-11-22")
-        notifications.evaluate_ai_limit(status_100, today_utc="2026-11-22")
+        notifications.evaluate_ai_limit(status_100, today_utc="2001-01-22")
+        notifications.evaluate_ai_limit(status_100, today_utc="2001-01-22")
         ai_notifs = [n for n in notifications.list_notifications()["notifications"] if n["kind"] == "ai_limit"]
         self.assertEqual(len(ai_notifs), 2)
         self.assertEqual(ai_notifs[0]["title"], "AI limit reached")
 
         # Next day notifies again
-        notifications.evaluate_ai_limit(status_90, today_utc="2026-11-23")
+        notifications.evaluate_ai_limit(status_90, today_utc="2001-01-23")
         ai_notifs = [n for n in notifications.list_notifications()["notifications"] if n["kind"] == "ai_limit"]
         self.assertEqual(len(ai_notifs), 3)
 
         # Proxy 429 quota error triggers 100% notification on a fresh day
         self._sign_in("u-ai", role="member")
-        with patch("notifications._today_utc", return_value="2026-11-24"), patch(
+        with patch("notifications._today_utc", return_value="2001-01-24"), patch(
             "urllib.request.urlopen",
             side_effect=_http_error("https://example.supabase.co/functions/v1/ai-proxy", 429, {
                 "error": "Daily request limit reached",
