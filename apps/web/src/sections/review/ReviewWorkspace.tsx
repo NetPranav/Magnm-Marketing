@@ -24,11 +24,13 @@ import {
   updateReviewComment,
 } from '../../api/review';
 import { getPhoneStatus, sendToPhone, type PhoneStatus } from '../../api/phone';
+import { listPostingAttempts } from '../../api/posting';
 import { getRoster, type RosterAgent } from '../../api/team';
 import { AddResultsDialog } from '../../components/AddResultsDialog';
 import { useFallbackPoll, useStudioEvents } from '../../events';
 import type {
   JobRecord,
+  PostingAttemptRecord,
   PostingKitResult,
   ReviewCommentAnchor,
   ReviewDiffResponse,
@@ -50,6 +52,7 @@ import {
   RestoreConfirmDialog,
   ShortcutsDialog,
 } from './ReviewDialogs';
+import { PostWithApiDialog } from './PostWithApiDialog';
 import { ChecklistPanel, VersionsPanel } from './ReviewRails';
 import { PlatformPreview } from './PlatformPreview';
 import { isEditableElement, mapContentStatusState } from './reviewUtils';
@@ -145,6 +148,8 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
 
   const [postingKit, setPostingKit] = useState<PostingKitResult | null>(null);
   const [postingKitOpen, setPostingKitOpen] = useState(false);
+  const [postApiOpen, setPostApiOpen] = useState(false);
+  const [postingAttempts, setPostingAttempts] = useState<PostingAttemptRecord[]>([]);
   const [postedDialogOpen, setPostedDialogOpen] = useState(false);
   const [resultsDialogOpen, setResultsDialogOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -164,6 +169,21 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
       setPhoneStatus(null);
     }
   }, []);
+
+  // A confirmation is for one draft: moving to another must never carry the open dialog along.
+  useEffect(() => {
+    setPostApiOpen(false);
+    setPostingAttempts([]);
+  }, [contentId]);
+
+  const loadPostingAttempts = useCallback(async () => {
+    try {
+      const list = await listPostingAttempts(contentId, undefined, 500);
+      setPostingAttempts(list);
+    } catch {
+      setPostingAttempts([]);
+    }
+  }, [contentId]);
 
   const loadWorkspace = useCallback(async () => {
     setError(null);
@@ -197,7 +217,8 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
     setTrackedJobIds([]);
     void loadWorkspace();
     void loadPhoneStatus();
-  }, [loadWorkspace, loadPhoneStatus]);
+    void loadPostingAttempts();
+  }, [loadWorkspace, loadPhoneStatus, loadPostingAttempts]);
 
   const reloadReviewOnly = useCallback(async () => {
     try {
@@ -213,6 +234,11 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
       (eventName, data) => {
         if (eventName === 'phone.updated') {
           void loadPhoneStatus();
+          return;
+        }
+        if (eventName === 'posting.updated') {
+          void loadPostingAttempts();
+          void reloadReviewOnly();
           return;
         }
         if (eventName === 'review.updated' && data && typeof data === 'object') {
@@ -237,7 +263,7 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
           }
         }
       },
-      [contentId, trackedJobIds, activeJob?.id, reloadReviewOnly, loadPhoneStatus],
+      [contentId, trackedJobIds, activeJob?.id, reloadReviewOnly, loadPhoneStatus, loadPostingAttempts],
     ),
   );
 
@@ -558,6 +584,13 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
 
   const hasPairedPhone = (phoneStatus?.devices ?? []).length > 0;
   const isConfidential = Boolean(review?.confidential);
+  const lastExecutedByPlatform = new Map<string, PostingAttemptRecord>();
+  for (const attempt of postingAttempts) {
+    if (!['prepared', 'cancelled', 'expired'].includes(attempt.status) && !lastExecutedByPlatform.has(attempt.platform)) {
+      lastExecutedByPlatform.set(attempt.platform, attempt);
+    }
+  }
+  const hasUnknownPosting = [...lastExecutedByPlatform.values()].some((a) => a.status === 'unknown');
 
   const handleSendToPhone = async () => {
     if (!hasPairedPhone || isConfidential) return;
@@ -583,6 +616,7 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
   useEffect(() => {
     const anyModalOpen =
       postingKitOpen ||
+      postApiOpen ||
       postedDialogOpen ||
       resultsDialogOpen ||
       restoreVersionTarget !== null ||
@@ -653,6 +687,7 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [
     postingKitOpen,
+    postApiOpen,
     postedDialogOpen,
     resultsDialogOpen,
     restoreVersionTarget,
@@ -813,6 +848,12 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
         </div>
       ) : null}
 
+      {hasUnknownPosting ? (
+        <div className="mg-notice" role="alert">
+          Last API post status is <strong>unknown</strong>. Check the platform before trying again.
+        </div>
+      ) : null}
+
       {notice ? <div className="mg-notice">{notice}</div> : null}
 
       {layoutMode === 'narrow' ? (
@@ -911,6 +952,19 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
         <PillButton
           variant="outline"
           size="sm"
+          disabled={busyAction !== null || isConfidential}
+          title={
+            isConfidential
+              ? 'Confidential items cannot be posted through official APIs'
+              : undefined
+          }
+          onClick={() => setPostApiOpen(true)}
+        >
+          Post with API
+        </PillButton>
+        <PillButton
+          variant="outline"
+          size="sm"
           disabled={!hasPairedPhone || isConfidential || busyAction !== null}
           title={
             isConfidential
@@ -948,6 +1002,28 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
         kit={postingKit}
         item={review.item}
         body={review.body}
+      />
+
+      <PostWithApiDialog
+        open={postApiOpen}
+        onClose={() => setPostApiOpen(false)}
+        item={review.item}
+        attempts={postingAttempts}
+        onPosted={(res) => {
+          setPostApiOpen(false);
+          void reloadReviewOnly();
+          void loadPostingAttempts();
+          setNotice(
+            res.warning
+              ? res.warning
+              : res.post_url
+              ? `Posted publicly: ${res.post_url}`
+              : 'Posted publicly via official API.',
+          );
+        }}
+        onAttemptUpdated={() => {
+          void loadPostingAttempts();
+        }}
       />
 
       <MarkPostedDialog

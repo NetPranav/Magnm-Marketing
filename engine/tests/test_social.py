@@ -543,8 +543,8 @@ class SocialTests(unittest.TestCase):
         """Schema v23 creates social tables; runs, results and vault never enter cloud_sync."""
         conn = db.connect()
         versions = [r["version"] for r in conn.execute("SELECT version FROM schema_version ORDER BY version").fetchall()]
-        self.assertEqual(versions, list(range(1, 24)))
-        self.assertEqual(db.SCHEMA_VERSION, 23)
+        self.assertEqual(versions, list(range(1, db.SCHEMA_VERSION + 1)))
+        self.assertGreaterEqual(db.SCHEMA_VERSION, 23)
 
         tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         for tbl in ("social_settings", "social_runs", "social_page_counts", "social_challenges"):

@@ -59,6 +59,8 @@ import pitch
 import pitch_host
 import pitch_links
 import platforms
+from posting import PostingError as _PostingError
+from posting import service as posting_service
 import product_rules
 import reminders
 import repo_sync
@@ -1190,6 +1192,90 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         except _SocialError as exc:
             self.send_json({"error": exc.message, "error_code": exc.code}, status=exc.status)
 
+    def _handle_posting_get(self, url):
+        raw_rest = url.path[len("/api/posting"):].strip("/")
+        parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
+        qs = urllib.parse.parse_qs(url.query)
+        try:
+            if parts == ["status"]:
+                self.send_json(posting_service.get_status())
+                return
+            if parts == ["attempts"]:
+                try:
+                    limit = int((qs.get("limit", ["50"])[0] or "50"))
+                except (TypeError, ValueError):
+                    limit = 50
+                limit = max(1, min(limit, 500))
+                cid_filter = qs.get("content_id", [None])[0] or None
+                plat_filter = qs.get("platform", [None])[0] or None
+                self.send_json({
+                    "attempts": posting_service.list_attempts(
+                        content_id=cid_filter,
+                        platform=plat_filter,
+                        limit=limit,
+                    )
+                })
+                return
+            self.send_json({"error": "Not found"}, status=404)
+        except _PostingError as exc:
+            self.send_json({"error": exc.message, "error_code": exc.code}, status=exc.status)
+
+    def _handle_posting_post(self, url, params):
+        raw_rest = url.path[len("/api/posting"):].strip("/")
+        parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
+        try:
+            if parts == ["connect", "linkedin"]:
+                self.send_json(posting_service.connect_linkedin(params.get("token")))
+                return
+            if parts == ["connect", "instagram"]:
+                self.send_json(posting_service.connect_instagram(params.get("token")))
+                return
+            if parts == ["refresh", "instagram"]:
+                self.send_json(posting_service.refresh_instagram())
+                return
+            if parts == ["connect", "x", "start"]:
+                self.send_json(posting_service.start_x_oauth(params.get("client_id")))
+                return
+            if parts == ["connect", "x", "cancel"]:
+                self.send_json(posting_service.cancel_x_oauth())
+                return
+            if parts == ["disconnect"]:
+                self.send_json(posting_service.disconnect(params.get("platform")))
+                return
+            if parts == ["prepare"]:
+                self.send_json(
+                    posting_service.prepare(
+                        params.get("content_id"),
+                        params.get("platform"),
+                        media_url=params.get("media_url"),
+                        media_paths=params.get("media_paths"),
+                        ai_generated=params.get("ai_generated") is True,
+                        acknowledge_repost=params.get("acknowledge_repost") is True,
+                        acknowledge_unknown=params.get("acknowledge_unknown") is True,
+                    )
+                )
+                return
+            if parts == ["confirm"]:
+                res = posting_service.confirm(
+                    params.get("confirmation_id"),
+                    expected_hash=params.get("payload_hash"),
+                    media_url=params.get("media_url") if "media_url" in params else None,
+                    media_paths=params.get("media_paths") if "media_paths" in params else None,
+                    ai_generated=params.get("ai_generated") if "ai_generated" in params else None,
+                    acknowledge_repost=params.get("acknowledge_repost") is True,
+                    acknowledge_unknown=params.get("acknowledge_unknown") is True,
+                )
+                cloud_sync.request_sync()
+                self.send_json(res)
+                return
+            self.send_json({"error": "Not found"}, status=404)
+        except _PostingError as exc:
+            payload = {"error": exc.message, "error_code": exc.code}
+            if exc.uncertain:
+                payload["uncertain"] = True
+                payload["attempt_status"] = "unknown"
+            self.send_json(payload, status=exc.status)
+
     def _handle_social_post(self, url, params):
         raw_rest = url.path[len("/api/social"):].strip("/")
         parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
@@ -1992,6 +2078,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         elif url.path.startswith("/api/social/"):
             self._handle_social_get(url)
 
+        elif url.path.startswith("/api/posting/"):
+            self._handle_posting_get(url)
+
         elif url.path == "/api/phone" or url.path.startswith("/api/phone/"):
             self._handle_phone_get(url)
 
@@ -2086,6 +2175,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             or url.path.startswith("/api/learnings/")
             or url.path.startswith("/api/coding/")
             or url.path.startswith("/api/social/")
+            or url.path.startswith("/api/posting/")
             or url.path == "/api/phone"
             or url.path.startswith("/api/phone/")
         )
@@ -2152,6 +2242,10 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         if url.path.startswith("/api/social/"):
             self._handle_social_post(url, params)
+            return
+
+        if url.path.startswith("/api/posting/"):
+            self._handle_posting_post(url, params)
             return
 
         if url.path == "/api/phone" or url.path.startswith("/api/phone/"):
@@ -5485,6 +5579,7 @@ def main():
     agent_runtime.recover_stale_sessions()
     coding_agents.recover_stale_runs()
     social_service.recover_stale_runs()
+    posting_service.recover_stale_attempts()
     jobs.start_worker()
     # Same as engine/main.py: mirror work, publish live links and pull quote requests in the background.
     import cloud_sync

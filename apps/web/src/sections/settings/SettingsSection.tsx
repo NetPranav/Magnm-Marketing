@@ -40,6 +40,7 @@ import { CodingAgentsPanel } from './CodingAgentsPanel';
 import { NotificationsPanel } from './NotificationsPanel';
 import { PhonePanel } from './PhonePanel';
 import { PitchBasePricesPanel } from './PitchBasePricesPanel';
+import { PostingSettingsPanel } from './PostingSettingsPanel';
 import { SocialResearchSettingsPanel } from './SocialResearchSettingsPanel';
 import { TeamKnowledgePanel } from './TeamKnowledgePanel';
 import type {
@@ -1126,6 +1127,8 @@ export function SettingsSection() {
       <PitchBasePricesPanel />
 
       <SocialResearchSettingsPanel />
+
+      <PostingSettingsPanel />
 
       <PhonePanel />
 

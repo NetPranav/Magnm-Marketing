@@ -747,3 +747,107 @@ export interface SocialStatusInfo {
     challenge_timeout_s: number;
   };
 }
+
+export type PostingPlatform = 'linkedin' | 'instagram' | 'x';
+
+export interface PostingAccountStatus {
+  platform: PostingPlatform;
+  connected: boolean;
+  account_id?: string | null;
+  username?: string | null;
+  display_name?: string | null;
+  client_id?: string | null;
+  connected_at?: string | null;
+  expires_at?: string | null;
+  last_refreshed_at?: string | null;
+  days_until_expiry?: number | null;
+  expiring_soon?: boolean;
+  expired?: boolean;
+  setup_steps?: string[];
+  oauth_active?: boolean;
+}
+
+export interface PostingStatusInfo {
+  platforms: Record<PostingPlatform, PostingAccountStatus>;
+}
+
+export interface PostingAttemptRecord {
+  id: string;
+  content_id: string;
+  platform: PostingPlatform | string;
+  account_id?: string | null;
+  payload_hash: string;
+  status: 'prepared' | 'sending' | 'posted' | 'failed' | 'unknown' | 'expired' | 'cancelled' | string;
+  post_id?: string | null;
+  post_url?: string | null;
+  error?: string | null;
+  prepared_at: string;
+  expires_at: string;
+  confirmed_at?: string | null;
+  finished_at?: string | null;
+  updated_at: string;
+}
+
+export interface PostingMediaInfo {
+  preview_data_uri?: string;
+  kind: string;
+  source: 'local' | 'public_url' | string;
+  path?: string;
+  url?: string;
+  bytes: number;
+  sha256: string;
+  mime_type: string;
+  media_type?: string;
+  alt_text?: string;
+}
+
+export interface PostingWarning {
+  code: string;
+  severity: string;
+  message: string;
+}
+
+export interface PostingCostInfo {
+  estimated_usd: number;
+  label: string;
+  has_possible_link?: boolean;
+  media_price_unconfirmed?: boolean;
+  prices_may_change?: boolean;
+  summary: string;
+}
+
+export interface PostingPrepareResult {
+  attempt_id: string;
+  confirmation_id: string;
+  payload_hash: string;
+  expires_at: string;
+  expires_in_s: number;
+  content_id: string;
+  content_version: number;
+  item_status?: string;
+  platform: PostingPlatform;
+  account: {
+    account_id?: string | null;
+    username?: string | null;
+    display_name?: string | null;
+  };
+  final_text: string;
+  media: PostingMediaInfo[];
+  ai_generated: boolean;
+  warnings: PostingWarning[];
+  cost: PostingCostInfo;
+  last_attempt?: PostingAttemptRecord | null;
+  media_url?: string | null;
+  media_paths?: string[] | null;
+}
+
+export interface PostingConfirmResult {
+  warning?: string | null;
+  ok: boolean;
+  attempt: PostingAttemptRecord;
+  post_id?: string | null;
+  post_url?: string | null;
+  item: ContentItem;
+  status: string;
+}
+

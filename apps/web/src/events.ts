@@ -38,6 +38,7 @@ export const STUDIO_EVENT_NAMES = [
   'phone.updated',
   'social_run.status',
   'social_challenge_cleared',
+  'posting.updated',
 ] as const;
 
 export type StudioEventHandler = (eventName: string, data: unknown) => void;

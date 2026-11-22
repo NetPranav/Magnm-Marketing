@@ -159,6 +159,18 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
     may show little. No detection evasion: platforms may challenge or ban the research account.
   - Needs the owner: `pip install -r engine/requirements.txt` in the engine's venv, separate research accounts, the
     first sign-in and a live check of each platform.
+- **Phase 9 built (2026-11-22), never run against a real platform: posting via official APIs.**
+  - LinkedIn personal (pasted token), Instagram Professional (pasted token), X (OAuth in the browser, pay-per-use). Each
+    is off until connected; tokens are encrypted with a key in the OS keychain.
+  - "Post with API" in Review shows the account, exact text, media and estimated cost, then needs a click. One
+    confirmation makes at most one post. Nothing retries: an unclear answer is recorded as "unknown" and blocks another
+    post until acknowledged. No agent tool, MCP, job, schedule or phone route can post.
+  - Tested against fake providers, with a real engine and the built web app in Chromium.
+  - Limits: Instagram needs a URL that is already public (Magnm makes no file public); X takes images only, no GIF or
+    video; LinkedIn's API has no AI label; token expiry is counted from pasting; X media pricing is unconfirmed.
+  - The click is enforced by the app. Protection from other programs on the same laptop depends on the open token
+    decision below.
+  - Needs the owner: developer apps, tokens, `pip install -r engine/requirements.txt`, a first real post for each platform.
 - **2026-11-22 hardening:** local engine request checks (PR #8), tests isolated from real data (PR #9), safer file
   serving (PR #10), agent tool boundaries (PR #12), confidential names found in serialized text (PR #13), no dropped
   workflow resumes (PR #14). Open: a token for engines started with `engine/server.py`.

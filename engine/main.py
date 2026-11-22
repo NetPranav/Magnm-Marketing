@@ -121,6 +121,9 @@ def main(argv=None):
     from social import service as social_service
     social_service.recover_stale_runs()
 
+    from posting import service as posting_service
+    posting_service.recover_stale_attempts()
+
     import jobs
     jobs.start_worker()
 
