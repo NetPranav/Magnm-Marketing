@@ -59,7 +59,7 @@ def delegate(ctx, agent_id, instruction):
         canon_id,
         instruction,
         system_prompt=system_prompt,
-        allowed_tools=target.get("tools") or [],
+        allowed_tools=agents.effective_tools(canon_id),
         parent_session_id=ctx.session_id,
         depth=next_depth,
         confidential=bool(ctx.confidential),

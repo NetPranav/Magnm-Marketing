@@ -115,6 +115,9 @@ def main(argv=None):
     import agent_runtime
     agent_runtime.recover_stale_sessions()
 
+    import coding_agents
+    coding_agents.recover_stale_runs()
+
     import jobs
     jobs.start_worker()
 
@@ -183,6 +186,7 @@ def main(argv=None):
             threading.Thread(target=_watchdog, daemon=True).start()
 
     actual_port = httpd.server_address[1]
+    server.write_engine_endpoint(actual_port)
     ready_payload = json.dumps({
         "port": actual_port,
         "pid": os.getpid(),
@@ -199,6 +203,10 @@ def main(argv=None):
                 cloud_sync.stop(timeout=1.0)
             except Exception:
                 pass
+        try:
+            server.remove_engine_endpoint(expected_pid=os.getpid())
+        except Exception:
+            pass
         httpd.server_close()
 
 

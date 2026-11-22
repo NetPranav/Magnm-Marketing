@@ -36,6 +36,7 @@ import {
 } from '../../desktop';
 import { useFallbackPoll, useStudioEvents } from '../../events';
 import { AccountPanel } from './AccountPanel';
+import { CodingAgentsPanel } from './CodingAgentsPanel';
 import { NotificationsPanel } from './NotificationsPanel';
 import { PitchBasePricesPanel } from './PitchBasePricesPanel';
 import { TeamKnowledgePanel } from './TeamKnowledgePanel';
@@ -728,6 +729,8 @@ export function SettingsSection() {
           </div>
         )}
       </section>
+
+      <CodingAgentsPanel />
 
       <section className="studio-section" aria-labelledby="settings-keys-heading">
         <div className="studio-settings-head">

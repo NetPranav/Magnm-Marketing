@@ -22,6 +22,7 @@ import os
 import queue
 import re
 import shutil
+import signal
 import sys
 import threading
 import urllib.parse
@@ -41,12 +42,14 @@ import assets_manager
 import bakeoff
 import cloud_sync
 import cmo_runtime
+import coding_agents
 import db
 import events
 import file_serving
 import jobs
 import key_pool
 import learnings
+import mcp_tools
 import media_previews
 import notifications
 import paths
@@ -84,6 +87,61 @@ _KEYCHAIN_ERROR_PAYLOAD = {
     "error_code": "use_desktop_keychain",
     "error": "Keys are stored in the desktop app's secure keychain. Use Settings > Keys.",
 }
+
+
+def get_endpoint_path():
+    """Return the path to <DATA_ROOT>/state/engine_endpoint.json."""
+    return paths.data("state", "engine_endpoint.json")
+
+
+def write_engine_endpoint(port, token=None, pid=None, started_at=None):
+    """Atomically write engine_endpoint.json with mode 0600 for local MCP discovery."""
+    endpoint_path = get_endpoint_path()
+    os.makedirs(os.path.dirname(endpoint_path), exist_ok=True)
+    proc_pid = os.getpid() if pid is None else int(pid)
+    tok = ENGINE_TOKEN if token is None else str(token or "")
+    payload = {
+        "url": f"http://127.0.0.1:{int(port)}",
+        "token": tok,
+        "pid": proc_pid,
+        "started_at": started_at or datetime.now(timezone.utc).isoformat(),
+    }
+    tmp_path = f"{endpoint_path}.{proc_pid}.tmp"
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.chmod(tmp_path, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+            f.write("\n")
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    os.replace(tmp_path, endpoint_path)
+    os.chmod(endpoint_path, 0o600)
+    return endpoint_path
+
+
+def remove_engine_endpoint(expected_pid=None):
+    """Remove engine_endpoint.json on clean shutdown if owned by expected_pid."""
+    endpoint_path = get_endpoint_path()
+    if not os.path.exists(endpoint_path):
+        return False
+    if expected_pid is not None:
+        try:
+            with open(endpoint_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and isinstance(data.get("pid"), int) and data["pid"] != int(expected_pid):
+                return False
+        except Exception:
+            pass
+    try:
+        os.unlink(endpoint_path)
+        return True
+    except OSError:
+        return False
 
 
 def _is_keychain_mode():
@@ -820,6 +878,203 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         except learnings.LearningError as exc:
             self.send_json({"error": exc.message}, status=exc.status)
 
+    def _handle_coding_get(self, url):
+        raw_rest = url.path[len("/api/coding"):].strip("/")
+        parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
+        qs = urllib.parse.parse_qs(url.query)
+
+        if parts == ["agents"]:
+            refresh_raw = (qs.get("refresh", ["0"])[0] or "").strip().lower()
+            refresh = refresh_raw in ("1", "true", "yes")
+            detected_agents = coding_agents.list_detected_agents(refresh=refresh)
+            self.send_json({
+                "agents": detected_agents,
+                "adapters": coding_agents.list_detected_adapters(refresh=refresh),
+                "agent_engines": coding_agents.get_agent_engines(),
+                "timeout_s": coding_agents.get_run_timeout_s(),
+                "mcp": mcp_tools.get_mcp_settings(clis=detected_agents),
+            })
+            return
+
+        if parts == ["mcp"]:
+            self.send_json(mcp_tools.get_mcp_settings())
+            return
+
+        if parts == ["agent_engines"]:
+            self.send_json({
+                "agent_engines": coding_agents.get_agent_engines(),
+                "agents": coding_agents.list_detected_agents(refresh=False),
+                "adapters": coding_agents.list_detected_adapters(refresh=False),
+            })
+            return
+
+        if parts == ["runs"]:
+            try:
+                limit = int((qs.get("limit", ["50"])[0] or "50"))
+            except (TypeError, ValueError):
+                limit = 50
+            limit = max(1, min(limit, 500))
+            status_filter = qs.get("status", [None])[0] or None
+            self.send_json({"runs": coding_agents.list_runs(limit=limit, status=status_filter)})
+            return
+
+        if len(parts) == 2 and parts[0] == "runs":
+            run_obj = coding_agents.get_run(parts[1])
+            if run_obj is None:
+                self.send_json({"error": "Coding run not found"}, status=404)
+                return
+            log_tail = coding_agents.read_log_tail(run_obj.get("log_path"), max_chars=16000)
+            self.send_json({**run_obj, "log_tail": log_tail})
+            return
+
+        if len(parts) == 3 and parts[0] == "runs" and parts[2] == "log":
+            try:
+                offset = int((qs.get("from", ["0"])[0] or "0"))
+            except (TypeError, ValueError):
+                offset = 0
+            payload = coding_agents.read_log_from(parts[1], offset=offset)
+            if payload is None:
+                self.send_json({"error": "Coding run not found"}, status=404)
+                return
+            self.send_json(payload)
+            return
+
+        if len(parts) >= 3 and parts[0] == "runs" and parts[2] == "out":
+            rel_file = "/".join(parts[3:]) if len(parts) >= 4 else (qs.get("filename", [""])[0] or "").strip()
+            try:
+                safe_name, full_path = coding_agents.resolve_out_file_for_download(parts[1], rel_file)
+            except ValueError as exc:
+                msg = str(exc)
+                status = 404 if "not found" in msg.lower() else 400
+                self.send_json({"error": msg}, status=status)
+                return
+            header_name = re.sub(r'[^A-Za-z0-9._-]+', "_", safe_name).strip("._") or "output.bin"
+            with open(full_path, "rb") as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", f'attachment; filename="{header_name}"')
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
+        self.send_json({"error": "Not found"}, status=404)
+
+    def _handle_coding_post(self, url, params):
+        raw_rest = url.path[len("/api/coding"):].strip("/")
+        parts = [urllib.parse.unquote(p) for p in raw_rest.split("/") if p]
+        try:
+            if parts == ["runs"]:
+                run_obj = coding_agents.run(
+                    engine=params.get("engine"),
+                    prompt=params.get("prompt"),
+                    repo_ids=params.get("repo_ids") or [],
+                    mode=params.get("mode") or "read_only",
+                    wait=False,
+                    confirm_confidential=bool(params.get("confirm_confidential")),
+                )
+                self.send_json({"success": True, "run": run_obj}, status=201)
+                return
+
+            if len(parts) == 3 and parts[0] == "runs" and parts[2] == "approve":
+                run_obj = coding_agents.approve_run(
+                    parts[1],
+                    expected_hash=params.get("approval_hash"),
+                    confirm_confidential=bool(params.get("confirm_confidential")),
+                    wait=False,
+                )
+                self.send_json({"success": True, "run": run_obj})
+                return
+
+            if len(parts) == 3 and parts[0] == "runs" and parts[2] == "cancel":
+                run_obj = coding_agents.cancel(parts[1])
+                if run_obj is None:
+                    self.send_json({"error": "Coding run not found"}, status=404)
+                    return
+                self.send_json({"success": True, "run": run_obj})
+                return
+
+            if len(parts) == 4 and parts[0] == "runs" and parts[2] == "out" and parts[3] == "save":
+                asset = coding_agents.save_out_file_to_library(
+                    parts[1],
+                    params.get("filename"),
+                    category=params.get("category") or "generated",
+                    description=params.get("description") or "",
+                )
+                self.send_json({"success": True, "asset": asset})
+                return
+
+            if len(parts) == 4 and parts[0] == "runs" and parts[2] == "out" and parts[3] == "attach":
+                item = coding_agents.attach_out_file_to_content(
+                    parts[1],
+                    params.get("filename"),
+                    params.get("content_id"),
+                )
+                self.send_json({"success": True, "content": item})
+                return
+
+            if parts == ["agent_engines"]:
+                if "timeout_s" in params:
+                    coding_agents.set_run_timeout_s(params["timeout_s"])
+                if "agent_id" in params:
+                    res = coding_agents.set_agent_engine(params.get("agent_id"), params.get("engine"))
+                    self.send_json({
+                        "success": True,
+                        **res,
+                        "agent_engines": coding_agents.get_agent_engines(),
+                        "timeout_s": coding_agents.get_run_timeout_s(),
+                    })
+                    return
+                if isinstance(params.get("agent_engines"), dict):
+                    for aid, eng in params["agent_engines"].items():
+                        coding_agents.set_agent_engine(aid, eng)
+                    self.send_json({
+                        "success": True,
+                        "agent_engines": coding_agents.get_agent_engines(),
+                        "timeout_s": coding_agents.get_run_timeout_s(),
+                    })
+                    return
+                if "timeout_s" in params:
+                    self.send_json({
+                        "success": True,
+                        "agent_engines": coding_agents.get_agent_engines(),
+                        "timeout_s": coding_agents.get_run_timeout_s(),
+                    })
+                    return
+                self.send_json({"error": "agent_id and engine (or agent_engines) required"}, status=400)
+                return
+
+            if parts == ["mcp"]:
+                writes_enabled = params.get("writes_enabled")
+                if not isinstance(writes_enabled, bool):
+                    self.send_json(
+                        {"error": "writes_enabled must be a boolean", "error_code": "invalid_arguments"},
+                        status=400,
+                    )
+                    return
+                mcp_tools.set_writes_enabled(writes_enabled)
+                self.send_json({"success": True, **mcp_tools.get_mcp_settings()})
+                return
+
+            if parts == ["mcp", "call"]:
+                tool_name = params.get("name")
+                arguments = params.get("arguments")
+                try:
+                    result = mcp_tools.execute_tool(tool_name, arguments)
+                    self.send_json({"ok": True, "result": result})
+                except mcp_tools.McpToolError as exc:
+                    self.send_json({"error": exc.message, "error_code": exc.error_code}, status=exc.status)
+                return
+
+            self.send_json({"error": "Not found"}, status=404)
+        except ValueError as exc:
+            msg = str(exc)
+            status = 404 if "not found" in msg.lower() else 400
+            self.send_json({"error": msg}, status=status)
+
     def _serve_sse(self):
         """Stream live Server-Sent Events ('job', 'message', 'ping') to connected clients."""
         q = events.subscribe()
@@ -1527,6 +1782,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         elif url.path == "/api/learnings" or url.path.startswith("/api/learnings/"):
             self._handle_learnings_get(url)
 
+        elif url.path.startswith("/api/coding/"):
+            self._handle_coding_get(url)
+
         elif url.path.startswith("/api/asset/"):
             parts = url.path.split("/")[3:]
             if len(parts) >= 2:
@@ -1616,6 +1874,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             or url.path.startswith("/api/summaries/")
             or url.path == "/api/learnings"
             or url.path.startswith("/api/learnings/")
+            or url.path.startswith("/api/coding/")
         )
         max_len = MAX_REVIEW_BODY_BYTES if url.path.startswith("/api/review/") else MAX_POST_BYTES
         if content_len > max_len:
@@ -1672,6 +1931,10 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         if url.path == "/api/learnings" or url.path.startswith("/api/learnings/"):
             self._handle_learnings_post(url, params)
+            return
+
+        if url.path.startswith("/api/coding/"):
+            self._handle_coding_post(url, params)
             return
 
         if url.path == "/api/shutdown":
@@ -4999,6 +5262,7 @@ def main():
     print("============================================================")
     db.init_db()
     agent_runtime.recover_stale_sessions()
+    coding_agents.recover_stale_runs()
     jobs.start_worker()
     # Same as engine/main.py: mirror work, publish live links and pull quote requests in the background.
     import cloud_sync
@@ -5007,11 +5271,35 @@ def main():
     print(f"Starting multi-threaded server on http://{HOST}:{PORT}")
     server = ThreadingHTTPServer((HOST, PORT), CommandCenterHandler)
     server.daemon_threads = True
+    actual_port = server.server_address[1]
+    write_engine_endpoint(actual_port)
+
+    def _handle_signal(_signum, _frame):
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    try:
+        signal.signal(signal.SIGTERM, _handle_signal)
+        signal.signal(signal.SIGINT, _handle_signal)
+    except ValueError:
+        pass
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        cloud_sync.stop(timeout=1.0)
-        jobs.stop_worker(timeout=1.0)
+        pass
+    finally:
+        try:
+            cloud_sync.stop(timeout=1.0)
+        except Exception:
+            pass
+        try:
+            jobs.stop_worker(timeout=1.0)
+        except Exception:
+            pass
+        try:
+            remove_engine_endpoint(expected_pid=os.getpid())
+        except Exception:
+            pass
         server.server_close()
 
 
