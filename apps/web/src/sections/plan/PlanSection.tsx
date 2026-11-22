@@ -7,6 +7,7 @@ import {
   PillButton,
   Row,
   RowList,
+  Select,
   SheetHeader,
   StatusDot,
   TextInput,
@@ -26,6 +27,22 @@ import { useStudioEvents } from '../../events';
 import type { ContentItem, EditorialPlanRow, ScheduleRecord, WorkflowRun } from '../../types';
 import { formatTimestamp } from '../../ui/format';
 import { EditorialCalendar } from './EditorialCalendar';
+
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+/** Read "30 9 * * 1" as { time: "09:30", day: "1" }. */
+function parseCron(cron?: string | null): { time: string; day: string } | null {
+  const parts = (cron || '').trim().split(/\s+/);
+  if (parts.length !== 5 || !/^\d+$/.test(parts[0]) || !/^\d+$/.test(parts[1])) return null;
+  return { time: `${parts[1].padStart(2, '0')}:${parts[0].padStart(2, '0')}`, day: parts[4] };
+}
+
+function describeCron(cron?: string | null): string | null {
+  const parsed = parseCron(cron);
+  if (!parsed) return cron || null;
+  const when = parsed.day === '*' ? 'Every day' : `Every ${WEEKDAYS[Number(parsed.day) % 7] ?? parsed.day}`;
+  return `${when} at ${parsed.time} IST`;
+}
 
 interface PlanSlot {
   date: string;
@@ -66,6 +83,8 @@ export function PlanSection() {
   const [editingSched, setEditingSched] = useState<ScheduleRecord | null>(null);
   const [editInterval, setEditInterval] = useState('');
   const [editEnabled, setEditEnabled] = useState(true);
+  const [editTime, setEditTime] = useState('');
+  const [editDay, setEditDay] = useState('*');
 
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -230,6 +249,9 @@ export function PlanSection() {
     setEditingSched(sched);
     setEditInterval(sched.interval_hours ? String(sched.interval_hours) : '');
     setEditEnabled(Boolean(sched.enabled));
+    const parsed = parseCron(sched.cron);
+    setEditTime(parsed?.time ?? '');
+    setEditDay(parsed?.day ?? '*');
   };
 
   const handleSaveScheduleEdit = async () => {
@@ -237,7 +259,7 @@ export function PlanSection() {
     setBusyId(editingSched.id);
     setError(null);
     try {
-      const payload: { id: string; interval_hours?: number | null; enabled: boolean } = {
+      const payload: { id: string; interval_hours?: number | null; time?: string; day?: string; enabled: boolean } = {
         id: editingSched.id,
         enabled: editEnabled,
       };
@@ -249,6 +271,9 @@ export function PlanSection() {
           return;
         }
         payload.interval_hours = parsed;
+      } else if (parseCron(editingSched.cron)) {
+        payload.time = editTime;
+        payload.day = editDay;
       }
       await updateSchedule(payload);
       setEditingSched(null);
@@ -473,7 +498,7 @@ export function PlanSection() {
             {schedules.map((sched) => {
               const cadence = sched.interval_hours
                 ? `Every ${sched.interval_hours}h`
-                : sched.cron || 'Manual';
+                : describeCron(sched.cron) || 'Manual';
               return (
                 <Row
                   key={sched.id}
@@ -550,10 +575,29 @@ export function PlanSection() {
                   onChange={(e) => setEditInterval(e.target.value)}
                 />
               </Field>
+            ) : parseCron(editingSched.cron) ? (
+              <>
+                <Field label="Time (IST)" htmlFor="edit-schedule-time">
+                  <TextInput
+                    id="edit-schedule-time"
+                    type="time"
+                    value={editTime}
+                    onChange={(e) => setEditTime(e.target.value)}
+                  />
+                </Field>
+                <Field label="Day" htmlFor="edit-schedule-day">
+                  <Select id="edit-schedule-day" value={editDay} onChange={(e) => setEditDay(e.target.value)}>
+                    {editingSched.command === 'weekly_summary' ? null : <option value="*">Every day</option>}
+                    {WEEKDAYS.map((name, i) => (
+                      <option key={name} value={String(i)}>
+                        {name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              </>
             ) : (
-              <p className="mg-sub">
-                Cron schedule: <span className="studio-mono">{editingSched.cron || 'fixed'}</span>
-              </p>
+              <p className="mg-sub">Runs on a fixed schedule.</p>
             )}
             <Checkbox
               label="Schedule enabled"

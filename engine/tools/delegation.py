@@ -13,6 +13,7 @@ if _ENGINE_DIR not in sys.path:
 
 import agent_runtime
 import agents
+import confidential_guard
 import db
 from tools import tool
 
@@ -54,7 +55,7 @@ def delegate(ctx, agent_id, instruction):
     if canon_id == "cmo":
         return {"error": "cmo cannot delegate to itself"}
 
-    system_prompt = agents.build_system_prompt(canon_id)
+    system_prompt = agents.build_system_prompt(canon_id, confidential=bool(ctx.confidential))
     sub_sess = agent_runtime.start_session(
         canon_id,
         instruction,
@@ -68,6 +69,20 @@ def delegate(ctx, agent_id, instruction):
 
     content_ids = db.list_content_ids_for_session(sub_sess["id"])
     status = sub_sess["status"]
+
+    # What a confidential child session says is confidential: the parent switches to local AI before it sees it,
+    # or gets nothing if it can't switch.
+    child = db.get_agent_session(sub_sess["id"]) or sub_sess
+    if child.get("confidential"):
+        refusal = confidential_guard.local_or_refusal(ctx, True)
+        if refusal:
+            return {
+                "agent_id": canon_id,
+                "status": "confidential",
+                "error": refusal["error"],
+                "content_ids": content_ids,
+                "session_id": sub_sess["id"],
+            }
 
     if status == "waiting_user":
         pending = sub_sess.get("pending_question") or {}

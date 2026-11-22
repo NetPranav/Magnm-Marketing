@@ -1,4 +1,4 @@
-"""engine/server.py must run what Phase 5 promises: due reminders and the Monday summary."""
+"""engine/server.py runs reminders and every schedule, like engine/main.py (owner decision 2026-11-22)."""
 
 from datetime import datetime, timezone
 import os
@@ -54,7 +54,7 @@ class ServerEntrypointTests(unittest.TestCase):
         self.addCleanup(db.reset_connections)
         db.init_db()
 
-    def test_server_main_starts_and_stops_reminders_and_weekly_summary_only(self):
+    def test_server_main_starts_and_stops_every_schedule(self):
         with patch.object(server, "ThreadingHTTPServer", _Listener), \
                 patch.object(server, "write_engine_endpoint"), \
                 patch.object(server, "remove_engine_endpoint"), \
@@ -65,10 +65,10 @@ class ServerEntrypointTests(unittest.TestCase):
                 patch.object(scheduler_loop, "start") as start, \
                 patch.object(scheduler_loop, "stop") as stop:
             server.main()
-        start.assert_called_once_with(commands=("weekly_summary",))
+        start.assert_called_once_with()
         stop.assert_called_once()
 
-    def test_limited_loop_never_enables_other_automatic_jobs(self):
+    def test_a_limited_loop_runs_only_its_commands(self):
         db.save_schedules([
             {"id": "cmo_daily", "command": "daily_cycle", "cron": "46 8 * * *", "enabled": True},
             {"id": "repo_sync", "command": "repo_sync", "interval_hours": 2, "enabled": True},

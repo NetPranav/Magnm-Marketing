@@ -17,6 +17,7 @@ if _ENGINE_DIR not in sys.path:
 import agent_runtime
 import agents
 import ai_gateway
+import confidential_guard
 import db
 import events
 import jobs
@@ -157,6 +158,10 @@ def _resolve_product_and_confidential(item):
             except Exception:
                 pass
 
+    # The shared definition: also repos flagged confidential on their own, and inheritance through sessions.
+    if not is_conf and confidential_guard.scope().item(item):
+        is_conf = True
+
     sess_id = item.get("session_id")
     if not is_conf and sess_id:
         try:
@@ -169,8 +174,11 @@ def _resolve_product_and_confidential(item):
     return product, is_conf
 
 
-def _build_product_context_block(item):
-    """Assemble product rules, approved product facts, and platform norms for prompts."""
+def _build_product_context_block(item, confidential=False):
+    """Assemble product rules, approved product facts, and platform norms for prompts.
+
+    Facts about confidential products are left out unless `confidential` says the prompt goes to local AI.
+    """
     parts = []
     rules_file = _rules_path()
     if os.path.exists(rules_file):
@@ -178,7 +186,7 @@ def _build_product_context_block(item):
 
     pid = item.get("product_id") or None
     try:
-        facts_res = core_tools.read_product_facts(None, product_id=pid)
+        facts_res = core_tools.read_product_facts(None, product_id=pid, _allow_confidential=confidential)
         facts_text = (facts_res or {}).get("product_facts") or ""
         if facts_text.strip():
             parts.append("Approved product facts:\n" + facts_text.strip())
@@ -1202,7 +1210,7 @@ def _run_comment_agent_job(params, job_id=None):
     elif comment["kind"] == "video":
         anchor_desc = f"Video timestamp on {anchor.get('file')} at {anchor.get('t')}s"
 
-    context_block = _build_product_context_block(item)
+    context_block = _build_product_context_block(item, confidential=is_conf)
     user_prompt = (
         f"You were mentioned in a Review Studio comment on content item '{item.get('title')}' "
         f"(id={item['id']}, type={item.get('type')}, platform={item.get('platform')}).\n\n"
@@ -1221,7 +1229,7 @@ def _run_comment_agent_job(params, job_id=None):
     sess = agent_runtime.start_session(
         canon_id,
         user_prompt,
-        system_prompt=agents.build_system_prompt(canon_id),
+        system_prompt=agents.build_system_prompt(canon_id, confidential=is_conf),
         allowed_tools=allowed_tools,
         confidential=is_conf,
         title=f"Review comment @{canon_id}: {item['id']}",
@@ -1299,7 +1307,7 @@ def _run_apply_all_job(params, job_id=None):
         jobs.progress(job_id, 25, f"Applying {len(open_comments)} comment(s) via {agent_id}...")
 
     _, is_conf = _resolve_product_and_confidential(item)
-    context_block = _build_product_context_block(item)
+    context_block = _build_product_context_block(item, confidential=is_conf)
 
     comment_lines = []
     for idx, cmt in enumerate(open_comments, start=1):
@@ -1323,7 +1331,7 @@ def _run_apply_all_job(params, job_id=None):
     )
 
     res = ai_gateway.generate_completion_with_meta(
-        system_prompt=agents.build_system_prompt(agent_id),
+        system_prompt=agents.build_system_prompt(agent_id, confidential=is_conf),
         user_prompt=user_prompt,
         agent_role=agent_id,
         confidential=is_conf,
@@ -1412,7 +1420,7 @@ def _run_alt_text_action(item, extra, is_conf, context_block):
             "Return ONLY the alt text sentence (no quotes, no prefix, zero emojis)."
         )
         res = ai_gateway.generate_completion_with_meta(
-            system_prompt=agents.build_system_prompt("designer"),
+            system_prompt=agents.build_system_prompt("designer", confidential=is_conf),
             user_prompt=user_prompt,
             model_tier="vision",
             tier="vision",
@@ -1470,7 +1478,7 @@ def _run_blog_ai_action(item, act, is_conf, context_block):
         "Zero emojis."
     )
     res = ai_gateway.generate_completion_with_meta(
-        system_prompt=agents.build_system_prompt(role),
+        system_prompt=agents.build_system_prompt(role, confidential=is_conf),
         user_prompt=user_prompt,
         agent_role=role,
         confidential=is_conf,
@@ -1546,7 +1554,7 @@ def _run_text_ai_action(item, act, selection, is_conf, context_block):
             "Return ONLY the replacement text for the selected span. No preamble, no quotes, zero emojis."
         )
         res = ai_gateway.generate_completion_with_meta(
-            system_prompt=agents.build_system_prompt("writer"),
+            system_prompt=agents.build_system_prompt("writer", confidential=is_conf),
             user_prompt=user_prompt,
             agent_role="writer",
             confidential=is_conf,
@@ -1589,7 +1597,7 @@ def _run_text_ai_action(item, act, selection, is_conf, context_block):
         "Return ONLY the full revised body text. No preamble, no markdown code fences, zero emojis."
     )
     res = ai_gateway.generate_completion_with_meta(
-        system_prompt=agents.build_system_prompt("writer"),
+        system_prompt=agents.build_system_prompt("writer", confidential=is_conf),
         user_prompt=user_prompt,
         agent_role="writer",
         confidential=is_conf,
@@ -1632,7 +1640,7 @@ def _run_ai_action_job(params, job_id=None):
 
     item = _require_item(content_id, include_versions=True)
     _, is_conf = _resolve_product_and_confidential(item)
-    context_block = _build_product_context_block(item)
+    context_block = _build_product_context_block(item, confidential=is_conf)
 
     if job_id:
         jobs.progress(job_id, 25, f"Running AI action '{act}'...")

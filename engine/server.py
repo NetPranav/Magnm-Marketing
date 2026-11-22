@@ -43,6 +43,7 @@ import bakeoff
 import cloud_sync
 import cmo_runtime
 import coding_agents
+import confidential_guard
 import db
 import events
 import file_serving
@@ -2570,6 +2571,14 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             crisis_playbook = _read_text_safe("playbooks/crisis.md")
             facts = _read_text_safe("research/product-facts.md")
             repo_sync_md = _read_text_safe("research/repo-sync.md", limit=1500)
+            # A reply that names a confidential product runs on local AI, with everything. Any other reply
+            # goes to cloud AI and gets neither the confidential facts nor the confidential repos' commits.
+            is_confidential = confidential_guard.mentions(source_context)
+            if not is_confidential:
+                facts = confidential_guard.drop_confidential_sections(facts)
+                repo_sync_md = confidential_guard.drop_confidential_sections(
+                    _read_text_safe("research/repo-sync.md", limit=1_000_000)
+                )[:1500]
 
             system_prompt = f"""You are the Community & PR Crisis Lead (@community) working with the Gatekeeper (@reviewer) at MAGNM.
 Draft a concise, high-trust external PR or client response strictly adhering to MAGNM's crisis playbook and verified ground truth.
@@ -2600,7 +2609,8 @@ Hard Rules:
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     model_tier="reasoning",
-                    agent_role="community"
+                    agent_role="community",
+                    confidential=is_confidential,
                 )
                 cmo_runtime.log_activity("Community", "CEO", f"pr_draft:{scenario}:{severity}", f"model:{res.get('model_used')}")
                 self.send_json({
@@ -2661,22 +2671,19 @@ Hard Rules:
                 self.send_json({"error": str(e)}, status=500)
 
         elif url.path == "/api/schedule/update":
-            sched_id = params.get("id")
-            interval = params.get("interval_hours")
-            enabled = params.get("enabled")
-            schedules = scheduler.load_schedules()
-            if schedules:
-                for s in schedules:
-                    if s["id"] == sched_id:
-                        if interval is not None:
-                            s["interval_hours"] = int(interval)
-                        if enabled is not None:
-                            s["enabled"] = bool(enabled)
-                scheduler.save_schedules(schedules)
-                scheduler.generate_systemd_units()
+            try:
+                scheduler.update_schedule(
+                    params.get("id"),
+                    enabled=params.get("enabled"),
+                    interval_hours=params.get("interval_hours"),
+                    time_of_day=params.get("time"),
+                    day=params.get("day"),
+                )
                 self.send_json({"success": True})
-            else:
-                self.send_json({"error": "Schedules missing"}, status=500)
+            except LookupError as exc:
+                self.send_json({"error": str(exc)}, status=404)
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=400)
 
         elif url.path == "/api/import_legacy":
             try:
@@ -2686,16 +2693,11 @@ Hard Rules:
                 self.send_json({"success": False, "error": str(e)}, status=500)
 
         elif url.path == "/api/schedule/toggle":
-            sched_id = params.get("id")
-            schedules = scheduler.load_schedules()
-            if schedules:
-                for s in schedules:
-                    if s["id"] == sched_id:
-                        s["enabled"] = not s.get("enabled", False)
-                scheduler.save_schedules(schedules)
+            try:
+                scheduler.toggle_schedule(params.get("id"))
                 self.send_json({"success": True})
-            else:
-                self.send_json({"error": "Schedules missing"}, status=500)
+            except LookupError as exc:
+                self.send_json({"error": str(exc)}, status=404)
 
         elif url.path == "/api/sessions/start":
             agent_id = (params.get("agent_id") or "").strip()
@@ -5588,7 +5590,7 @@ def main():
     import model_registry
     model_registry.start_catalog_monitor()
     import scheduler_loop
-    scheduler_loop.start(commands=scheduler_loop.ANALYST_COMMANDS)
+    scheduler_loop.start()
     phone_server.start_if_enabled()
     print(f"Starting multi-threaded server on http://{HOST}:{PORT}")
     server = ThreadingHTTPServer((HOST, PORT), CommandCenterHandler)

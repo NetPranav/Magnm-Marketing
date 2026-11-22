@@ -189,6 +189,11 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
   serving (PR #10), agent tool boundaries (PR #12), confidential names found in serialized text (PR #13), no dropped
   workflow resumes (PR #14). Open: a token for engines started with `engine/server.py`.
 
+- **2026-11-22 owner decisions, step 1 built:** every schedule runs by itself and is editable in Plan. Confidential
+  drafts, repos, facts, reminders, metrics and memory no longer reach cloud AI through agent tools or workflows (several
+  older paths did). Settings shows the working agy MCP command. From here code is written by Claude Sonnet and reviewed
+  by Claude; agy is no longer used.
+
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.
 - **Storage:** Supabase Storage (1 GB) first, with **Backblaze B2 (10 GB free, no card)** as the overflow for video previews. Details in 3.7.

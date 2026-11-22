@@ -84,9 +84,8 @@ Open `http://127.0.0.1:5050` in your browser.
 Started this way, the engine has no access token: other programs running on the same laptop can use it as you. Only run
 programs and coding tools you trust while it is running.
 
-`engine/server.py` runs your reminders and the Monday summary. `engine/main.py` also runs the automatic jobs by itself
-(daily CMO cycle, market scan, repo sync, watch topics). Use it only if you want those, or to keep your data in a
-separate folder:
+Reminders and every schedule run by themselves while the engine is open. Change a schedule's time or interval, or
+switch it off, under **Plan > Schedules & timers**. To keep your data in a separate folder, use `engine/main.py`:
 
 ```bash
 .venv/bin/python engine/main.py --port 5050 --data-dir /path/to/magnm-data

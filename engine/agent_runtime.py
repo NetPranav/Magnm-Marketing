@@ -128,14 +128,13 @@ class AgentRuntime:
 
         is_conf = bool(confidential)
         if not is_conf and user_message:
-            try:
-                rules_path = paths.data("config", "product_rules.json")
-                if not os.path.exists(rules_path):
-                    rules_path = paths.resource("config", "product_rules.json")
-                if os.path.exists(rules_path) and product_rules.mentions_confidential(str(user_message), path=rules_path):
-                    is_conf = True
-            except Exception:
-                pass
+            # Product and repo names both count; if that can't be checked, the session stays local.
+            import confidential_guard  # late: it needs repos, which needs this module
+
+            is_conf = confidential_guard.mentions(str(user_message))
+        if not is_conf and parent_session_id:
+            parent = db.get_agent_session(parent_session_id)
+            is_conf = bool(parent and parent.get("confidential"))
 
         now = _now_iso()
         session = db.create_agent_session(
@@ -211,11 +210,16 @@ class AgentRuntime:
             }
         )
         self._get_cancel_event(session_id).clear()
+        # A session that turned confidential stays so. The user's answer can turn it confidential too.
+        import confidential_guard  # late: it needs repos, which needs this module
+
+        became_confidential = bool(session.get("confidential")) or confidential_guard.mentions(str(answer or ""))
         return db.update_agent_session(
             session_id,
             status="running",
             messages=messages,
             pending_question=None,
+            confidential=became_confidential,
             updated_at=_now_iso(),
         )
 

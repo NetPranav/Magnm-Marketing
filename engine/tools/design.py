@@ -17,6 +17,7 @@ if _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
 
 import ai_gateway
+import confidential_guard
 import db
 import key_pool
 import model_registry
@@ -308,6 +309,15 @@ def check_image(ctx, path, question):
     if private_files.is_private(real_target, real_root) or not private_files.is_image(real_target):
         return {"error": "check_image only reads PNG, JPEG, WebP or GIF images"}
 
+    rel_for_check = os.path.relpath(real_target, real_root)
+    use_local = confidential_guard.is_local(ctx)
+    if not use_local:
+        # A picture of a confidential item or product goes to local AI only. The session switches first.
+        use_local = confidential_guard.scope().path(rel_for_check)
+        refusal = confidential_guard.local_or_refusal(ctx, use_local)
+        if refusal:
+            return refusal
+
     res = ai_gateway.generate_completion_with_meta(
         system_prompt=(
             "You are a careful visual reviewer. Answer strictly based on what is visible in the image. "
@@ -317,7 +327,7 @@ def check_image(ctx, path, question):
         model_tier="vision",
         image_paths=[real_target],
         agent_role="reviewer",
-        confidential=bool(ctx.confidential if ctx else False),
+        confidential=bool(use_local),
     )
 
     return {

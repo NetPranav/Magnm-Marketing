@@ -13,6 +13,7 @@ if _ENGINE_DIR not in sys.path:
 
 import ai_gateway
 import cloud_sync
+import confidential_guard
 import db
 import notifications
 import paths
@@ -328,9 +329,13 @@ def prompt_block(agent_id, max_items=MAX_INJECTED_LEARNINGS, max_chars=MAX_INJEC
         return ""
 
     try:
-        is_confidential = cloud_sync.confidential_checker()
+        names_product = cloud_sync.confidential_checker()
     except Exception:
         return ""
+    scope = confidential_guard.scope()
+
+    def is_confidential(text):
+        return bool(names_product(text)) or scope.text(text)
 
     approved = db.list_approved_learnings(limit=200)
     if not approved:
@@ -349,6 +354,12 @@ def prompt_block(agent_id, max_items=MAX_INJECTED_LEARNINGS, max_chars=MAX_INJEC
             continue
         clean_text = " ".join(str(item.get("text") or "").split()).strip()
         if not clean_text or is_confidential(clean_text):
+            continue
+        # A learning built from confidential posts is confidential, whatever its wording.
+        evidence = item.get("evidence") or []
+        if any(
+            isinstance(ev, dict) and scope.content_id(ev.get("content_id")) for ev in evidence
+        ):
             continue
 
         bullet = f"- {clean_text}"

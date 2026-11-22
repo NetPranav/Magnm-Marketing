@@ -134,8 +134,27 @@ def _format_memory_bullet(text, prefix=""):
     return line
 
 
-def get_visible_memory(agent_id, limit=12):
-    """Return (own_items, team_feedback_items) visible to agent_id, pinned first then newest."""
+def get_visible_memory(agent_id, limit=12, allow_confidential=False):
+    """Return (own_items, team_feedback_items) visible to agent_id, pinned first then newest.
+
+    Notes that name a confidential product or repo, or are tied to a confidential content item, are left out
+    unless `allow_confidential` says the prompt goes to local AI.
+    """
+    max_items = max(1, int(limit or 12))
+    if allow_confidential:
+        return _visible_memory(agent_id, max_items)
+    import confidential_guard
+
+    own_items, team_feedback = _visible_memory(agent_id, max_items * 5)
+    scope = confidential_guard.scope()
+    own_items = [m for m in own_items if not scope.linked(m, "text")]
+    team_feedback = [m for m in team_feedback if not scope.linked(m, "text")]
+    if len(own_items) + len(team_feedback) > max_items:
+        own_items = own_items[: max(0, max_items - len(team_feedback))]
+    return own_items, team_feedback[:max_items]
+
+
+def _visible_memory(agent_id, limit):
     ag = get_agent(agent_id)
     canon_id = ag["id"] if ag else (agent_id or "").strip().lower()
     if not canon_id:
@@ -164,9 +183,9 @@ def get_visible_memory(agent_id, limit=12):
     return own_items, team_feedback
 
 
-def memory_block(agent_id):
+def memory_block(agent_id, allow_confidential=False):
     """Return formatted prompt memory block (up to 12 items, <= 200 chars/line) or ''."""
-    own_items, team_feedback = get_visible_memory(agent_id, limit=12)
+    own_items, team_feedback = get_visible_memory(agent_id, limit=12, allow_confidential=allow_confidential)
     if not own_items and not team_feedback:
         return ""
 
@@ -186,8 +205,11 @@ def memory_block(agent_id):
     return "\n".join(lines)
 
 
-def build_system_prompt(agent_id):
-    """Assemble the full system prompt for agent_id from prompt, skills, config, rules, and date."""
+def build_system_prompt(agent_id, confidential=False):
+    """Assemble the full system prompt for agent_id from prompt, skills, config, rules, and date.
+
+    Memory notes about confidential things are included only when `confidential` says the prompt is for local AI.
+    """
     agent = get_agent(agent_id)
     if agent is None:
         raise ValueError(f"Unknown agent '{agent_id}'")
@@ -227,7 +249,7 @@ def build_system_prompt(agent_id):
     blocks.append(f"Today's date (Asia/Kolkata): {today_ist}")
     blocks.append(_TOOL_RULES_BLOCK)
 
-    mem = memory_block(canon_id)
+    mem = memory_block(canon_id, allow_confidential=confidential)
     if mem:
         blocks.append(f"## Memory\n{mem.strip()}")
 

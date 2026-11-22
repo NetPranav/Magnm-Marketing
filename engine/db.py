@@ -1623,6 +1623,24 @@ def save_schedules(schedules):
         )
 
 
+SCHEDULES_LOCK = threading.RLock()
+
+
+def modify_schedules(mutator):
+    """Load the schedules, let `mutator(list)` change them in place, and save them if they changed.
+
+    Every writer goes through here so the scheduler thread and a user edit can't overwrite each other.
+    Whatever `mutator` returns is returned; if it raises, nothing is saved.
+    """
+    with SCHEDULES_LOCK:
+        schedules = load_schedules()
+        before = json.dumps(schedules, sort_keys=True)
+        result = mutator(schedules)
+        if json.dumps(schedules, sort_keys=True) != before:
+            save_schedules(schedules)
+        return result
+
+
 def log_activity(actor, target, task, file, ts=None):
     """Insert an audit log entry into the activity table."""
     ensure_init()
@@ -4772,6 +4790,17 @@ def list_all_agent_sessions():
         f"SELECT {_SESSION_SELECT_COLS} FROM agent_sessions ORDER BY rowid ASC"
     ).fetchall()
     return [_deserialize_session(r) for r in rows]
+
+
+def list_session_flags():
+    """Return {id, parent_session_id, confidential} for every session, without the (large) messages."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute("SELECT id, parent_session_id, confidential FROM agent_sessions ORDER BY rowid ASC").fetchall()
+    return [
+        {"id": r["id"], "parent_session_id": r["parent_session_id"], "confidential": bool(r["confidential"])}
+        for r in rows
+    ]
 
 
 def list_all_chat_turns():

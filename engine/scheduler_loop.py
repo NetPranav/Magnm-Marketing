@@ -17,8 +17,6 @@ import jobs
 import reminders
 
 CHECK_INTERVAL_S = 60
-# What engine/server.py runs. The other schedules act on their own, so only engine/main.py starts them.
-ANALYST_COMMANDS = ("weekly_summary",)
 
 DEFAULT_SCHEDULES = [
     {
@@ -136,17 +134,19 @@ def is_due(schedule, now=None):
             return False
 
         now_ist = now_utc.astimezone(IST)
-        # Weekly summary runs Monday 09:00 IST and catches up once if Monday 09:00 IST was missed.
+        # The weekly summary runs on its day (Monday 09:00 IST by default) and catches up once if that was missed.
         if schedule.get("id") == "weekly_summary" or schedule.get("command") == "weekly_summary":
-            this_monday = now_ist.date() - timedelta(days=now_ist.weekday())
-            target_monday = datetime(
-                this_monday.year, this_monday.month, this_monday.day, hour, minute, 0, tzinfo=IST
-            )
-            if now_ist < target_monday:
+            try:
+                days_after_monday = (int(dow_s) - 1) % 7
+            except ValueError:
+                days_after_monday = 0
+            run_date = now_ist.date() - timedelta(days=now_ist.weekday()) + timedelta(days=days_after_monday)
+            target = datetime(run_date.year, run_date.month, run_date.day, hour, minute, 0, tzinfo=IST)
+            if now_ist < target:
                 return False
             if last_run_utc is None:
                 return True
-            return last_run_utc.astimezone(IST) < target_monday
+            return last_run_utc.astimezone(IST) < target
 
         if not _cron_field_matches(dom_s, now_ist.day):
             return False
@@ -185,16 +185,28 @@ def is_due(schedule, now=None):
 def ensure_default_schedules(commands=None):
     """Seed missing DEFAULT_SCHEDULES, limited to `commands` when given."""
     wanted = [s for s in DEFAULT_SCHEDULES if commands is None or s["command"] in commands]
-    existing = db.load_schedules()
-    if not existing:
-        db.save_schedules([dict(s) for s in wanted])
-        return db.load_schedules()
-    existing_ids = {s.get("id") for s in existing if isinstance(s, dict)}
-    added = [dict(s) for s in wanted if s["id"] not in existing_ids]
-    if added:
-        db.save_schedules(list(existing) + added)
-        return db.load_schedules()
-    return existing
+
+    def seed(existing):
+        existing_ids = {s.get("id") for s in existing if isinstance(s, dict)}
+        existing.extend(dict(s) for s in wanted if s["id"] not in existing_ids)
+        return list(existing)
+
+    return db.modify_schedules(seed)
+
+
+def _record_runs(runs):
+    """Mark schedules as queued, merging into the schedules as they are now so a concurrent edit survives."""
+    if not runs:
+        return
+
+    def mark(schedules):
+        for sched in schedules:
+            when = runs.get(sched.get("id"))
+            if when:
+                sched["last_run"] = when
+                sched["last_status"] = "queued"
+
+    db.modify_schedules(mark)
 
 
 def tick(now=None, commands=None):
@@ -205,7 +217,7 @@ def tick(now=None, commands=None):
     if not schedules:
         return []
 
-    dirty = False
+    runs = {}
     enqueued = []
     for sched in schedules:
         cmd = sched.get("command")
@@ -219,13 +231,10 @@ def tick(now=None, commands=None):
             continue
 
         job = jobs.enqueue(cmd, actor="scheduler")
-        sched["last_run"] = now_utc.isoformat()
-        sched["last_status"] = "queued"
-        dirty = True
+        runs[sched.get("id")] = now_utc.isoformat()
         enqueued.append(job)
 
-    if dirty:
-        db.save_schedules(schedules)
+    _record_runs(runs)
     return enqueued
 
 
@@ -251,7 +260,7 @@ def check_missed_weekly_summary(now=None):
     schedules = db.load_schedules()
     if not schedules:
         return []
-    dirty = False
+    runs = {}
     enqueued = []
     for sched in schedules:
         if sched.get("command") != "weekly_summary":
@@ -261,12 +270,9 @@ def check_missed_weekly_summary(now=None):
         if db.has_active_job("weekly_summary"):
             continue
         job = jobs.enqueue("weekly_summary", actor="scheduler")
-        sched["last_run"] = now_utc.isoformat()
-        sched["last_status"] = "queued"
-        dirty = True
+        runs[sched.get("id")] = now_utc.isoformat()
         enqueued.append(job)
-    if dirty:
-        db.save_schedules(schedules)
+    _record_runs(runs)
     return enqueued
 
 
