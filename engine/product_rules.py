@@ -51,6 +51,18 @@ def _word_pattern(term):
     return re.compile(r"\b" + body + r"\b", re.IGNORECASE)
 
 
+def any_match(patterns, text):
+    """Return True if a pattern matches plain text, or text that was serialized as JSON one or more times."""
+    if not text:
+        return False
+    # Serialized, a line break or tab before a name becomes a letter, which hides the word boundary.
+    unescaped = _JSON_ESCAPE_RE.sub(" ", text)
+    return any(pat.search(text) or pat.search(unescaped) for pat in patterns)
+
+
+_JSON_ESCAPE_RE = re.compile(r"\\+(?:u[0-9a-fA-F]{4}|[nrtbf])")
+
+
 def validate_rules(data):
     """Validate a product_rules dict, raising ValueError on invalid fields."""
     if not isinstance(data, dict):
