@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import uuid
 from zoneinfo import ZoneInfo
@@ -73,6 +74,10 @@ def _slugify(text, max_len=60):
     if not slug:
         slug = "magnm-post"
     return slug[:max_len].strip("-") or "magnm-post"
+
+
+# Makes "still waiting? then resume" one step, so a run is never resumed twice or not at all.
+_RESUME_LOCK = threading.Lock()
 
 
 class StepResult:
@@ -1819,16 +1824,35 @@ def answer_gate(gate_id, answer, feedback=None, start_worker=True):
         raise ValueError(f"feedback text is required when answering '{ans_str}'")
 
     updated_gate = db.answer_gate_record(gate_id, ans_str, feedback=feedback)
+    _resume_after_gate(gate["run_id"], start_worker=start_worker)
     run = db.get_workflow_run(gate["run_id"])
-    if run and run["status"] == "waiting_user":
+    return {"gate": updated_gate, "run": _enrich_run(run)}
+
+
+def _resume_after_gate(run_id, start_worker=True):
+    """Move a waiting run back to running and queue its step, once."""
+    with _RESUME_LOCK:
+        run = db.get_workflow_run(run_id)
+        if not run or run["status"] != "waiting_user":
+            return
         state = dict(run.get("state") or {})
         state.pop("waiting_session_id", None)
-        db.update_workflow_run(run["id"], status="running", state=state)
-        jobs.enqueue("workflow_step", actor="gate", max_attempts=1, params={"run_id": run["id"]})
-        if start_worker:
-            jobs.start_worker()
-        run = db.get_workflow_run(run["id"])
-    return {"gate": updated_gate, "run": _enrich_run(run)}
+        db.update_workflow_run(run_id, status="running", state=state)
+        jobs.enqueue("workflow_step", actor="gate", max_attempts=1, params={"run_id": run_id})
+    if start_worker:
+        jobs.start_worker()
+
+
+def _resume_if_already_answered(session_id, gate_id):
+    """The answer can arrive before the wait is saved. Whoever sees both resumes the run."""
+    if session_id:
+        sess = db.get_agent_session(session_id)
+        if sess and sess["status"] in ("done", "failed", "cancelled"):
+            on_session_finished(sess)
+    elif gate_id:
+        gate = db.get_gate(gate_id)
+        if gate and gate["status"] == "answered":
+            _resume_after_gate(gate["run_id"])
 
 
 def cancel(run_id):
@@ -1875,20 +1899,23 @@ def on_session_finished(session):
     if not session:
         return []
     sid = session.get("id")
-    waiting_runs = db.find_waiting_workflow_for_session(sid)
     resumed = []
-    for run in waiting_runs:
-        state = dict(run.get("state") or {})
-        state.pop("waiting_session_id", None)
-        if session.get("status") == "cancelled":
-            db.update_workflow_run(run["id"], status="cancelled", state=state)
-            resumed.append(run["id"])
-            continue
-        db.update_workflow_run(run["id"], status="running", state=state)
-        if not db.has_active_workflow_job(run["id"]):
+    queued = False
+    with _RESUME_LOCK:
+        for run in db.find_waiting_workflow_for_session(sid):
+            state = dict(run.get("state") or {})
+            state.pop("waiting_session_id", None)
+            if session.get("status") == "cancelled":
+                db.update_workflow_run(run["id"], status="cancelled", state=state)
+                resumed.append(run["id"])
+                continue
+            db.update_workflow_run(run["id"], status="running", state=state)
+            # Always queue: the job that saved the wait may still show as running, but it takes no more steps.
             jobs.enqueue("workflow_step", actor="session_resume", max_attempts=1, params={"run_id": run["id"]})
+            queued = True
+            resumed.append(run["id"])
+    if queued:
         jobs.start_worker()
-        resumed.append(run["id"])
     return resumed
 
 
@@ -2035,6 +2062,7 @@ def execute_workflow_job(params, job_id=None, log_file=None):
                     **wait_payload,
                 },
             )
+            _resume_if_already_answered(result.session_id, wait_payload.get("gate_id"))
             return _enrich_run(db.get_workflow_run(run_id))
 
         if result.action == "done":
