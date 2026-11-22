@@ -43,6 +43,7 @@ import cloud_sync
 import cmo_runtime
 import db
 import events
+import file_serving
 import jobs
 import key_pool
 import learnings
@@ -848,6 +849,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             events.unsubscribe(q)
 
     def _serve_file_with_range(self, file_path, mime):
+        safe_headers = file_serving.safe_headers(file_path, mime)
         size = os.path.getsize(file_path)
         range_hdr = self.headers.get("Range")
         if range_hdr and range_hdr.startswith("bytes="):
@@ -863,7 +865,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                         f.seek(start)
                         chunk = f.read(length)
                     self.send_response(206)
-                    self.send_header("Content-Type", mime)
+                    for name, value in safe_headers.items():
+                        self.send_header(name, value)
                     self.send_header("Accept-Ranges", "bytes")
                     self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
                     self.send_header("Content-Length", str(length))
@@ -876,7 +879,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         with open(file_path, "rb") as f:
             data = f.read()
         self.send_response(200)
-        self.send_header("Content-Type", mime)
+        for name, value in safe_headers.items():
+            self.send_header(name, value)
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -1303,13 +1307,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 if norm_req not in allowed_paths:
                     self.send_json({"error": "File is not listed in content files_json"}, status=403)
                     return
-                real_root = os.path.realpath(paths.DATA_ROOT)
-                full_path = os.path.realpath(os.path.join(paths.DATA_ROOT, norm_req))
-                try:
-                    inside = os.path.commonpath([real_root, full_path]) == real_root
-                except ValueError:
-                    inside = False
-                if not inside or not os.path.isfile(full_path):
+                full_path = file_serving.servable_path(os.path.join(paths.DATA_ROOT, norm_req))
+                if not full_path:
                     self.send_json({"error": "File not found"}, status=404)
                     return
                 mime, _ = mimetypes.guess_type(full_path)
@@ -1395,8 +1394,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             all_assets = assets_manager.get_assets()
             target = next((a for a in all_assets if a["id"] == asset_id), None)
             if target:
-                full_path = paths.data(target["relative_path"])
-                if os.path.exists(full_path) and os.path.isfile(full_path):
+                full_path = file_serving.servable_path(paths.data(target["relative_path"]), "assets")
+                if full_path:
                     mime, _ = mimetypes.guess_type(full_path)
                     mime = mime or target.get("mime_type", "application/octet-stream")
                     self._serve_file_with_range(full_path, mime)
@@ -1533,8 +1532,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             if len(parts) >= 2:
                 post_id, filename = parts[0], parts[1]
                 for sub in ("posts", "video", "blogs"):
-                    cand = paths.data("outputs", sub, post_id, filename)
-                    if os.path.exists(cand) and os.path.isfile(cand):
+                    cand = file_serving.servable_path(paths.data("outputs", sub, post_id, filename), "outputs", sub)
+                    if cand:
                         mime, _ = mimetypes.guess_type(cand)
                         mime = mime or "application/octet-stream"
                         self._serve_file_with_range(cand, mime)
