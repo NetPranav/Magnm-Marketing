@@ -147,6 +147,14 @@ NOTIFICATION_KINDS = (
         "admin_only": False,
         "route": "#/today/learnings",
     },
+    {
+        "kind": "sent_to_phone",
+        "label": "Sent to my phone",
+        "description": "When you send a proposal or draft from your laptop to your phone",
+        "default": True,
+        "admin_only": False,
+        "route": "#/today",
+    },
 )
 
 KINDS_BY_ID = {item["kind"]: item for item in NOTIFICATION_KINDS}

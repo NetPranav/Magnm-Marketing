@@ -565,4 +565,56 @@ describe('ReviewSection', () => {
       );
     });
   });
+
+  it('gates Send to my phone on paired devices and confidentiality, posting /api/phone/send when allowed', async () => {
+    const publicPayload = makeReviewPayload();
+    const sendCalls: Array<{ kind: string; id: string }> = [];
+    let currentDevices: Array<{ id: string; name: string }> = [{ id: 'pdev-1', name: 'Pixel 9' }];
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/review/cnt-rev-1') return jsonResponse(publicPayload);
+      if (url === '/api/review/cnt-conf-1') {
+        return jsonResponse(
+          makeReviewPayload({
+            item: { ...publicPayload.item, id: 'cnt-conf-1', title: 'Confidential draft' },
+            confidential: true,
+          }),
+        );
+      }
+      if (url === '/api/roster') return jsonResponse(MOCK_ROSTER);
+      if (url === '/api/phone') {
+        return jsonResponse({ enabled: true, running: true, devices: currentDevices });
+      }
+      if (url === '/api/phone/send' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body || '{}')) as { kind: string; id: string };
+        sendCalls.push(body);
+        return jsonResponse({ ok: true, route: `#/review/${body.id}` });
+      }
+      return jsonResponse({});
+    });
+
+    const { rerender } = render(<ReviewSection contentId="cnt-rev-1" onNavigate={vi.fn()} />);
+
+    const phoneBtn = (await screen.findByRole('button', {
+      name: 'Send to my phone',
+    })) as HTMLButtonElement;
+    await waitFor(() => {
+      expect(phoneBtn.disabled).toBe(false);
+    });
+
+    fireEvent.click(phoneBtn);
+    await waitFor(() => {
+      expect(sendCalls).toEqual([{ kind: 'content', id: 'cnt-rev-1' }]);
+    });
+    expect(await screen.findByText('Sent to your phone.')).toBeTruthy();
+
+    currentDevices = [];
+    rerender(<ReviewSection contentId="cnt-conf-1" onNavigate={vi.fn()} />);
+    await waitFor(() => {
+      const confBtn = screen.getByRole('button', { name: 'Send to my phone' }) as HTMLButtonElement;
+      expect(confBtn.disabled).toBe(true);
+      expect(confBtn.title).toBe('Confidential items cannot be sent to your phone');
+    });
+  });
 });

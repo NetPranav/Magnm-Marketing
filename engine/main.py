@@ -130,6 +130,9 @@ def main(argv=None):
     if cloud_sync.is_enabled():
         cloud_sync.start()
 
+    import phone_server
+    phone_server.start_if_enabled()
+
     import server
 
     httpd = ThreadingHTTPServer((args.host, args.port), server.CommandCenterHandler)
@@ -154,6 +157,10 @@ def main(argv=None):
             pass
         try:
             cloud_sync.stop(timeout=1.0)
+        except Exception:
+            pass
+        try:
+            phone_server.stop(timeout=1.0)
         except Exception:
             pass
         try:
@@ -201,6 +208,10 @@ def main(argv=None):
         if not shutdown_started.is_set():
             try:
                 cloud_sync.stop(timeout=1.0)
+            except Exception:
+                pass
+            try:
+                phone_server.stop(timeout=1.0)
             except Exception:
                 pass
         try:

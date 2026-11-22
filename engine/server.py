@@ -53,6 +53,8 @@ import mcp_tools
 import media_previews
 import notifications
 import paths
+import phone_pairing
+import phone_server
 import pitch
 import pitch_host
 import pitch_links
@@ -876,6 +878,71 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 return
             self.send_json({"error": "Not found"}, status=404)
         except learnings.LearningError as exc:
+            self.send_json({"error": exc.message}, status=exc.status)
+
+    def _handle_phone_get(self, url):
+        path = url.path.rstrip("/") or "/"
+        mgr = phone_server.get_manager()
+        if path == "/api/phone":
+            self.send_json(mgr.status())
+            return
+        if path == "/api/phone/devices":
+            self.send_json({"devices": phone_pairing.list_devices()})
+            return
+        self.send_json({"error": "Not found"}, status=404)
+
+    def _handle_phone_post(self, url, params):
+        path = url.path.rstrip("/") or "/"
+        parts = [urllib.parse.unquote(p) for p in path.split("/") if p]
+        mgr = phone_server.get_manager()
+        pairing = phone_pairing.get_manager()
+        try:
+            if path == "/api/phone/enable":
+                self.send_json(mgr.enable())
+                return
+            if path == "/api/phone/disable":
+                self.send_json(mgr.disable())
+                return
+            if path == "/api/phone/pair/start":
+                pair_info = mgr.start_pairing()
+                self.send_json({**pair_info, "status": mgr.status()})
+                return
+            if path == "/api/phone/pair/cancel":
+                pairing.cancel_pairing()
+                self.send_json(mgr.status())
+                return
+            if path == "/api/phone/pair/approve":
+                device = pairing.approve_request(params.get("request_id"))
+                self.send_json({"device": device, "status": mgr.status()})
+                return
+            if path == "/api/phone/pair/deny":
+                res = pairing.deny_request(params.get("request_id"))
+                self.send_json({**res, "status": mgr.status()})
+                return
+            if path == "/api/phone/devices/revoke":
+                device = phone_pairing.revoke_device(params.get("device_id"))
+                self.send_json({"device": device, "status": mgr.status()})
+                return
+            if len(parts) == 5 and parts[:3] == ["api", "phone", "devices"] and parts[4] == "revoke":
+                device = phone_pairing.revoke_device(parts[3])
+                self.send_json({"device": device, "status": mgr.status()})
+                return
+            if path == "/api/phone/send":
+                res = phone_server.send_item_to_phone(params.get("kind"), params.get("id"))
+                self.send_json(res)
+                return
+            self.send_json({"error": "Not found"}, status=404)
+        except phone_server.PhoneApiError as exc:
+            self.send_json({"error": exc.message, "code": exc.code}, status=exc.status)
+        except phone_server.PhoneServerError as exc:
+            self.send_json(
+                {
+                    "error": exc.message,
+                    "tailscale_missing": exc.code == "tailscale_missing",
+                },
+                status=exc.status,
+            )
+        except phone_pairing.PairingError as exc:
             self.send_json({"error": exc.message}, status=exc.status)
 
     def _handle_coding_get(self, url):
@@ -1785,6 +1852,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         elif url.path.startswith("/api/coding/"):
             self._handle_coding_get(url)
 
+        elif url.path == "/api/phone" or url.path.startswith("/api/phone/"):
+            self._handle_phone_get(url)
+
         elif url.path.startswith("/api/asset/"):
             parts = url.path.split("/")[3:]
             if len(parts) >= 2:
@@ -1875,6 +1945,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             or url.path == "/api/learnings"
             or url.path.startswith("/api/learnings/")
             or url.path.startswith("/api/coding/")
+            or url.path == "/api/phone"
+            or url.path.startswith("/api/phone/")
         )
         max_len = MAX_REVIEW_BODY_BYTES if url.path.startswith("/api/review/") else MAX_POST_BYTES
         if content_len > max_len:
@@ -1935,6 +2007,10 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         if url.path.startswith("/api/coding/"):
             self._handle_coding_post(url, params)
+            return
+
+        if url.path == "/api/phone" or url.path.startswith("/api/phone/"):
+            self._handle_phone_post(url, params)
             return
 
         if url.path == "/api/shutdown":
@@ -5268,6 +5344,7 @@ def main():
     import cloud_sync
     if cloud_sync.is_enabled():
         cloud_sync.start()
+    phone_server.start_if_enabled()
     print(f"Starting multi-threaded server on http://{HOST}:{PORT}")
     server = ThreadingHTTPServer((HOST, PORT), CommandCenterHandler)
     server.daemon_threads = True
@@ -5288,6 +5365,10 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        try:
+            phone_server.stop(timeout=1.0)
+        except Exception:
+            pass
         try:
             cloud_sync.stop(timeout=1.0)
         except Exception:

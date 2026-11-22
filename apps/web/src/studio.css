@@ -1048,6 +1048,22 @@
   overflow-wrap: anywhere;
 }
 
+.studio-phone-pair-box {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+  padding-top: var(--s-2);
+}
+
+.studio-phone-qr {
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: #ffffff;
+  line-height: 0;
+}
+
 @media (max-width: 899px) {
   .studio-library-layout--with-panel {
     grid-template-columns: 1fr;

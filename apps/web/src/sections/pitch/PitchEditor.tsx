@@ -29,6 +29,7 @@ import {
   type PitchRuleViolation,
 } from '../../api/pitch';
 import { getAccount, type AccountState } from '../../api/account';
+import { getPhoneStatus, sendToPhone, type PhoneStatus } from '../../api/phone';
 import { postAgentChat } from '../../api/team';
 import { useStudioEvents } from '../../events';
 import { formatTimestamp } from '../../ui/format';
@@ -149,6 +150,8 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
   const [writerOpen, setWriterOpen] = useState(false);
   const [writerBusy, setWriterBusy] = useState(false);
   const [account, setAccount] = useState<AccountState | null>(null);
+  const [phoneStatus, setPhoneStatus] = useState<PhoneStatus | null>(null);
+  const [phoneBusy, setPhoneBusy] = useState(false);
   const [linkBusy, setLinkBusy] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -206,6 +209,15 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
     void loadAll();
   }, [loadAll]);
 
+  const loadPhoneStatus = useCallback(async () => {
+    try {
+      const res = await getPhoneStatus();
+      setPhoneStatus(res);
+    } catch {
+      setPhoneStatus(null);
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     getAccount()
@@ -215,10 +227,11 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
       .catch(() => {
         if (!cancelled) setAccount(null);
       });
+    void loadPhoneStatus();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadPhoneStatus]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -280,6 +293,10 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
   useStudioEvents(
     useCallback(
       (eventName, data) => {
+        if (eventName === 'phone.updated') {
+          void loadPhoneStatus();
+          return;
+        }
         if (eventName !== 'pitch.updated' || !data || typeof data !== 'object') return;
         const payload = data as { proposal_id?: string; what?: string; path?: string };
         if (payload.proposal_id === proposalId && payload.what === 'pdf_saved') {
@@ -287,7 +304,7 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
           void refreshPdfs();
         }
       },
-      [proposalId, refreshPdfs],
+      [proposalId, refreshPdfs, loadPhoneStatus],
     ),
   );
 
@@ -683,6 +700,22 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
       setNotice('Sent brief to Writer. New draft will appear in Pitch list.');
     } finally {
       setWriterBusy(false);
+    }
+  };
+
+  const hasPairedPhone = (phoneStatus?.devices ?? []).length > 0;
+
+  const handleSendToPhone = async () => {
+    if (!proposal || !hasPairedPhone) return;
+    setError(null);
+    setPhoneBusy(true);
+    try {
+      await sendToPhone('proposal', proposal.id);
+      showToast('Sent to your phone');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not send proposal to your phone.');
+    } finally {
+      setPhoneBusy(false);
     }
   };
 
@@ -1168,10 +1201,11 @@ export function PitchEditor({ proposalId, onBackToList, onPresent }: PitchEditor
         <PillButton
           variant="outline"
           size="sm"
-          disabled
-          title="Available after phone pairing (Phase 4)"
+          disabled={!hasPairedPhone || phoneBusy}
+          title={hasPairedPhone ? undefined : 'Pair a phone under Settings, Phone first'}
+          onClick={() => void handleSendToPhone()}
         >
-          Send to my phone
+          {phoneBusy ? 'Sending...' : 'Send to my phone'}
         </PillButton>
       </BottomBar>
 

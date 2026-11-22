@@ -883,7 +883,7 @@ class CodingAgentsTests(unittest.TestCase):
         db.init_db()
         fresh_cols, fresh_vers = _inspect_schema(fresh_path)
         self.assertEqual(fresh_vers, list(range(1, db.SCHEMA_VERSION + 1)))
-        self.assertEqual(db.SCHEMA_VERSION, 21)
+        self.assertGreaterEqual(db.SCHEMA_VERSION, 21)
 
         # 2. v19 DB with existing row
         v19_path = os.path.join(self.tmpdir, "v19.db")

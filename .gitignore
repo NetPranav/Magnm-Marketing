@@ -19,7 +19,10 @@ apps/desktop/src-tauri/binaries/
 
 # Node dependencies & web build output
 node_modules/
+.pnpm-store/
 apps/web/dist/
+apps/mobile/dist/
+apps/mobile/public/pitch/
 
 # Runtime logs, locks & temp files
 logs/jobs/

@@ -409,7 +409,7 @@ describe('PitchSection', () => {
     expect(copyLinkBtn.disabled).toBe(true);
     expect(copyLinkBtn.title).toBe('Sign in under Settings, Account to share links');
     expect(phoneBtn.disabled).toBe(true);
-    expect(phoneBtn.title).toBe('Available after phone pairing (Phase 4)');
+    expect(phoneBtn.title).toBe('Pair a phone under Settings, Phone first');
 
     // 400 rule violation renders inline next to slug field
     failNextSave = true;
@@ -1030,7 +1030,7 @@ describe('PitchSection', () => {
     expect(copyLinkBtn.disabled).toBe(true);
     expect(copyLinkBtn.title).toBe('Sign in under Settings, Account to share links');
     expect(phoneBtn.disabled).toBe(true);
-    expect(phoneBtn.title).toBe('Available after phone pairing (Phase 4)');
+    expect(phoneBtn.title).toBe('Pair a phone under Settings, Phone first');
 
     // Tabs: Details, Services, Prices, Plans
     const tabs = screen.getAllByRole('tab');
@@ -2286,5 +2286,47 @@ describe('PitchSection', () => {
       expect(within(panel).getByText('Arjun · BlueWave')).toBeTruthy();
       expect(within(panel).getByTestId('quote-requests-unread').textContent).toBe('1 unread');
     });
+  });
+
+  it('enables Send to my phone once a device is paired and posts /api/phone/send', async () => {
+    const prop = makeProposal({ id: 'prop-phone-1', slug: 'cero-phone-pitch' });
+    const sendCalls: Array<{ kind: string; id: string }> = [];
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/pitch/catalog') return jsonResponse(makeCatalog());
+      if (url === '/api/pitch/proposals') return jsonResponse({ proposals: [prop] });
+      if (url === '/api/pitch/proposals/prop-phone-1') return jsonResponse(prop);
+      if (url === '/api/auth/session') return jsonResponse({ signed_in: false });
+      if (url === '/api/phone') {
+        return jsonResponse({
+          enabled: true,
+          running: true,
+          devices: [{ id: 'pdev-1', name: 'Pixel 9' }],
+        });
+      }
+      if (url === '/api/phone/send' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body || '{}')) as { kind: string; id: string };
+        sendCalls.push(body);
+        return jsonResponse({ ok: true, route: `#/pitch/${body.id}/present` });
+      }
+      return jsonResponse({});
+    });
+
+    render(<PitchSection param="prop-phone-1" onNavigate={vi.fn()} />);
+
+    const phoneBtn = (await screen.findByRole('button', {
+      name: 'Send to my phone',
+    })) as HTMLButtonElement;
+    await waitFor(() => {
+      expect(phoneBtn.disabled).toBe(false);
+    });
+    expect(phoneBtn.title).toBe('');
+
+    fireEvent.click(phoneBtn);
+    await waitFor(() => {
+      expect(sendCalls).toEqual([{ kind: 'proposal', id: 'prop-phone-1' }]);
+    });
+    expect(await screen.findByText('Sent to your phone')).toBeTruthy();
   });
 });
