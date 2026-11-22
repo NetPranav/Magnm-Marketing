@@ -23,6 +23,8 @@ import phone_server
 import reminders
 from social import service as social_service, vault as vault_mod
 import team_auth
+from social import vault as _social_vault
+from engine.tests.social_test_crypto import stub_vault_if_missing
 
 _PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -42,6 +44,7 @@ _FIXTURE_PATH = os.path.join(
 
 class PhoneContractTests(unittest.TestCase):
     def setUp(self):
+        stub_vault_if_missing(self, _social_vault)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = tmp.name

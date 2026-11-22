@@ -456,6 +456,9 @@ class _OffPlatformTrapServer:
         self.httpd.server_close()
 
 
+from engine.tests.social_test_crypto import HAVE_CRYPTOGRAPHY, requires_cryptography, stub_vault_if_missing
+
+
 def _chromium_missing(run):
     """True only for the missing-browser error, so any other failure still fails the test."""
     return run.get("error") == "Chromium browser binary is not installed."
@@ -491,6 +494,7 @@ class SocialTests(unittest.TestCase):
 
         self.key_store = vault_mod.InMemoryKeyStore()
         self.clock = _FakeClock()
+        stub_vault_if_missing(self, vault_mod)
 
     def tearDown(self):
         try:
@@ -558,6 +562,7 @@ class SocialTests(unittest.TestCase):
         self.assertNotIn("SECRET_SOCIAL_RESULT", serialized)
         self.assertNotIn(run["id"], serialized)
 
+    @requires_cryptography
     def test_02_vault_aes_gcm_permissions_aad_and_no_keychain_refusal(self):
         """Vault uses AES-256-GCM with AAD, 0600 perms, refuses null keychain, and removes cleanly."""
         vault = vault_mod.SocialVault(data_root=self.tmpdir, key_store=self.key_store)
@@ -705,6 +710,8 @@ class SocialTests(unittest.TestCase):
         self.assertFalse(pol.check_request("DELETE", "https://x.com/cero_cli")[0])
         self.assertFalse(pol.check_request("GET", "https://x.com/ws", headers={"Upgrade": "websocket"})[0])
 
+        if not HAVE_CRYPTOGRAPHY:
+            self.skipTest("policy checked; the proxy part needs cryptography")
         # Production SocialGuardProxy blocks loopback/private
         with policy_mod.SocialGuardProxy(pol) as proxy:
             pport = int(proxy.url.rsplit(":", 1)[1])
@@ -1359,6 +1366,7 @@ class SocialTests(unittest.TestCase):
                 resp = sock.recv(512)
                 self.assertIn(b"502", resp)
 
+    @requires_cryptography
     def test_14_proxy_keepalive_pipelining_chunked_smuggling_and_no_logging(self):
         """Proxy terminates TLS, checks every keep-alive/pipelined/chunked request, rejects ambiguity, and never logs."""
         fake = _FakeSocialServer(self.tmpdir)
@@ -1979,6 +1987,18 @@ class SocialSummaryErrorTests(unittest.TestCase):
             with self.assertRaises(SocialError) as caught:
                 svc.summarise_run("r")
         self.assertNotIn("SCRAPED-TEXT", caught.exception.message)
+
+
+class SocialWithoutCryptographyTests(unittest.TestCase):
+    def test_missing_package_fails_clearly_and_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = vault_mod.SocialVault(data_root=root, key_store=vault_mod.InMemoryKeyStore())
+            missing = {name: None for name in ("cryptography", "cryptography.hazmat.primitives.ciphers.aead")}
+            with patch.dict(sys.modules, missing):
+                with self.assertRaises(vault_mod.VaultError) as caught:
+                    store.save_state("x", {"cookies": [], "origins": []})
+            self.assertEqual(caught.exception.code, "missing_cryptography")
+            self.assertEqual(os.listdir(root), [])
 
 
 if __name__ == "__main__":

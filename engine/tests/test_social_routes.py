@@ -28,6 +28,8 @@ import phone_server
 import repos
 import server
 from social import service as social_service_mod, vault as vault_mod
+from social import vault as _social_vault
+from engine.tests.social_test_crypto import stub_vault_if_missing
 import team_auth
 
 
@@ -63,6 +65,7 @@ class _LaptopStubHandler(server.CommandCenterHandler):
 
 class SocialRoutesAndIsolationTests(unittest.TestCase):
     def setUp(self):
+        stub_vault_if_missing(self, _social_vault)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = tmp.name
