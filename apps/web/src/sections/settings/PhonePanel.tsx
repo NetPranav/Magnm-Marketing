@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import qrcode from 'qrcode-generator';
-import { Card, Checkbox, PillButton, Row, RowList, StatusDot } from '@magnm/design/react';
+import { Card, Checkbox, PillButton, Row, RowList, StatusDot, TextArea } from '@magnm/design/react';
 import {
   approvePhoneRequest,
   cancelPhonePairing,
@@ -70,6 +70,7 @@ export function PhonePanel() {
   const [error, setError] = useState<string | null>(null);
   const [tailscaleMissing, setTailscaleMissing] = useState(false);
   const [countdownSec, setCountdownSec] = useState(0);
+  const [codeCopied, setCodeCopied] = useState(false);
 
   const applyStatus = useCallback((next: PhoneStatus) => {
     setPhone(next);
@@ -211,6 +212,16 @@ export function PhonePanel() {
     }
   };
 
+  const handleCopyCode = async (code: string) => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCodeCopied(true);
+      window.setTimeout(() => setCodeCopied(false), 2000);
+    } catch {
+      setError('Could not copy. Select the pairing code and copy it by hand.');
+    }
+  };
+
   const handleApprove = async (requestId: string) => {
     setError(null);
     setBusy(`approve-${requestId}`);
@@ -349,6 +360,27 @@ export function PhonePanel() {
                     </div>
                     <div className="studio-mono" data-testid="phone-pair-countdown">
                       Expires in {formatCountdown(countdownSec)}
+                    </div>
+                    <div className="studio-phone-code">
+                      <label className="mg-label" htmlFor="phone-pair-code">
+                        Pairing code
+                      </label>
+                      <div className="studio-hint">
+                        Or type or paste this code into the Pairing code box on your phone if scanning does not work.
+                      </div>
+                      <TextArea
+                        id="phone-pair-code"
+                        className="studio-phone-code-field"
+                        readOnly
+                        rows={5}
+                        value={qrPayload}
+                        onFocus={(e) => e.currentTarget.select()}
+                      />
+                      <div className="studio-row-actions">
+                        <PillButton variant="outline" size="sm" onClick={() => void handleCopyCode(qrPayload)}>
+                          {codeCopied ? 'Copied' : 'Copy code'}
+                        </PillButton>
+                      </div>
                     </div>
                     <div>
                       <PillButton

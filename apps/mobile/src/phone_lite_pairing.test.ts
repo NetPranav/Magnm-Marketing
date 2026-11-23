@@ -1,3 +1,4 @@
+import bundledRules from '@magnm/config/product_rules.json';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   ConfidentialRefusalError,
@@ -94,7 +95,7 @@ describe('pairing and Phone Lite guards', () => {
     expect(loadQueue()).toHaveLength(0);
   });
 
-  it('refuses Phone Lite if product_rules are uncached and unfetchable, and refuses confidential products', async () => {
+  it('uses the bundled rules when the team never published any, and still refuses confidential products', async () => {
     let networkCalls = 0;
     const bridge = createPreviewNativeBridge({
       httpHandler: async () => {
@@ -103,11 +104,32 @@ describe('pairing and Phone Lite guards', () => {
       },
     });
 
-    // No cached rules and signed out -> refuses to run
+    // Nothing cached or published and signed out: not paused by missing rules (it only lacks a way to send).
+    const bundledSecret = (bundledRules.products as Array<{ name: string; confidential?: boolean }>).find(
+      (p) => p.confidential,
+    )!.name;
     await expect(
       sendPhoneLiteMessage({ agentId: 'writer', text: 'Write a post about Cero', bridge }),
-    ).rejects.toThrow(ProductRulesUnavailableError);
+    ).rejects.toThrow(/personal NVIDIA NIM key or a Google sign-in/);
+    await expect(
+      sendPhoneLiteMessage({ agentId: 'writer', text: `Write a post about ${bundledSecret}`, bridge }),
+    ).rejects.toThrow(ConfidentialRefusalError);
     expect(networkCalls).toBe(0);
+
+    // A signed-in phone whose shared rules cannot be fetched is not paused either.
+    await bridge.secureStore.set(
+      SESSION_SECRET_KEY,
+      JSON.stringify({ access_token: 'jwt', refresh_token: 'ref', expires_at: 9_999_999_999, user_id: 'uid-9', email: '' }),
+    );
+    await expect(
+      sendPhoneLiteMessage({ agentId: 'writer', text: `Write a post about ${bundledSecret}`, bridge }),
+    ).rejects.toThrow(ConfidentialRefusalError);
+    await expect(
+      sendPhoneLiteMessage({ agentId: 'writer', text: 'Write a post about Cero', bridge }),
+    ).rejects.not.toThrow(ProductRulesUnavailableError);
+    await bridge.secureStore.remove(SESSION_SECRET_KEY);
+    networkCalls = 0;
+    wipeCache();
 
     // Cache product rules with confidential ProjectNightfall
     saveCachedProductRules('uid-1', {

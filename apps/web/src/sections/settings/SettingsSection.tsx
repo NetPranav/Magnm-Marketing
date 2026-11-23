@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Card,
   Dialog,
@@ -25,6 +25,7 @@ import {
   runSetupCheck,
   saveEnvConfig,
   testRoleModel,
+  waitForEngine,
   type ImportLegacyResult,
   type TestAiResult,
 } from '../../api/settings';
@@ -32,6 +33,7 @@ import {
   deleteSecret,
   isDesktop,
   listSecrets,
+  restartEngine,
   type SecretStatus,
 } from '../../desktop';
 import { useFallbackPoll, useStudioEvents } from '../../events';
@@ -40,6 +42,7 @@ import { CodingAgentsPanel } from './CodingAgentsPanel';
 import { NotificationsPanel } from './NotificationsPanel';
 import { PhonePanel } from './PhonePanel';
 import { PitchBasePricesPanel } from './PitchBasePricesPanel';
+import { SettingsIndex } from './SettingsIndex';
 import { PostingSettingsPanel } from './PostingSettingsPanel';
 import { SocialResearchSettingsPanel } from './SocialResearchSettingsPanel';
 import { TeamKnowledgePanel } from './TeamKnowledgePanel';
@@ -150,6 +153,7 @@ export function SettingsSection() {
   const [roleTests, setRoleTests] = useState<Record<string, TestAiResult>>({});
 
   const desktopMode = isDesktop();
+  const bodyRef = useRef<HTMLDivElement | null>(null);
 
   // Key entry form (never prefilled, always password + autocomplete off, cleared after save)
   const [newKeyName, setNewKeyName] = useState('NVIDIA_NIM_API_KEY');
@@ -159,6 +163,8 @@ export function SettingsSection() {
   const [desktopSecrets, setDesktopSecrets] = useState<SecretStatus[]>([]);
   const [desktopKeyValues, setDesktopKeyValues] = useState<Record<string, string>>({});
   const [confirmRemoveKey, setConfirmRemoveKey] = useState<string | null>(null);
+  // True from a key change or Restart engine until /api/health answers again. The page never navigates.
+  const [engineRestarting, setEngineRestarting] = useState(false);
 
   // Legacy import form
   const [legacyPath, setLegacyPath] = useState('');
@@ -411,6 +417,23 @@ export function SettingsSection() {
     }
   };
 
+  /** After the engine restarted: wait for /api/health, then refresh the key list and status in place. */
+  const finishEngineRestart = async (doneNotice: string) => {
+    const back = await waitForEngine();
+    if (!back) {
+      setKeyNotice(null);
+      setError('The engine did not come back. Press Restart engine to try again.');
+      return;
+    }
+    const [secretsRes, statusRes, poolRes] = await Promise.allSettled([listSecrets(), getStatus(), getKeyPool()]);
+    if (secretsRes.status === 'fulfilled') {
+      setDesktopSecrets(Array.isArray(secretsRes.value) ? secretsRes.value : []);
+    }
+    if (statusRes.status === 'fulfilled') setStatus(statusRes.value);
+    if (poolRes.status === 'fulfilled') setKeyPool(Array.isArray(poolRes.value) ? poolRes.value : []);
+    setKeyNotice(doneNotice);
+  };
+
   const handleSaveDesktopKey = async (name: string) => {
     const trimmedVal = (desktopKeyValues[name] || '').trim();
     if (!trimmedVal) {
@@ -421,6 +444,7 @@ export function SettingsSection() {
     setKeychainNotice(null);
     setDesktopKeyValues((prev) => ({ ...prev, [name]: '' }));
     setKeyNotice('Saved. Restarting engine...');
+    setEngineRestarting(true);
     setBusyId(`save-key-${name}`);
     try {
       const res = await saveEnvConfig({ [name]: trimmedVal });
@@ -433,13 +457,13 @@ export function SettingsSection() {
         }
         return;
       }
-      const nextSecrets = await listSecrets();
-      setDesktopSecrets(Array.isArray(nextSecrets) ? nextSecrets : []);
+      await finishEngineRestart('Saved. The engine restarted.');
     } catch (err) {
       setKeyNotice(null);
       setError(err instanceof Error ? err.message : 'Failed to save key.');
     } finally {
       setBusyId(null);
+      setEngineRestarting(false);
     }
   };
 
@@ -450,16 +474,33 @@ export function SettingsSection() {
     setError(null);
     setKeychainNotice(null);
     setKeyNotice('Removed. Restarting engine...');
+    setEngineRestarting(true);
     setBusyId(`remove-key-${target}`);
     try {
       await deleteSecret(target);
-      const nextSecrets = await listSecrets();
-      setDesktopSecrets(Array.isArray(nextSecrets) ? nextSecrets : []);
+      await finishEngineRestart('Removed. The engine restarted.');
     } catch (err) {
       setKeyNotice(null);
       setError(err instanceof Error ? err.message : 'Failed to remove key.');
     } finally {
       setBusyId(null);
+      setEngineRestarting(false);
+    }
+  };
+
+  const handleRestartEngine = async () => {
+    setError(null);
+    setKeychainNotice(null);
+    setKeyNotice('Restarting engine...');
+    setEngineRestarting(true);
+    try {
+      await restartEngine();
+      await finishEngineRestart('The engine restarted.');
+    } catch (err) {
+      setKeyNotice(null);
+      setError(err instanceof Error ? err.message : 'Could not restart the engine.');
+    } finally {
+      setEngineRestarting(false);
     }
   };
 
@@ -583,554 +624,568 @@ export function SettingsSection() {
 
       {notice ? <div className="mg-notice">{notice}</div> : null}
 
-      <AccountPanel />
+      <SettingsIndex bodyRef={bodyRef} />
 
-      <TeamKnowledgePanel />
+      <div className="studio-stack studio-settings-body" ref={bodyRef}>
+        <AccountPanel />
 
-      <NotificationsPanel />
+        <TeamKnowledgePanel />
 
-      <section className="studio-section" aria-labelledby="settings-models-heading">
-        <div className="studio-settings-head">
-          <span className="studio-settings-num">02</span>
-          <h2 id="settings-models-heading" className="studio-section-title">
-            Engines and models
-          </h2>
-        </div>
+        <NotificationsPanel />
 
-        <Card>
-          <div className="studio-stack-sm">
-            <div className="studio-grid-2">
-              <Field label="Default provider" htmlFor="settings-default-provider">
-                <Select
-                  id="settings-default-provider"
-                  value={defaultProvider}
-                  onChange={(e) => setDefaultProvider(e.target.value)}
-                >
-                  <option value="nvidia_nim">nvidia_nim</option>
-                  <option value="auto">auto</option>
-                  <option value="openai">openai</option>
-                  <option value="anthropic">anthropic</option>
-                  <option value="gemini">gemini</option>
-                  <option value="ollama">ollama</option>
-                </Select>
-              </Field>
-              <Field label="NVIDIA NIM base URL" htmlFor="settings-nim-url">
-                <TextInput
-                  id="settings-nim-url"
-                  value={nimBaseUrl}
-                  onChange={(e) => setNimBaseUrl(e.target.value)}
-                />
-              </Field>
-            </div>
-            <div className="studio-inline-form">
-              <TextInput
-                aria-label="Fallback model"
-                placeholder="Fallback model ID"
-                value={nimFallbackModel}
-                onChange={(e) => setNimFallbackModel(e.target.value)}
-              />
-              <PillButton
-                size="sm"
-                disabled={busyId === 'save-gateway'}
-                onClick={() => void handleSaveGateway()}
-              >
-                {busyId === 'save-gateway' ? 'Saving...' : 'Save gateway'}
-              </PillButton>
-            </div>
+        <section className="studio-section" aria-labelledby="settings-models-heading">
+          <div className="studio-settings-head">
+            <span className="studio-settings-num">02</span>
+            <h2 id="settings-models-heading" className="studio-section-title">
+              Engines and models
+            </h2>
           </div>
-        </Card>
 
-        <datalist id="settings-nim-catalog">
-          {catalogSuggestions.map((m) => (
-            <option key={m} value={m} />
-          ))}
-        </datalist>
-
-        {loading && matrix.length === 0 ? (
-          <div className="mg-empty">Loading agent role models.</div>
-        ) : matrix.length === 0 ? (
-          <div className="mg-empty">No role models returned by the engine.</div>
-        ) : (
-          <div className="studio-stack-sm">
-            {matrix.map((role) => {
-              const testRes = roleTests[role.role_id];
-              return (
-                <Card key={role.role_id} outline>
-                  <div className="studio-role-card">
-                    <div className="studio-card-head">
-                      <div>
-                        <div className="mg-label">
-                          {role.code || role.role_id}
-                          {role.tier ? ` · ${role.tier}` : ''}
-                        </div>
-                        <div className="studio-card-title">{role.name || role.role_id}</div>
-                      </div>
-                      <StatusDot
-                        state={role.has_key ? 'online' : 'off'}
-                        label={
-                          role.key_source === 'team'
-                            ? "Using the team's AI keys"
-                            : role.has_key
-                              ? 'Key configured'
-                              : 'Key missing'
-                        }
-                      />
-                    </div>
-
-                    <div className="studio-mono-wrap">
-                      In use: {role.primary || role.model || 'Unset'}
-                      {role.backup ? ` · Backup: ${role.backup}` : ''}
-                    </div>
-
-                    {role.warnings && role.warnings.length > 0 ? (
-                      <div className="studio-hint">{role.warnings.join(' ')}</div>
-                    ) : null}
-
-                    <div className="studio-role-controls">
-                      <TextInput
-                        aria-label={`Model for ${role.role_id}`}
-                        list="settings-nim-catalog"
-                        value={roleModels[role.role_id] ?? role.model ?? ''}
-                        onChange={(e) =>
-                          setRoleModels((prev) => ({
-                            ...prev,
-                            [role.role_id]: e.target.value,
-                          }))
-                        }
-                      />
-                      {role.model_env ? (
-                        <PillButton
-                          variant="outline"
-                          size="sm"
-                          disabled={busyId === `model-${role.role_id}`}
-                          onClick={() => void handleSaveRoleModel(role.role_id, role.model_env)}
-                        >
-                          Save
-                        </PillButton>
-                      ) : null}
-                      <PillButton
-                        variant="outline"
-                        size="sm"
-                        disabled={busyId === `test-${role.role_id}`}
-                        onClick={() => void handleTestRole(role.role_id)}
-                      >
-                        {busyId === `test-${role.role_id}` ? 'Testing...' : 'Test'}
-                      </PillButton>
-                    </div>
-
-                    {testRes ? (
-                      <div className="studio-mono-wrap">
-                        {testRes.success
-                          ? `OK · ${testRes.latency_ms ?? 0}ms · ${testRes.model_used || testRes.primary || 'ready'}${testRes.fallback_used ? ' (fallback)' : ''}`
-                          : `Failed: ${testRes.error || 'Endpoint check failed'}`}
-                      </div>
-                    ) : null}
-                  </div>
-                </Card>
-              );
-            })}
-          </div>
-        )}
-      </section>
-
-      <CodingAgentsPanel />
-
-      <section className="studio-section" aria-labelledby="settings-keys-heading">
-        <div className="studio-settings-head">
-          <span className="studio-settings-num">03</span>
-          <h2 id="settings-keys-heading" className="studio-section-title">
-            Keys
-          </h2>
-        </div>
-
-        {keychainNotice ? (
-          <div className="mg-notice" role="status">
-            {keychainNotice}
-          </div>
-        ) : null}
-
-        {providerRows.length > 0 ? (
           <Card>
             <div className="studio-stack-sm">
-              <span className="mg-label">Provider status</span>
-              <div className="studio-chip-row">
-                {providerRows.map((p) => (
-                  <span key={p.name} className="mg-chip">
-                    {p.name}: {p.label ?? (p.configured ? 'Configured' : 'Not configured')}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </Card>
-        ) : null}
-
-        {!desktopMode && keyPool.length === 0 ? (
-          <div className="mg-empty">
-            {env?.team_ai ? "Using the team's AI keys" : 'No NVIDIA NIM keys in pool yet.'}
-          </div>
-        ) : keyPool.length > 0 ? (
-          <RowList aria-label="NVIDIA key pool health">
-            {keyPool.map((entry) => {
-              const poolStatus = mapPoolState(entry);
-              return (
-                <Row
-                  key={entry.label}
-                  title={entry.label}
-                  description={
-                    <span className="studio-mono">
-                      Configured · {entry.requests_last_min} req/min · {entry.ok} ok ·{' '}
-                      {entry.errors} errors
-                    </span>
-                  }
-                  meta={<StatusDot state={poolStatus.state} label={poolStatus.label} />}
-                />
-              );
-            })}
-          </RowList>
-        ) : null}
-
-        {desktopMode ? (
-          <Card outline>
-            <div className="studio-stack-sm">
-              <div className="mg-label">Desktop keychain</div>
-              <p className="studio-hint">
-                Keys are stored in the desktop keychain and never displayed again after saving.
-                Saving or removing a key restarts the engine.
-              </p>
-              {keyNotice ? (
-                <div className="mg-notice" role="status">
-                  {keyNotice}
-                </div>
-              ) : null}
-              {loading && desktopSecrets.length === 0 ? (
-                <div className="mg-empty">Loading desktop keychain keys.</div>
-              ) : desktopSecrets.length === 0 ? (
-                <div className="mg-empty">No keychain keys reported.</div>
-              ) : (
-                <RowList aria-label="Desktop keychain keys">
-                  {desktopSecrets.map((entry) => (
-                    <Row
-                      key={entry.name}
-                      title={entry.name}
-                      meta={
-                        <StatusDot
-                          state={entry.is_set ? 'online' : 'off'}
-                          label={entry.is_set ? 'Configured' : 'Not configured'}
-                        />
-                      }
-                    >
-                      <div className="studio-role-controls">
-                        <TextInput
-                          type="password"
-                          autoComplete="off"
-                          name={`keychain-${entry.name}`}
-                          aria-label={`Key value for ${entry.name}`}
-                          placeholder={entry.is_set ? 'Replace key...' : 'Paste key...'}
-                          value={desktopKeyValues[entry.name] ?? ''}
-                          onChange={(e) =>
-                            setDesktopKeyValues((prev) => ({
-                              ...prev,
-                              [entry.name]: e.target.value,
-                            }))
-                          }
-                        />
-                        <PillButton
-                          size="sm"
-                          disabled={busyId === `save-key-${entry.name}`}
-                          onClick={() => void handleSaveDesktopKey(entry.name)}
-                        >
-                          Save
-                        </PillButton>
-                        {entry.is_set ? (
-                          <PillButton
-                            variant="outline"
-                            size="sm"
-                            disabled={busyId === `remove-key-${entry.name}`}
-                            onClick={() => setConfirmRemoveKey(entry.name)}
-                          >
-                            Remove
-                          </PillButton>
-                        ) : null}
-                      </div>
-                    </Row>
-                  ))}
-                </RowList>
-              )}
-            </div>
-          </Card>
-        ) : (
-          <Card outline>
-            <div className="studio-stack-sm">
-              <div className="mg-label">Add or replace a key</div>
-              <p className="studio-hint">
-                Keys are stored on this device and never displayed again after saving.
-              </p>
               <div className="studio-grid-2">
-                <Field label="Key slot" htmlFor="settings-key-slot">
+                <Field label="Default provider" htmlFor="settings-default-provider">
                   <Select
-                    id="settings-key-slot"
-                    value={newKeyName}
-                    onChange={(e) => setNewKeyName(e.target.value)}
+                    id="settings-default-provider"
+                    value={defaultProvider}
+                    onChange={(e) => setDefaultProvider(e.target.value)}
                   >
-                    {NIM_KEY_OPTIONS.map((k) => (
-                      <option key={k} value={k}>
-                        {k}
-                      </option>
-                    ))}
-                    {PROVIDER_KEY_OPTIONS.map((k) => (
-                      <option key={k} value={k}>
-                        {k}
-                      </option>
-                    ))}
-                    {roleKeyOptions.map((k) => (
-                      <option key={k} value={k}>
-                        {k}
-                      </option>
-                    ))}
+                    <option value="nvidia_nim">nvidia_nim</option>
+                    <option value="auto">auto</option>
+                    <option value="openai">openai</option>
+                    <option value="anthropic">anthropic</option>
+                    <option value="gemini">gemini</option>
+                    <option value="ollama">ollama</option>
                   </Select>
                 </Field>
-                <Field label="Key value" htmlFor="settings-key-value">
+                <Field label="NVIDIA NIM base URL" htmlFor="settings-nim-url">
                   <TextInput
-                    id="settings-key-value"
-                    type="password"
-                    autoComplete="off"
-                    name="api-key-entry"
-                    placeholder="Paste key..."
-                    value={newKeyValue}
-                    onChange={(e) => setNewKeyValue(e.target.value)}
+                    id="settings-nim-url"
+                    value={nimBaseUrl}
+                    onChange={(e) => setNimBaseUrl(e.target.value)}
                   />
                 </Field>
               </div>
-              <div className="studio-section-bar">
+              <div className="studio-inline-form">
+                <TextInput
+                  aria-label="Fallback model"
+                  placeholder="Fallback model ID"
+                  value={nimFallbackModel}
+                  onChange={(e) => setNimFallbackModel(e.target.value)}
+                />
                 <PillButton
                   size="sm"
-                  disabled={busyId === 'save-key'}
-                  onClick={() => void handleSaveKey()}
+                  disabled={busyId === 'save-gateway'}
+                  onClick={() => void handleSaveGateway()}
                 >
-                  {busyId === 'save-key' ? 'Saving...' : 'Save key'}
+                  {busyId === 'save-gateway' ? 'Saving...' : 'Save gateway'}
                 </PillButton>
-                {keyNotice ? <span className="studio-mono">{keyNotice}</span> : null}
               </div>
             </div>
           </Card>
-        )}
-      </section>
 
-      <section className="studio-section" aria-labelledby="settings-setup-heading">
-        <div className="studio-section-bar">
+          <datalist id="settings-nim-catalog">
+            {catalogSuggestions.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+
+          {loading && matrix.length === 0 ? (
+            <div className="mg-empty">Loading agent role models.</div>
+          ) : matrix.length === 0 ? (
+            <div className="mg-empty">No role models returned by the engine.</div>
+          ) : (
+            <div className="studio-stack-sm">
+              {matrix.map((role) => {
+                const testRes = roleTests[role.role_id];
+                return (
+                  <Card key={role.role_id} outline>
+                    <div className="studio-role-card">
+                      <div className="studio-card-head">
+                        <div>
+                          <div className="mg-label">
+                            {role.code || role.role_id}
+                            {role.tier ? ` · ${role.tier}` : ''}
+                          </div>
+                          <div className="studio-card-title">{role.name || role.role_id}</div>
+                        </div>
+                        <StatusDot
+                          state={role.has_key ? 'online' : 'off'}
+                          label={
+                            role.key_source === 'team'
+                              ? "Using the team's AI keys"
+                              : role.has_key
+                                ? 'Key configured'
+                                : 'Key missing'
+                          }
+                        />
+                      </div>
+
+                      <div className="studio-mono-wrap">
+                        In use: {role.primary || role.model || 'Unset'}
+                        {role.backup ? ` · Backup: ${role.backup}` : ''}
+                      </div>
+
+                      {role.warnings && role.warnings.length > 0 ? (
+                        <div className="studio-hint">{role.warnings.join(' ')}</div>
+                      ) : null}
+
+                      <div className="studio-role-controls">
+                        <TextInput
+                          aria-label={`Model for ${role.role_id}`}
+                          list="settings-nim-catalog"
+                          value={roleModels[role.role_id] ?? role.model ?? ''}
+                          onChange={(e) =>
+                            setRoleModels((prev) => ({
+                              ...prev,
+                              [role.role_id]: e.target.value,
+                            }))
+                          }
+                        />
+                        {role.model_env ? (
+                          <PillButton
+                            variant="outline"
+                            size="sm"
+                            disabled={busyId === `model-${role.role_id}`}
+                            onClick={() => void handleSaveRoleModel(role.role_id, role.model_env)}
+                          >
+                            Save
+                          </PillButton>
+                        ) : null}
+                        <PillButton
+                          variant="outline"
+                          size="sm"
+                          disabled={busyId === `test-${role.role_id}`}
+                          onClick={() => void handleTestRole(role.role_id)}
+                        >
+                          {busyId === `test-${role.role_id}` ? 'Testing...' : 'Test'}
+                        </PillButton>
+                      </div>
+
+                      {testRes ? (
+                        <div className="studio-mono-wrap">
+                          {testRes.success
+                            ? `OK · ${testRes.latency_ms ?? 0}ms · ${testRes.model_used || testRes.primary || 'ready'}${testRes.fallback_used ? ' (fallback)' : ''}`
+                            : `Failed: ${testRes.error || 'Endpoint check failed'}`}
+                        </div>
+                      ) : null}
+                    </div>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <CodingAgentsPanel />
+
+        <section className="studio-section" aria-labelledby="settings-keys-heading">
           <div className="studio-settings-head">
-            <span className="studio-settings-num">04</span>
-            <h2 id="settings-setup-heading" className="studio-section-title">
-              Setup check
+            <span className="studio-settings-num">03</span>
+            <h2 id="settings-keys-heading" className="studio-section-title">
+              Keys
             </h2>
           </div>
-          <div className="studio-btn-group">
-            <PillButton
-              variant="outline"
-              size="sm"
-              disabled={busyId === 'setup-check'}
-              onClick={() => void handleRunSetupCheck()}
-            >
-              {busyId === 'setup-check' ? 'Checking...' : 'Run check'}
-            </PillButton>
-            <PillButton
-              variant="outline"
-              size="sm"
-              disabled={busyId === 'install-browser' || browserJobActive}
-              onClick={() => void handleInstallBrowser()}
-            >
-              {browserJobActive ? 'Installing browser...' : 'Install browser'}
-            </PillButton>
-          </div>
-        </div>
 
-        {browserJob ? (
-          <Card>
-            <div className="studio-section-bar">
-              <span className="studio-mono">
-                install_browser: {browserJob.message || browserJob.status}
-              </span>
-              <StatusDot
-                state={
-                  browserJob.status === 'done'
-                    ? 'online'
-                    : browserJob.status === 'failed'
-                      ? 'error'
-                      : 'working'
-                }
-                label={browserJob.status}
-                live={browserJobActive}
-              />
+          {keychainNotice ? (
+            <div className="mg-notice" role="status">
+              {keychainNotice}
             </div>
-          </Card>
-        ) : null}
+          ) : null}
 
-        {loading && !setupCheck ? (
-          <div className="mg-empty">Running environment setup checks.</div>
-        ) : !setupCheck || setupCheck.checks.length === 0 ? (
-          <div className="mg-empty">No setup check results available.</div>
-        ) : (
-          <RowList aria-label="Setup checks">
-            {setupCheck.checks.map((item) => (
-              <Row
-                key={item.id}
-                title={item.label}
-                description={
-                  <div className="studio-stack-xs">
-                    <span>{item.detail}</span>
-                    {item.fix ? <span className="studio-hint">Fix: {item.fix}</span> : null}
+          {providerRows.length > 0 ? (
+            <Card>
+              <div className="studio-stack-sm">
+                <span className="mg-label">Provider status</span>
+                <div className="studio-chip-row">
+                  {providerRows.map((p) => (
+                    <span key={p.name} className="mg-chip">
+                      {p.name}: {p.label ?? (p.configured ? 'Configured' : 'Not configured')}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </Card>
+          ) : null}
+
+          {!desktopMode && keyPool.length === 0 ? (
+            <div className="mg-empty">
+              {env?.team_ai ? "Using the team's AI keys" : 'No NVIDIA NIM keys in pool yet.'}
+            </div>
+          ) : keyPool.length > 0 ? (
+            <RowList aria-label="NVIDIA key pool health">
+              {keyPool.map((entry) => {
+                const poolStatus = mapPoolState(entry);
+                return (
+                  <Row
+                    key={entry.label}
+                    title={entry.label}
+                    description={
+                      <span className="studio-mono">
+                        Configured · {entry.requests_last_min} req/min · {entry.ok} ok ·{' '}
+                        {entry.errors} errors
+                      </span>
+                    }
+                    meta={<StatusDot state={poolStatus.state} label={poolStatus.label} />}
+                  />
+                );
+              })}
+            </RowList>
+          ) : null}
+
+          {desktopMode ? (
+            <Card outline>
+              <div className="studio-stack-sm">
+                <div className="mg-label">Desktop keychain</div>
+                <p className="studio-hint">
+                  Keys are stored in the desktop keychain and never displayed again after saving.
+                  Saving or removing a key restarts the engine in the background. This page stays where it is.
+                </p>
+                <div>
+                  <PillButton
+                    variant="outline"
+                    size="sm"
+                    disabled={engineRestarting}
+                    onClick={() => void handleRestartEngine()}
+                  >
+                    Restart engine
+                  </PillButton>
+                </div>
+                {keyNotice ? (
+                  <div className="mg-notice" role="status">
+                    {keyNotice}
                   </div>
-                }
-                meta={<StatusDot state={mapSetupState(item.status)} label={item.status} />}
-              />
-            ))}
-          </RowList>
-        )}
-      </section>
+                ) : null}
+                {loading && desktopSecrets.length === 0 ? (
+                  <div className="mg-empty">Loading desktop keychain keys.</div>
+                ) : desktopSecrets.length === 0 ? (
+                  <div className="mg-empty">No keychain keys reported.</div>
+                ) : (
+                  <RowList aria-label="Desktop keychain keys">
+                    {desktopSecrets.map((entry) => (
+                      <Row
+                        key={entry.name}
+                        title={entry.name}
+                        meta={
+                          <StatusDot
+                            state={entry.is_set ? 'online' : 'off'}
+                            label={entry.is_set ? 'Configured' : 'Not configured'}
+                          />
+                        }
+                      >
+                        <div className="studio-role-controls">
+                          <TextInput
+                            type="password"
+                            autoComplete="off"
+                            name={`keychain-${entry.name}`}
+                            aria-label={`Key value for ${entry.name}`}
+                            placeholder={entry.is_set ? 'Replace key...' : 'Paste key...'}
+                            value={desktopKeyValues[entry.name] ?? ''}
+                            onChange={(e) =>
+                              setDesktopKeyValues((prev) => ({
+                                ...prev,
+                                [entry.name]: e.target.value,
+                              }))
+                            }
+                          />
+                          <PillButton
+                            size="sm"
+                            disabled={engineRestarting || busyId === `save-key-${entry.name}`}
+                            onClick={() => void handleSaveDesktopKey(entry.name)}
+                          >
+                            Save
+                          </PillButton>
+                          {entry.is_set ? (
+                            <PillButton
+                              variant="outline"
+                              size="sm"
+                              disabled={engineRestarting || busyId === `remove-key-${entry.name}`}
+                              onClick={() => setConfirmRemoveKey(entry.name)}
+                            >
+                              Remove
+                            </PillButton>
+                          ) : null}
+                        </div>
+                      </Row>
+                    ))}
+                  </RowList>
+                )}
+              </div>
+            </Card>
+          ) : (
+            <Card outline>
+              <div className="studio-stack-sm">
+                <div className="mg-label">Add or replace a key</div>
+                <p className="studio-hint">
+                  Keys are stored on this device and never displayed again after saving.
+                </p>
+                <div className="studio-grid-2">
+                  <Field label="Key slot" htmlFor="settings-key-slot">
+                    <Select
+                      id="settings-key-slot"
+                      value={newKeyName}
+                      onChange={(e) => setNewKeyName(e.target.value)}
+                    >
+                      {NIM_KEY_OPTIONS.map((k) => (
+                        <option key={k} value={k}>
+                          {k}
+                        </option>
+                      ))}
+                      {PROVIDER_KEY_OPTIONS.map((k) => (
+                        <option key={k} value={k}>
+                          {k}
+                        </option>
+                      ))}
+                      {roleKeyOptions.map((k) => (
+                        <option key={k} value={k}>
+                          {k}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                  <Field label="Key value" htmlFor="settings-key-value">
+                    <TextInput
+                      id="settings-key-value"
+                      type="password"
+                      autoComplete="off"
+                      name="api-key-entry"
+                      placeholder="Paste key..."
+                      value={newKeyValue}
+                      onChange={(e) => setNewKeyValue(e.target.value)}
+                    />
+                  </Field>
+                </div>
+                <div className="studio-section-bar">
+                  <PillButton
+                    size="sm"
+                    disabled={busyId === 'save-key'}
+                    onClick={() => void handleSaveKey()}
+                  >
+                    {busyId === 'save-key' ? 'Saving...' : 'Save key'}
+                  </PillButton>
+                  {keyNotice ? <span className="studio-mono">{keyNotice}</span> : null}
+                </div>
+              </div>
+            </Card>
+          )}
+        </section>
 
-      <section className="studio-section" aria-labelledby="settings-import-heading">
-        <div className="studio-settings-head">
-          <span className="studio-settings-num">05</span>
-          <h2 id="settings-import-heading" className="studio-section-title">
-            Import old folder
-          </h2>
-        </div>
-
-        <Card>
-          <div className="studio-stack-sm">
-            <div className="studio-inline-form">
-              <TextInput
-                aria-label="Old Magnm-Marketing folder path"
-                placeholder="/path/to/Magnm-Marketing"
-                value={legacyPath}
-                onChange={(e) => setLegacyPath(e.target.value)}
-              />
+        <section className="studio-section" aria-labelledby="settings-setup-heading">
+          <div className="studio-section-bar">
+            <div className="studio-settings-head">
+              <span className="studio-settings-num">04</span>
+              <h2 id="settings-setup-heading" className="studio-section-title">
+                Setup check
+              </h2>
+            </div>
+            <div className="studio-btn-group">
               <PillButton
+                variant="outline"
                 size="sm"
-                disabled={busyId === 'import-legacy'}
-                onClick={() => void handleImportLegacy()}
+                disabled={busyId === 'setup-check'}
+                onClick={() => void handleRunSetupCheck()}
               >
-                {busyId === 'import-legacy' ? 'Importing...' : 'Import'}
+                {busyId === 'setup-check' ? 'Checking...' : 'Run check'}
+              </PillButton>
+              <PillButton
+                variant="outline"
+                size="sm"
+                disabled={busyId === 'install-browser' || browserJobActive}
+                onClick={() => void handleInstallBrowser()}
+              >
+                {browserJobActive ? 'Installing browser...' : 'Install browser'}
               </PillButton>
             </div>
-            <span className="studio-hint">
-              Copies outputs, config, agents, and SQLite state without overwriting existing files.
-            </span>
-            {legacyResult?.success ? (
-              <div className="studio-mono-wrap">
-                Imported {legacyResult.files_copied ?? 0} files
-                {legacyResult.db
-                  ? ` · ${legacyResult.db.messages ?? 0} messages · ${legacyResult.db.assets ?? 0} assets · ${legacyResult.db.schedules ?? 0} schedules`
-                  : ''}
-              </div>
-            ) : null}
           </div>
-        </Card>
-      </section>
 
-      <section className="studio-section" aria-labelledby="settings-bakeoff-heading">
-        <div className="studio-settings-head">
-          <span className="studio-settings-num">06</span>
-          <h2 id="settings-bakeoff-heading" className="studio-section-title">
-            Bake-off
-          </h2>
-        </div>
+          {browserJob ? (
+            <Card>
+              <div className="studio-section-bar">
+                <span className="studio-mono">
+                  install_browser: {browserJob.message || browserJob.status}
+                </span>
+                <StatusDot
+                  state={
+                    browserJob.status === 'done'
+                      ? 'online'
+                      : browserJob.status === 'failed'
+                        ? 'error'
+                        : 'working'
+                  }
+                  label={browserJob.status}
+                  live={browserJobActive}
+                />
+              </div>
+            </Card>
+          ) : null}
 
-        {loading && !bakeoff ? (
-          <div className="mg-empty">Loading latest bake-off results.</div>
-        ) : !bakeoff || bakeoffRows.length === 0 ? (
-          <div className="mg-empty">No bake-off results yet.</div>
-        ) : (
-          <div className="studio-stack-sm">
-            <div className="studio-mono">
-              Role: {bakeoff.role || 'writer'}
-              {bakeoff.timestamp ? ` · Run: ${bakeoff.timestamp}` : ''}
+          {loading && !setupCheck ? (
+            <div className="mg-empty">Running environment setup checks.</div>
+          ) : !setupCheck || setupCheck.checks.length === 0 ? (
+            <div className="mg-empty">No setup check results available.</div>
+          ) : (
+            <RowList aria-label="Setup checks">
+              {setupCheck.checks.map((item) => (
+                <Row
+                  key={item.id}
+                  title={item.label}
+                  description={
+                    <div className="studio-stack-xs">
+                      <span>{item.detail}</span>
+                      {item.fix ? <span className="studio-hint">Fix: {item.fix}</span> : null}
+                    </div>
+                  }
+                  meta={<StatusDot state={mapSetupState(item.status)} label={item.status} />}
+                />
+              ))}
+            </RowList>
+          )}
+        </section>
+
+        <section className="studio-section" aria-labelledby="settings-import-heading">
+          <div className="studio-settings-head">
+            <span className="studio-settings-num">05</span>
+            <h2 id="settings-import-heading" className="studio-section-title">
+              Import old folder
+            </h2>
+          </div>
+
+          <Card>
+            <div className="studio-stack-sm">
+              <div className="studio-inline-form">
+                <TextInput
+                  aria-label="Old Magnm-Marketing folder path"
+                  placeholder="/path/to/Magnm-Marketing"
+                  value={legacyPath}
+                  onChange={(e) => setLegacyPath(e.target.value)}
+                />
+                <PillButton
+                  size="sm"
+                  disabled={busyId === 'import-legacy'}
+                  onClick={() => void handleImportLegacy()}
+                >
+                  {busyId === 'import-legacy' ? 'Importing...' : 'Import'}
+                </PillButton>
+              </div>
+              <span className="studio-hint">
+                Copies outputs, config, agents, and SQLite state without overwriting existing files.
+              </span>
+              {legacyResult?.success ? (
+                <div className="studio-mono-wrap">
+                  Imported {legacyResult.files_copied ?? 0} files
+                  {legacyResult.db
+                    ? ` · ${legacyResult.db.messages ?? 0} messages · ${legacyResult.db.assets ?? 0} assets · ${legacyResult.db.schedules ?? 0} schedules`
+                    : ''}
+                </div>
+              ) : null}
             </div>
-            <div className="studio-table-wrap">
-              <table className="studio-table">
-                <thead>
-                  <tr>
-                    <th>Model</th>
-                    <th>Briefs</th>
-                    <th>Median latency</th>
-                    <th>Warnings</th>
-                    <th>Errors</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {bakeoffRows.map((row) => (
-                    <tr key={row.model}>
-                      <td className="studio-mono-wrap">{row.model}</td>
-                      <td className="mg-num">{row.count}</td>
-                      <td className="mg-num">{row.median_latency_ms} ms</td>
-                      <td className="mg-num">{row.auto_review_warns}</td>
-                      <td className="mg-num">{row.errors}</td>
+          </Card>
+        </section>
+
+        <section className="studio-section" aria-labelledby="settings-bakeoff-heading">
+          <div className="studio-settings-head">
+            <span className="studio-settings-num">06</span>
+            <h2 id="settings-bakeoff-heading" className="studio-section-title">
+              Bake-off
+            </h2>
+          </div>
+
+          {loading && !bakeoff ? (
+            <div className="mg-empty">Loading latest bake-off results.</div>
+          ) : !bakeoff || bakeoffRows.length === 0 ? (
+            <div className="mg-empty">No bake-off results yet.</div>
+          ) : (
+            <div className="studio-stack-sm">
+              <div className="studio-mono">
+                Role: {bakeoff.role || 'writer'}
+                {bakeoff.timestamp ? ` · Run: ${bakeoff.timestamp}` : ''}
+              </div>
+              <div className="studio-table-wrap">
+                <table className="studio-table">
+                  <thead>
+                    <tr>
+                      <th>Model</th>
+                      <th>Briefs</th>
+                      <th>Median latency</th>
+                      <th>Warnings</th>
+                      <th>Errors</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-      </section>
-
-      <section className="studio-section" aria-labelledby="settings-appearance-heading">
-        <div className="studio-settings-head">
-          <span className="studio-settings-num">07</span>
-          <h2 id="settings-appearance-heading" className="studio-section-title">
-            Appearance
-          </h2>
-        </div>
-
-        <Card>
-          <div className="studio-section-bar">
-            <div>
-              <div className="studio-card-title">Theme</div>
-              <div className="studio-hint">
-                Light is the default; dark flips the monochrome ink and paper palette.
+                  </thead>
+                  <tbody>
+                    {bakeoffRows.map((row) => (
+                      <tr key={row.model}>
+                        <td className="studio-mono-wrap">{row.model}</td>
+                        <td className="mg-num">{row.count}</td>
+                        <td className="mg-num">{row.median_latency_ms} ms</td>
+                        <td className="mg-num">{row.auto_review_warns}</td>
+                        <td className="mg-num">{row.errors}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
-            <ThemeToggle />
+          )}
+        </section>
+
+        <section className="studio-section" aria-labelledby="settings-appearance-heading">
+          <div className="studio-settings-head">
+            <span className="studio-settings-num">07</span>
+            <h2 id="settings-appearance-heading" className="studio-section-title">
+              Appearance
+            </h2>
           </div>
-        </Card>
-      </section>
 
-      <section className="studio-section" aria-labelledby="settings-about-heading">
-        <div className="studio-settings-head">
-          <span className="studio-settings-num">08</span>
-          <h2 id="settings-about-heading" className="studio-section-title">
-            About
-          </h2>
-        </div>
-
-        <Card>
-          <div className="studio-stack-sm">
-            <div className="studio-facts">
-              <div className="studio-fact">
-                <span className="studio-fact-label">Engine version</span>
-                <span className="studio-fact-value">{health?.version || 'Unknown'}</span>
+          <Card>
+            <div className="studio-section-bar">
+              <div>
+                <div className="studio-card-title">Theme</div>
+                <div className="studio-hint">
+                  Light is the default; dark flips the monochrome ink and paper palette.
+                </div>
               </div>
-              <div className="studio-fact">
-                <span className="studio-fact-label">Data folder</span>
-                <span className="studio-mono-wrap">{health?.data_root || 'Unknown'}</span>
+              <ThemeToggle />
+            </div>
+          </Card>
+        </section>
+
+        <section className="studio-section" aria-labelledby="settings-about-heading">
+          <div className="studio-settings-head">
+            <span className="studio-settings-num">08</span>
+            <h2 id="settings-about-heading" className="studio-section-title">
+              About
+            </h2>
+          </div>
+
+          <Card>
+            <div className="studio-stack-sm">
+              <div className="studio-facts">
+                <div className="studio-fact">
+                  <span className="studio-fact-label">Engine version</span>
+                  <span className="studio-fact-value">{health?.version || 'Unknown'}</span>
+                </div>
+                <div className="studio-fact">
+                  <span className="studio-fact-label">Data folder</span>
+                  <span className="studio-mono-wrap">{health?.data_root || 'Unknown'}</span>
+                </div>
+              </div>
+              <div>
+                <a className="studio-inline-link" href="/legacy">
+                  Old dashboard
+                </a>
               </div>
             </div>
-            <div>
-              <a className="studio-inline-link" href="/legacy">
-                Old dashboard
-              </a>
-            </div>
-          </div>
-        </Card>
-      </section>
+          </Card>
+        </section>
 
-      <PitchBasePricesPanel />
+        <PitchBasePricesPanel />
 
-      <SocialResearchSettingsPanel />
+        <SocialResearchSettingsPanel />
 
-      <PostingSettingsPanel />
+        <PostingSettingsPanel />
 
-      <PhonePanel />
+        <PhonePanel />
+      </div>
 
       <Dialog
         open={Boolean(confirmRemoveKey)}
@@ -1145,7 +1200,7 @@ export function SettingsSection() {
             <PillButton
               variant="danger"
               size="sm"
-              disabled={Boolean(confirmRemoveKey && busyId === `remove-key-${confirmRemoveKey}`)}
+              disabled={engineRestarting || Boolean(confirmRemoveKey && busyId === `remove-key-${confirmRemoveKey}`)}
               onClick={() => void handleConfirmRemoveKey()}
             >
               {confirmRemoveKey && busyId === `remove-key-${confirmRemoveKey}`

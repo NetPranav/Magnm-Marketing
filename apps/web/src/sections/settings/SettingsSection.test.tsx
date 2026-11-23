@@ -369,6 +369,116 @@ describe('SettingsSection', () => {
     });
   });
 
+  describe('desktop engine restart', () => {
+    function desktopSetup(opts: { healthDownFor?: number } = {}) {
+      let secretsState = [
+        { name: 'NVIDIA_NIM_API_KEY', is_set: true },
+        { name: 'OPENAI_API_KEY', is_set: false },
+      ];
+      const gate: { release: (() => void) | null } = { release: null };
+      const invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
+        if (cmd === 'list_secrets') return secretsState;
+        if (cmd === 'set_secret' || cmd === 'delete_secret' || cmd === 'restart_engine') {
+          await new Promise<void>((resolve) => {
+            gate.release = () => {
+              if (cmd === 'set_secret') {
+                secretsState = secretsState.map((i) => (i.name === args?.name ? { ...i, is_set: true } : i));
+              }
+              if (cmd === 'delete_secret') {
+                secretsState = secretsState.map((i) => (i.name === args?.name ? { ...i, is_set: false } : i));
+              }
+              resolve();
+            };
+          });
+        }
+        return null;
+      });
+      window.__TAURI__ = { core: { invoke: invokeMock } };
+      let healthCalls = 0;
+      let down = 0;
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url === '/api/health') {
+          healthCalls += 1;
+          if (down > 0) {
+            down -= 1;
+            throw new TypeError('Failed to fetch');
+          }
+          return jsonResponse({ ok: true, version: '0.1.0', data_root: '/tmp/magnm-desktop' });
+        }
+        if (url === '/api/status') {
+          return jsonResponse({ env_status: { default_provider: 'nvidia_nim' }, nim_catalog_suggestions: [], models_matrix: [] });
+        }
+        if (url === '/api/key_pool') return jsonResponse([]);
+        if (url === '/api/setup_check') return jsonResponse({ ok: true, checks: [] });
+        if (url.startsWith('/api/bakeoff/latest')) return jsonResponse({ error: 'Not found' }, 404);
+        if (url.startsWith('/api/jobs?')) return jsonResponse([]);
+        return jsonResponse({});
+      });
+      return {
+        invokeMock,
+        fetchMock,
+        gate,
+        healthCalls: () => healthCalls,
+        setDown: (n: number) => {
+          down = n;
+        },
+        opts,
+      };
+    }
+
+    it('keeps the page where it is while a saved key restarts the engine, locks the key buttons, then unlocks them', async () => {
+      const env = desktopSetup();
+      const hrefBefore = window.location.href;
+      render(<SettingsSection />);
+      const keychainList = await screen.findByLabelText('Desktop keychain keys');
+      const openaiRow = within(keychainList).getByText('OPENAI_API_KEY').closest('.mg-row') as HTMLElement;
+      const nimRow = within(keychainList).getByText('NVIDIA_NIM_API_KEY').closest('.mg-row') as HTMLElement;
+
+      fireEvent.change(within(openaiRow).getByLabelText('Key value for OPENAI_API_KEY'), { target: { value: 'sk-test-value-1' } });
+      fireEvent.click(within(openaiRow).getByRole('button', { name: 'Save' }));
+
+      expect(screen.getByText(/Restarting engine\.\.\./)).toBeTruthy();
+      await waitFor(() => expect((within(openaiRow).getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true));
+      expect((within(nimRow).getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
+      expect((within(nimRow).getByRole('button', { name: 'Remove' }) as HTMLButtonElement).disabled).toBe(true);
+      expect((screen.getByRole('button', { name: 'Restart engine' }) as HTMLButtonElement).disabled).toBe(true);
+
+      // The engine is still down for a while after the command returns: the page waits for /api/health.
+      env.setDown(2);
+      env.gate.release?.();
+      await waitFor(() => expect(within(openaiRow).getByText('Configured')).toBeTruthy(), { timeout: 5000 });
+      expect(env.healthCalls()).toBeGreaterThanOrEqual(3);
+      expect((within(openaiRow).getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(false);
+      expect(screen.queryByText(/Restarting engine\.\.\./)).toBeNull();
+      expect(window.location.href).toBe(hrefBefore);
+      expect(screen.getByRole('heading', { name: 'Settings' })).toBeTruthy();
+    });
+
+    it('does the same when a key is removed and when Restart engine is pressed', async () => {
+      const env = desktopSetup();
+      render(<SettingsSection />);
+      const keychainList = await screen.findByLabelText('Desktop keychain keys');
+      const nimRow = within(keychainList).getByText('NVIDIA_NIM_API_KEY').closest('.mg-row') as HTMLElement;
+
+      fireEvent.click(within(nimRow).getByRole('button', { name: 'Remove' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Remove key' }));
+      await waitFor(() => expect(env.invokeMock).toHaveBeenCalledWith('delete_secret', { name: 'NVIDIA_NIM_API_KEY' }));
+      expect(screen.getByText(/Restarting engine\.\.\./)).toBeTruthy();
+      env.gate.release?.();
+      await waitFor(() => expect(within(nimRow).getByText('Not configured')).toBeTruthy(), { timeout: 5000 });
+      await waitFor(() => expect((screen.getByRole('button', { name: 'Restart engine' }) as HTMLButtonElement).disabled).toBe(false));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Restart engine' }));
+      await waitFor(() => expect(env.invokeMock).toHaveBeenCalledWith('restart_engine'));
+      expect(screen.getByText(/Restarting engine\.\.\./)).toBeTruthy();
+      expect((within(nimRow).getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
+      env.gate.release?.();
+      await waitFor(() => expect((within(nimRow).getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(false), { timeout: 5000 });
+      expect(screen.queryByText(/Restarting engine\.\.\./)).toBeNull();
+    });
+  });
+
   it('shows desktop keychain note when engine returns use_desktop_keychain outside desktop', async () => {
     expect(isDesktop()).toBe(false);
 

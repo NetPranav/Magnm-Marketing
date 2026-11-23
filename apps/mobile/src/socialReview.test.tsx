@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { App } from './App';
 import contract from './fixtures/phone_contract.json';
+import { ensureSession } from './test-session';
 import { createPreviewNativeBridge, type NativeHttpRequest, type NativeHttpResponse } from './native';
 import { LAPTOP_TOKEN_SECRET_KEY, PAIRING_META_KEY } from './pairing';
 import { writeNonSecretJson } from './storage';
@@ -39,6 +40,7 @@ async function open(custom: (req: NativeHttpRequest) => Promise<NativeHttpRespon
     },
   });
   await bridge.secureStore.set(LAPTOP_TOKEN_SECRET_KEY, 'tok');
+  await ensureSession(bridge);
   render(<App bridge={bridge} initialTab={tab} />);
 }
 

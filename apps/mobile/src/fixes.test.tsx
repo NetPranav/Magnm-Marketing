@@ -45,6 +45,7 @@ import {
 } from './cache';
 import { resolveDraftBody } from './components/DraftsTab';
 import phoneContract from './fixtures/phone_contract.json';
+import { ensureSession } from './test-session';
 import { createCapacitorNativeBridge, createPreviewNativeBridge } from './native';
 import { getPublicSupabaseConfig, HttpStatusError, NIM_BASE_URL } from './net';
 import { getLaptopToken, getPairingConfig, LAPTOP_TOKEN_SECRET_KEY, PAIRING_META_KEY, pollPairRequest } from './pairing';
@@ -167,6 +168,7 @@ describe('T6.2b mobile review fixes', () => {
     ]);
 
     const bridge = createPreviewNativeBridge();
+    await ensureSession(bridge);
     render(<App bridge={bridge} initialTab="drafts" />);
     fireEvent.click(screen.getByText('Mirrored Post'));
     await waitFor(() => expect(screen.getByText('Mirror v2 current')).toBeTruthy());
@@ -273,6 +275,7 @@ describe('T6.2b mobile review fixes', () => {
     await bridge.secureStore.set(NIM_KEY_SECRET_KEY, 'nvapi-secret-key');
     await bridge.secureStore.set(PKCE_SECRET_KEY, '{"state":"s","verifier":"v","createdAt":1}');
 
+    await ensureSession(bridge);
     render(<App bridge={bridge} />);
     await waitFor(() => expect(screen.getByText('Laptop connected')).toBeTruthy());
 
@@ -416,6 +419,7 @@ describe('T6.2b mobile review fixes', () => {
       },
     });
     await raceBridge.secureStore.set(LAPTOP_TOKEN_SECRET_KEY, 'tok-race');
+    await ensureSession(raceBridge);
     render(<App bridge={raceBridge} />);
     await waitFor(() => expect(resolveStatus).toBeTypeOf('function'));
     bumpStateGeneration();
@@ -495,6 +499,7 @@ describe('T6.2b mobile review fixes', () => {
       sendPhoneLiteMessage({ agentId: 'nobody', text: 'Write about Cero', bridge }),
     ).rejects.toThrow(/configured agent/i);
 
+    await ensureSession(bridge);
     render(<App bridge={bridge} initialTab="chat" />);
     await waitFor(() => expect(screen.getByText('Laptop connected')).toBeTruthy());
 
@@ -555,6 +560,7 @@ describe('T6.2b mobile review fixes', () => {
         throw new Error('Offline');
       },
     });
+    await ensureSession(failBridge);
     render(<App bridge={failBridge} initialTab="drafts" />);
     await waitFor(() => expect(screen.getByRole('button', { name: 'New item' })).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'New item' }));
@@ -627,6 +633,7 @@ describe('T6.2b mobile review fixes', () => {
       }),
     });
     await metricBridge.secureStore.set(LAPTOP_TOKEN_SECRET_KEY, 'tok-m');
+    await ensureSession(metricBridge);
     render(<App bridge={metricBridge} initialTab="today" />);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Review & save' })).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Review & save' }));
@@ -774,6 +781,7 @@ describe('T6.2b mobile review fixes', () => {
       }),
     );
 
+    await ensureSession(appBridge);
     render(<App bridge={appBridge} />);
     await waitFor(() => expect(screen.getByText('Laptop connected')).toBeTruthy());
     // Wait briefly to confirm no duplicate startup refresh

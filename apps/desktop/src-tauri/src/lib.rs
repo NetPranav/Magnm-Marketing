@@ -50,17 +50,22 @@ fn navigate_to_error(app: &AppHandle, supervisor: &EngineSupervisor, msg: &str) 
     }
 }
 
-async fn restart_and_navigate(
+/// Restart the engine on its current port and token. The page stays where it is; the window only
+/// navigates when the engine had to move to a new port (or was not running at all).
+async fn restart_in_place(
     app: &AppHandle,
     supervisor: &Arc<EngineSupervisor>,
 ) -> Result<(), String> {
     let sup = Arc::clone(supervisor);
-    let result = tauri::async_runtime::spawn_blocking(move || sup.start())
+    let result = tauri::async_runtime::spawn_blocking(move || sup.restart_in_place())
         .await
         .map_err(|err| format!("Engine restart task failed: {err}"))?;
 
     match result {
-        Ok((port, token)) => navigate_to_engine(app, port, &token),
+        Ok(outcome) if outcome.navigate => {
+            navigate_to_engine(app, outcome.endpoint.port, &outcome.endpoint.token)
+        }
+        Ok(_) => Ok(()),
         Err(err) => {
             navigate_to_error(app, supervisor, &err);
             Err(err)
@@ -76,7 +81,7 @@ async fn list_secrets() -> Result<Vec<SecretStatus>, String> {
         .map_err(|err| format!("Failed to list secrets: {err}"))
 }
 
-/// Store an allow-listed API key in the OS keychain and restart the engine.
+/// Store an allow-listed API key in the OS keychain and restart the engine in place (no navigation).
 #[tauri::command]
 async fn set_secret(
     app: AppHandle,
@@ -88,10 +93,10 @@ async fn set_secret(
         .await
         .map_err(|err| format!("Failed to store secret: {err}"))??;
 
-    restart_and_navigate(&app, supervisor.inner()).await
+    restart_in_place(&app, supervisor.inner()).await
 }
 
-/// Delete an allow-listed API key from the OS keychain and restart the engine.
+/// Delete an allow-listed API key from the OS keychain and restart the engine in place (no navigation).
 #[tauri::command]
 async fn delete_secret(
     app: AppHandle,
@@ -102,16 +107,16 @@ async fn delete_secret(
         .await
         .map_err(|err| format!("Failed to delete secret: {err}"))??;
 
-    restart_and_navigate(&app, supervisor.inner()).await
+    restart_in_place(&app, supervisor.inner()).await
 }
 
-/// Restart the local Python engine and navigate the main window to its URL.
+/// Restart the local Python engine in place; the window navigates only if the engine moved.
 #[tauri::command]
 async fn restart_engine(
     app: AppHandle,
     supervisor: State<'_, Arc<EngineSupervisor>>,
 ) -> Result<(), String> {
-    restart_and_navigate(&app, supervisor.inner()).await
+    restart_in_place(&app, supervisor.inner()).await
 }
 
 /// Return up to the last 30 lines of captured engine stderr output.

@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { App } from './App';
 import { PKCE_SECRET_KEY, SESSION_SECRET_KEY } from './auth';
 import phoneContract from './fixtures/phone_contract.json';
+import { ensureSession } from './test-session';
 import { createPreviewNativeBridge, type NativeHttpRequest, type NativeHttpResponse } from './native';
 import { LAPTOP_TOKEN_SECRET_KEY, PAIRING_META_KEY } from './pairing';
 import { loadQueue } from './queue';
@@ -156,6 +157,7 @@ describe('T8.2 Mobile Social Research, Live View, Storage & Wipe', () => {
     });
     await bridge.secureStore.set(LAPTOP_TOKEN_SECRET_KEY, 'tok-valid');
 
+    await ensureSession(bridge);
     render(<App bridge={bridge} />);
     await waitFor(() => expect(screen.getByText('Laptop unreachable')).toBeTruthy());
 
@@ -265,6 +267,7 @@ describe('T8.2 Mobile Social Research, Live View, Storage & Wipe', () => {
       }),
     );
 
+    await ensureSession(bridge);
     const { container } = render(<App bridge={bridge} />);
     await waitFor(() => expect(screen.getByText(xssResultText)).toBeTruthy());
 
@@ -370,9 +373,10 @@ describe('T8.2 Mobile Social Research, Live View, Storage & Wipe', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Sign out' }));
     const confirmSignOut = await screen.findByRole('dialog');
     fireEvent.click(confirmSignOut.querySelector('button.mg-btn--danger') as HTMLButtonElement);
-    await waitFor(() => expect(screen.getByText('Unpaired')).toBeTruthy());
-    fireEvent.click(screen.getByRole('tab', { name: /Today/i }));
+    // Signing in is required, so signing out shows the welcome screen and none of the social results.
+    expect(await screen.findByRole('heading', { name: /welcome to magnm studio/i })).toBeTruthy();
     expect(screen.queryByText(xssResultText)).toBeNull();
+    expect(dumpStorage()).not.toContain('UNTRUSTED_RESULT_PAYLOAD');
   });
 
   it('wipes social runs and closes live view on account change via deep link', async () => {
@@ -446,6 +450,7 @@ describe('T8.2 Mobile Social Research, Live View, Storage & Wipe', () => {
       }),
     );
 
+    await ensureSession(bridge);
     render(<App bridge={bridge} />);
     await waitFor(() => expect(screen.getByText('ACCOUNT1_SOCIAL_RESULT')).toBeTruthy());
 
@@ -485,6 +490,7 @@ describe('T8.2 Mobile Social Research, Live View, Storage & Wipe', () => {
     });
     await bridge.secureStore.set(LAPTOP_TOKEN_SECRET_KEY, 'tok-valid');
 
+    await ensureSession(bridge);
     render(<App bridge={bridge} />);
     await waitFor(() => expect(typeof resolveLateRuns).toBe('function'));
 

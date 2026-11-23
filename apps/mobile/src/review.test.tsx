@@ -5,6 +5,7 @@ import { App } from './App';
 import { SESSION_SECRET_KEY } from './auth';
 import { saveCachedProductRules } from './cache';
 import contract from './fixtures/phone_contract.json';
+import { ensureSession } from './test-session';
 import { createPreviewNativeBridge, type NativeHttpRequest, type NativeHttpResponse } from './native';
 import { LAPTOP_TOKEN_SECRET_KEY, PAIRING_META_KEY } from './pairing';
 import { writeNonSecretJson } from './storage';
@@ -61,6 +62,7 @@ describe('review regressions', () => {
       if (req.url.endsWith('/drafts/cnt_pub')) return ok(detail);
       return laptop(req);
     });
+    await ensureSession(bridge);
     render(<App bridge={bridge} initialTab="drafts" />);
     fireEvent.click(await screen.findByText(title));
     expect(await screen.findByText(body)).toBeTruthy();
@@ -93,6 +95,7 @@ describe('review regressions', () => {
   it('a full phone store does not mark a reachable laptop offline', async () => {
     const bridge = await pairedBridge(async (req) => laptop(req));
     const setItem = failStorageWrites();
+    await ensureSession(bridge);
     render(<App bridge={bridge} />);
     await waitFor(() => expect(setItem).toHaveBeenCalled());
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -115,6 +118,7 @@ describe('review regressions', () => {
       }
       return laptop(req);
     });
+    await ensureSession(bridge);
     render(<App bridge={bridge} />);
     fireEvent.click(await screen.findByText('Pitch: late'));
     await waitFor(() => expect(calls).toBe(2));
@@ -136,6 +140,7 @@ describe('review regressions', () => {
       }
       return laptop(req);
     });
+    await ensureSession(bridge);
     render(<App bridge={bridge} initialTab="chat" />);
     await screen.findByText('Laptop connected');
     fireEvent.change(screen.getByLabelText('Message or voice brief'), { target: { value: 'Draft a post' } });

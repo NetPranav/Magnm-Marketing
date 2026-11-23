@@ -328,6 +328,25 @@ body {
   gap: var(--s-2);
 }
 
+/* Welcome screen shown until someone signs in */
+.mob-welcome {
+  display: grid;
+  gap: var(--s-4);
+  align-content: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--s-6) var(--gutter, 16px);
+}
+
+.mob-welcome-title {
+  margin: 0;
+  font-family: var(--f-display);
+  font-weight: 400;
+  font-size: clamp(32px, 9vw, 44px);
+  line-height: 1.05;
+  letter-spacing: -.01em;
+}
+
 /* Pitch and Admin on the phone: everything wraps at phone width, nothing is clipped or pushes the page sideways. */
 .mob-tabs-wrap .mg-tabs {
   flex-wrap: wrap;
