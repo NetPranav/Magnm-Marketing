@@ -57,6 +57,16 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 
 When signed in, Drafts (Add comment, Mark as posted) and Today (Done on a reminder) work with the laptop away: the action is saved on the phone as `Waiting for laptop` (`src/actions.ts`, bound to the account, validated again before sending), sent by itself to the `phone_actions` table (`src/cloudActions.ts`, idempotent by its uuid) and applied by the laptop on its next sync; the phone then shows `Applied` or `Not applied` with the reason, and More lists them all. Text naming a confidential product is refused before it is queued, and confidential items have no actions. No new network destination or Supabase path is used: the table sits under the existing `/rest/v1/` allowlist, so neither allowlist changed. Drafts, comments and open reminders also come from the cloud mirror (`src/mirrorView.ts`), refreshed on open, on foreground and when the connection returns.
 
+## Library, Plan and Create without the laptop (Work tab)
+
+The Work tab has three sections. Everything that needs the laptop is queued through the same `phone_actions` queue (four new kinds: `library_upload`, `schedule_update`, `draft_create`, `workflow_request`); older engines leave kinds they do not know queued.
+
+- **Library** (`src/libraryPhone.ts`, `src/components/LibraryTab.tsx`): upload an image, video or PDF (up to 50 MB; the type is decided by the first bytes, never the name). The file goes in small pieces to the owner's own folder of the private `phone-uploads` bucket (14 days, the shared 1 GB budget) through three native calls (`stageUploadChunk`, `finishCloudUpload`, `abortUpload`; `UploadStage.java` re-checks size and magic bytes before sending, and `NativeUrlPolicy.validateCloudUploadUrl` allows exactly one object path with no query). The laptop then adds it to its Library and removes the cloud copy. Laptop assets come from the cloud mirror (names and sizes, never paths) and are greyed out with "On the laptop" when the laptop is unreachable; when it is reachable they can be fetched by asset id (`/phone/v1/files?asset_id=`, same path as draft files, so no allowlist change).
+- **Plan** (`src/planPhone.ts`, `src/components/PlanTab.tsx`): the weekly plan's slots, briefs, the editorial calendar and the schedules come from the cloud mirror. A schedule change or "Plan my week" is queued and shown as waiting until the laptop applies it.
+- **Create** (`src/createPhone.ts`, `src/components/CreateTab.tsx`): post, thread and rewrite run on the phone with Phone Lite and are saved as a draft queued for the laptop. Blog, video script, post with image, repurpose, weekly plan and research are queued as workflow requests; the laptop creates the run when it is back and it stops at the normal approval gates. The repository picker only reads the team's non-confidential repositories.
+
+Text naming a confidential product is refused before anything is uploaded or queued, and again by the cloud checks and the laptop.
+
 ## Debug builds
 
 The debug APK is debuggable and signed with a throwaway key: anyone with USB debugging access to the phone can read its app data. Use it for testing only, and use a signed release build for daily use. Never disable Android Play Protect or device security checks as the normal path for team builds.

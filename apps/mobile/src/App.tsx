@@ -52,6 +52,7 @@ import {
 } from './cache';
 import { decideRoute, getConfiguredAgent } from './agentTools';
 import { syncPhoneActions } from './cloudActions';
+import { WORK_ACTION_KINDS } from './workRules';
 import { PhoneCopyError, fetchPhoneCopies, getCopyOnPhone, isCopyUsable, type PhoneCopy } from './phoneCopies';
 import { rulesForQueue } from './queueRules';
 import { ChatTab, DEFAULT_LITE_AGENTS } from './components/ChatTab';
@@ -59,6 +60,7 @@ import { DraftsTab } from './components/DraftsTab';
 import { MoreTab } from './components/MoreTab';
 import { AdminTab } from './components/AdminTab';
 import { PitchTab } from './components/PitchTab';
+import { WorkTab } from './components/WorkTab';
 import { mergePitchLists, proposalsFromMirror } from './pitchPhone';
 import { fetchQuoteRequests } from './pitchRequests';
 import { ShareInModal } from './components/ShareInModal';
@@ -113,6 +115,7 @@ const MOBILE_TABS: TabItem[] = [
   { id: 'today', label: 'Today' },
   { id: 'drafts', label: 'Drafts' },
   { id: 'pitch', label: 'Pitch' },
+  { id: 'work', label: 'Work' },
   { id: 'chat', label: 'Chat' },
   { id: 'more', label: 'More' },
 ];
@@ -447,7 +450,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
         }
         // A pitch edit the laptop just applied: the new proposal reaches the cloud mirror in the same laptop cycle.
         for (const a of nextActions) {
-          if (a.kind.startsWith('pitch_') && a.state !== 'waiting' && known.get(a.id) === 'waiting') {
+          if ((a.kind.startsWith('pitch_') || WORK_ACTION_KINDS.includes(a.kind)) && a.state !== 'waiting' && known.get(a.id) === 'waiting') {
             lastMirrorAtRef.current = 0;
           }
         }
@@ -2200,6 +2203,26 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
               setPitchError(null);
             }}
             onSharePdf={handleSharePitchPdf}
+          />
+        ) : null}
+
+        {!isPresentingPitch && tab === 'work' ? (
+          <WorkTab
+            ownerUid={session?.user_id ?? null}
+            signedIn={Boolean(session)}
+            laptopReachable={laptopReachable}
+            pairing={pairing}
+            cache={cacheSnapshot}
+            phoneActions={phoneActions}
+            bridge={bridge}
+            savedCopyLabel={savedCopyLabel}
+            onQueueAction={(input, okMessage) => queueCloudAction(input, okMessage, (m) => m && showToast(m))}
+            onActionsChanged={() => {
+              const uid = sessionRef.current?.user_id;
+              if (!uid) return;
+              setPhoneActions(loadActions(uid));
+              void syncCloud({ mirror: false });
+            }}
           />
         ) : null}
 

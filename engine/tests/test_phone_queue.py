@@ -492,7 +492,7 @@ class HostileCloudTests(_Base):
         self.run_sync()
         get = next(r for r in self.cloud.requests if r["method"] == "GET" and "phone_actions" in r["url"])
         kinds = urllib.parse.parse_qs(urllib.parse.urlsplit(get["url"]).query)["kind"][0]
-        self.assertEqual(kinds, "in.(draft_comment,draft_posted,reminder_done,agent_task,pitch_create,pitch_update,pitch_finalize,pitch_link)")
+        self.assertEqual(kinds, "in.(draft_comment,draft_posted,reminder_done,agent_task,pitch_create,pitch_update,pitch_finalize,pitch_link,library_upload,schedule_update,draft_create,workflow_request)")
 
     def test_malformed_rows_are_ignored_not_trusted(self):
         good = self.queue(kind="reminder_done", target="rem_pub")

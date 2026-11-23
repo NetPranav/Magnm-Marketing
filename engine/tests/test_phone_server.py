@@ -807,6 +807,35 @@ class PhoneServerTests(unittest.TestCase):
             st, _, _ = self._phone_req("GET", path, headers=auth)
             self.assertEqual(st, 503, path)
 
+    def test_library_route_lists_assets_without_paths_and_serves_only_registered_files(self):
+        import assets_manager
+        self._start_phone_server()
+        _, token, _ = self._pair_device()
+        auth = {"Authorization": f"Bearer {token}"}
+        asset = assets_manager.register_asset("logo.png", _PNG_BYTES, category="brand", description="Our mark")
+        secret = assets_manager.register_asset("ProjectNightfall.png", _PNG_BYTES + b"x", category="brand")
+        st, _, data = self._phone_req("GET", "/phone/v1/library")
+        self.assertEqual(st, 401)
+        st, _, data = self._phone_req("GET", "/phone/v1/library", headers=auth)
+        self.assertEqual(st, 200)
+        listing = json.loads(data.decode("utf-8"))["assets"]
+        by_id = {a["id"]: a for a in listing}
+        self.assertEqual(by_id[asset["id"]]["name"], "logo.png")
+        self.assertTrue(by_id[asset["id"]]["fetchable"])
+        self.assertEqual(by_id[secret["id"]], {"id": secret["id"], "confidential": True})
+        self.assertNotIn("relative_path", data.decode("utf-8"))
+        self.assertNotIn(self.root, data.decode("utf-8"))
+        self.assertNotIn("Nightfall", data.decode("utf-8"))
+        st, headers, body = self._phone_req("GET", f"/phone/v1/files?asset_id={asset['id']}", headers=auth)
+        self.assertEqual((st, body), (200, _PNG_BYTES))
+        self.assertEqual(headers.get("x-content-type-options"), "nosniff")
+        for bad, want in ((secret["id"], 403), ("asset_nope", 404), ("..%2F..%2Fstate%2Fmagnm.db", 400), ("%2Fetc%2Fpasswd", 400)):
+            st, _, _ = self._phone_req("GET", f"/phone/v1/files?asset_id={bad}", headers=auth)
+            self.assertEqual(st, want, bad)
+        # An asset id never widens what content_id and path may reach.
+        st, _, _ = self._phone_req("GET", f"/phone/v1/files?asset_id={asset['id']}&content_id=x&path=state/magnm.db", headers=auth)
+        self.assertEqual(st, 400)
+
     def test_10_file_serving_traversal_private_and_200mb_limit_refused(self):
         self._start_phone_server()
         _, token, _ = self._pair_device()

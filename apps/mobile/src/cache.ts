@@ -18,7 +18,7 @@ import type {
 } from './types';
 
 export const CACHE_STORAGE_KEY = 'magnm.mobile.contextCache.v1';
-export const MAX_MIRROR_RECORDS = 200;
+export const MAX_MIRROR_RECORDS = 400;
 export const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 
 export interface LaptopCachedSnapshot {

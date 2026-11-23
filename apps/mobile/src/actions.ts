@@ -11,6 +11,7 @@ import {
   PitchRuleError,
 } from './pitchRules';
 import { findConfidentialMention } from './productRules';
+import { WORK_ACTION_KINDS, WorkRuleError, validateWorkInput } from './workRules';
 import {
   readNonSecretJson,
   removeNonSecretKey,
@@ -33,6 +34,7 @@ export const ACTION_KINDS: readonly PhoneActionKind[] = [
   'reminder_done',
   'agent_task',
   ...PITCH_ACTION_KINDS,
+  ...WORK_ACTION_KINDS,
 ];
 export const MAX_COMMENT_CHARS = 4000;
 export const MAX_AGENT_MESSAGE_CHARS = 4000;
@@ -100,6 +102,14 @@ export function validateActionInput(input: ActionInput | CleanActionInput): Clea
 
   if (PITCH_ACTION_KINDS.includes(kind)) {
     return validatePitchInput(kind, target, payload, keys);
+  }
+  if (WORK_ACTION_KINDS.includes(kind)) {
+    try {
+      return validateWorkInput(kind, target, payload);
+    } catch (err) {
+      if (err instanceof WorkRuleError) throw new PhoneActionError(err.message);
+      throw err;
+    }
   }
 
   if (kind === 'draft_comment') {
@@ -342,7 +352,8 @@ export function enqueueAction(
     throw new PhoneActionError('Confidential items can only be changed on the laptop.');
   }
   const clean = validateActionInput(input);
-  const pitchTexts = PITCH_ACTION_KINDS.includes(clean.kind) ? collectStrings(clean.payload) : [];
+  const structured = PITCH_ACTION_KINDS.includes(clean.kind) || WORK_ACTION_KINDS.includes(clean.kind);
+  const pitchTexts = structured ? collectStrings(clean.payload) : [];
   mentionsConfidential([clean.payload.body, clean.payload.url, clean.payload.message, ...pitchTexts], rules);
 
   // Another account's items are not adopted: they go when a different account queues.
@@ -392,5 +403,9 @@ export function kindLabel(kind: PhoneActionKind): string {
   if (kind === 'draft_comment') return 'Comment';
   if (kind === 'draft_posted') return 'Mark as posted';
   if (kind === 'agent_task') return 'Agent request';
+  if (kind === 'library_upload') return 'Library upload';
+  if (kind === 'schedule_update') return 'Schedule change';
+  if (kind === 'draft_create') return 'Draft from the phone';
+  if (kind === 'workflow_request') return 'Work for the laptop';
   return 'Reminder done';
 }
