@@ -276,4 +276,41 @@ public class NativeUrlPolicyTest {
         assertThrows(NativeUrlPolicy.PolicyException.class, () -> policy.validateUrl(SUPA_ORIGIN + "/storage/v1/object/previews/" + UID + "/x.webp"));
         assertThrows(NativeUrlPolicy.PolicyException.class, () -> policy.validateUrl(SUPA_ORIGIN + "/functions/v1/other"));
     }
+
+    private static final String UPLOAD = SUPA_ORIGIN + "/storage/v1/object/phone-uploads/" + UID + "/" + HASH;
+
+    @Test
+    public void validatesPhoneUploadUrlsStrictlyAndKeepsThemOutOfTheGeneralAllowlist() {
+        for (String ext : new String[] {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".pdf"}) {
+            assertEquals(UPLOAD + ext, policy.validateCloudUploadUrl(UPLOAD + ext));
+        }
+        String[] bad = {
+                UPLOAD + ".html",
+                UPLOAD + ".svg",
+                UPLOAD + ".exe",
+                UPLOAD + ".png?token=abcdefgh",
+                UPLOAD + ".png?x=1",
+                UPLOAD + ".png#frag",
+                SUPA_ORIGIN + "/storage/v1/object/phone-uploads/" + UID + "/x/" + HASH + ".png",
+                SUPA_ORIGIN + "/storage/v1/object/phone-uploads/" + UID + "/short.png",
+                SUPA_ORIGIN + "/storage/v1/object/phone-uploads/" + UID + "/" + "A".repeat(64) + ".png",
+                SUPA_ORIGIN + "/storage/v1/object/phone-uploads/not-a-uuid/" + HASH + ".png",
+                SUPA_ORIGIN + "/storage/v1/object/phone-uploads/" + UID + "/../" + UID + "/" + HASH + ".png",
+                SUPA_ORIGIN + "/storage/v1/object/phone-uploads/" + UID + "/..%2F" + HASH + ".png",
+                SUPA_ORIGIN + "/storage/v1/object/phone-files/" + UID + "/" + HASH + ".png",
+                SUPA_ORIGIN + "/storage/v1/object/sign/phone-uploads/" + UID + "/" + HASH + ".png",
+                SUPA_ORIGIN + "/storage/v1/object/authenticated/phone-uploads/" + UID + "/" + HASH + ".png",
+                SUPA_ORIGIN + "/storage/v1/object/list/phone-uploads",
+                SUPA_ORIGIN + "/storage/v1/object/phone-uploads/",
+                "http://example-proj.supabase.co/storage/v1/object/phone-uploads/" + UID + "/" + HASH + ".png",
+                "https://evil.example.com/storage/v1/object/phone-uploads/" + UID + "/" + HASH + ".png",
+                "http://100.64.0.1:8788/phone/v1/status",
+                "https://integrate.api.nvidia.com/v1/chat/completions",
+        };
+        for (String url : bad) {
+            assertThrows("Expected upload URL rejection for " + url, NativeUrlPolicy.PolicyException.class, () -> policy.validateCloudUploadUrl(url));
+        }
+        // The general request path never reaches the bucket, so a normal http call cannot write or read objects there.
+        assertThrows(NativeUrlPolicy.PolicyException.class, () -> policy.validateUrl(UPLOAD + ".png"));
+    }
 }

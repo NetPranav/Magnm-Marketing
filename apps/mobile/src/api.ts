@@ -1,3 +1,4 @@
+import { WORK_MIRROR_QUERIES } from './workMirror';
 import modelsConfig from '@magnm/config/models.json';
 import { getConfiguredAgent, type ConfiguredAgent } from './agentTools';
 import { getPersonalNimKey, getStoredSession, getValidAccessToken } from './auth';
@@ -633,6 +634,7 @@ const MIRROR_QUERIES: ReadonlyArray<{ kind: string; filter: string; limit: numbe
   { kind: 'task', filter: 'kind=eq.task&data-%3E%3Ekind=eq.reminder&data-%3E%3Edone_at=is.null', limit: 30 },
   // Proposals (to list, present and edit them) are mirrored by the laptop; the four limits add up to the cache cap.
   { kind: 'pitch_proposal', filter: 'kind=eq.pitch_proposal', limit: 30 },
+  ...WORK_MIRROR_QUERIES,
 ];
 
 /** Fetch ONLY the signed-in user's own mirror_records (always filtered owner_id=eq.<uid>). */

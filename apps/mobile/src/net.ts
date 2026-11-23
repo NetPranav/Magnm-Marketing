@@ -269,6 +269,38 @@ const PHONE_COPY_PATH_RE =
   /^\/storage\/v1\/object\/sign\/phone-files\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[0-9a-f]{64}\.(?:png|jpg|jpeg|webp|mp4|webm|pdf)$/;
 const PHONE_COPY_QUERY_RE = /^\?token=[A-Za-z0-9._-]{8,4000}$/;
 
+/**
+ * The one storage path the phone may WRITE: its own object in the private phone-uploads bucket, always
+ * <owner id>/<64 hex>.<extension>, no query. It is not part of the general Supabase allowlist: only the dedicated
+ * upload call below (and the native upload method, which checks the same shape again) can reach it.
+ */
+const PHONE_UPLOAD_PATH_RE =
+  /^\/storage\/v1\/object\/phone-uploads\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/[0-9a-f]{64}\.(?:png|jpg|jpeg|webp|mp4|webm|pdf)$/;
+
+/** Validate the upload URL of one of this account's own objects: the configured origin, exactly that path, no query. */
+export function validatePhoneUploadUrl(rawUrl: string, ownerUid: string): string {
+  const uid = String(ownerUid ?? '').trim().toLowerCase();
+  if (!uid) {
+    throw new NetworkPolicyError('A signed-in account is required to upload.', 'missing_credential');
+  }
+  const origin = getConfiguredSupabaseOrigin();
+  const parts = splitRawUrl(rawUrl);
+  if (parts.scheme !== 'https' || `https://${parts.host.toLowerCase()}` !== origin) {
+    throw new NetworkPolicyError('Uploads go only to the configured cloud.', 'forbidden_destination');
+  }
+  if (parts.portStr !== null && parts.portStr !== '443') {
+    throw new NetworkPolicyError('Supabase custom ports are refused.', 'forbidden_destination');
+  }
+  const match = PHONE_UPLOAD_PATH_RE.exec(parts.path);
+  if (!match || parts.query !== '') {
+    throw new NetworkPolicyError('That is not an upload path of a phone file.', 'forbidden_destination');
+  }
+  if (match[1] !== uid) {
+    throw new NetworkPolicyError('That upload belongs to another account.', 'forbidden_destination');
+  }
+  return `${origin}${parts.path}`;
+}
+
 function phoneCopyUrlParts(rawUrl: string, ownerUid: string): { origin: string; path: string; query: string } {
   const uid = String(ownerUid ?? '').trim().toLowerCase();
   if (!uid) {
@@ -464,6 +496,33 @@ export async function netJson<T>(
     return null as T;
   }
   return JSON.parse(resp.body) as T;
+}
+
+/** Send the bytes staged on the phone (see the native stage calls) to the owner's own upload path. No redirects. */
+export async function netUploadStagedFile(
+  req: { url: string; uploadId: string; contentType: string; bytes: number },
+  creds: NetworkCredentials,
+  ownerUid: string,
+  bridge: NativeBridge = getNativeBridge(),
+): Promise<NativeHttpResponse> {
+  const url = validatePhoneUploadUrl(req.url, ownerUid);
+  const anonKey = (creds.supabaseAnonKey ?? supabaseConfig.publishable_key ?? '').trim();
+  const accessToken = (creds.supabaseAccessToken ?? '').trim();
+  if (!anonKey || !accessToken) {
+    throw new NetworkPolicyError('Sign in to upload.', 'missing_credential');
+  }
+  if (typeof bridge.finishCloudUpload !== 'function') {
+    throw new Error('Uploading files is unavailable on this platform.');
+  }
+  const resp = await bridge.finishCloudUpload({
+    uploadId: req.uploadId,
+    url,
+    headers: { apikey: anonKey, Authorization: `Bearer ${accessToken}` },
+    contentType: req.contentType,
+    bytes: req.bytes,
+  });
+  checkNoRedirect({ status: resp.status, headers: {}, body: resp.body });
+  return { status: resp.status, headers: {}, body: resp.body };
 }
 
 /** Download and share a laptop media/PDF file via native shareLaptopFile with strict URL and credential isolation. */

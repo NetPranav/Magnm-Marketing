@@ -514,21 +514,28 @@ def build_mirror_records(now_iso=None):
             }
         records.append(_make_record("metric", met["id"], cid or None, title, data, ts_val))
 
+    plan_run_ids = _recent_plan_run_ids()
     for wf in db.list_all_workflow_runs():
+        brief_data = {
+            "kind": wf.get("kind"),
+            "status": wf.get("status"),
+            "current_step": wf.get("current_step"),
+            "inputs": wf.get("inputs") or {},
+            "created_at": wf.get("created_at"),
+            "updated_at": wf.get("updated_at"),
+        }
+        if wf["id"] in plan_run_ids:
+            # The slots the weekly plan proposed, so the phone can show the plan without the laptop.
+            slots = _plan_slots(wf["id"])
+            if slots:
+                brief_data["proposed_slots"] = slots
         records.append(
             _make_record(
                 "brief",
                 wf["id"],
                 None,
                 _brief_title(wf.get("kind"), wf.get("inputs")),
-                {
-                    "kind": wf.get("kind"),
-                    "status": wf.get("status"),
-                    "current_step": wf.get("current_step"),
-                    "inputs": wf.get("inputs") or {},
-                    "created_at": wf.get("created_at"),
-                    "updated_at": wf.get("updated_at"),
-                },
+                brief_data,
                 wf.get("updated_at") or wf.get("created_at") or fallback_ts,
             )
         )
@@ -636,7 +643,42 @@ def build_mirror_records(now_iso=None):
         _SKIP_DELETE_KINDS = frozenset({"pitch_proposal"})
         _log_warning(f"pitch proposals not mirrored: {exc}")
 
+    # The Library, the schedules and the editorial calendar for the phone: each is skipped on its own if it cannot be
+    # built, and what is already in the cloud is then neither changed nor removed.
+    skip = set(_SKIP_DELETE_KINDS)
+    try:
+        import phone_server
+        guard = phone_server._build_confidential_guard()
+    except Exception:
+        guard = None
+    for kinds, build in (
+        (("asset",), lambda: __import__("phone_library").mirror_records(_make_record, fallback_ts, guard)),
+        (("schedule", "editorial_plan"), lambda: __import__("phone_plan").mirror_records(_make_record, fallback_ts, guard)),
+    ):
+        try:
+            records.extend(build())
+        except Exception as exc:
+            skip.update(kinds)
+            _log_warning(f"{'/'.join(kinds)} not mirrored: {exc}")
+    _SKIP_DELETE_KINDS = frozenset(skip)
+
     return [_stub_if_mentions_confidential(rec, checker) for rec in records]
+
+
+def _recent_plan_run_ids():
+    try:
+        import phone_plan
+        return set(phone_plan.recent_plan_run_ids())
+    except Exception:
+        return set()
+
+
+def _plan_slots(run_id):
+    try:
+        import phone_plan
+        return phone_plan.plan_slots(run_id)
+    except Exception:
+        return []
 
 
 def confidential_scope(sessions=None, content_items=None, checker=None):
@@ -1188,6 +1230,7 @@ def sync_once():
                 _log_warning(f"media previews sync error: {exc}")
 
             _sync_phone_files(user_id, expected_gen)
+            _sync_phone_uploads(user_id, expected_gen)
 
             import pitch_links
             pitch_links.sync_live_links(
@@ -1279,6 +1322,19 @@ def _sync_phone_files(user_id, expected_gen):
         _log_warning(f"phone copies: {exc.message}")
     except Exception as exc:
         _log_warning(f"phone copies error: {exc}")
+
+
+def _sync_phone_uploads(user_id, expected_gen):
+    """Remove the user's uploads from the phone that waited past their 14 days. Only sign-out stops the cycle."""
+    import phone_library
+    try:
+        phone_library.sync_expired(user_id, is_signed_out=lambda: _is_signed_out_or_stale(expected_gen))
+    except phone_library.SignedOutAbort as exc:
+        raise _SignedOutAbort() from exc
+    except phone_library.PhoneLibraryError as exc:
+        _log_warning(f"phone uploads: {exc.message}")
+    except Exception as exc:
+        _log_warning(f"phone uploads error: {exc}")
 
 
 def _apply_phone_actions(user_id, expected_gen):

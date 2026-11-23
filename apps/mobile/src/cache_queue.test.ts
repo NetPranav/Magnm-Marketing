@@ -89,9 +89,9 @@ describe('context cache and offline queue', () => {
     expect(conf?.data.messages).toBeUndefined();
   });
 
-  it('caps mirror_records at 200 and drops entries older than 14 days', () => {
+  it('caps mirror_records at the limit and drops entries older than 14 days', () => {
     const now = 1_800_000_000_000;
-    const records = Array.from({ length: 240 }, (_, i) => ({
+    const records = Array.from({ length: MAX_MIRROR_RECORDS + 40 }, (_, i) => ({
       id: `id-${i}`,
       owner_id: 'uid-1',
       kind: 'content_item',

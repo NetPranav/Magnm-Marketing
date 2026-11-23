@@ -812,6 +812,8 @@ class PhoneHandler(BaseHTTPRequestHandler):
                 self._handle_get_draft_detail(parts[1])
             elif parts == ["files"]:
                 self._handle_get_file(qs)
+            elif parts == ["library"]:
+                self._handle_get_library()
             elif parts == ["agents"]:
                 self._handle_get_agents()
             elif parts == ["summary"]:
@@ -1043,7 +1045,36 @@ class PhoneHandler(BaseHTTPRequestHandler):
             return
         self._send_json(payload)
 
+    def _handle_get_library(self):
+        import phone_library
+        self._send_json({"assets": phone_library.list_assets(_build_confidential_guard())})
+
+    def _send_library_file(self, qs):
+        """Serve one Library file by its registered asset id (never by a path)."""
+        import phone_library
+        if qs.get("content_id") or qs.get("path"):
+            raise PhoneApiError("Ask for an asset or a draft file, not both", status=400)
+        asset_id = str((qs.get("asset_id") or [""])[0] or "").strip()
+        full_path, size, mime = phone_library.resolve_asset_file(asset_id, _build_confidential_guard())
+        headers = file_serving.safe_headers(full_path, mime)
+        headers["Cache-Control"] = "no-store"
+        headers["X-Content-Type-Options"] = "nosniff"
+        self.send_response(200)
+        for name, value in headers.items():
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(size))
+        self.end_headers()
+        with open(full_path, "rb") as f:
+            while True:
+                chunk = f.read(STREAM_CHUNK_BYTES)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+
     def _handle_get_file(self, qs):
+        if qs.get("asset_id"):
+            self._send_library_file(qs)
+            return
         conf_sids, conf_cids, conf_pids, checker, repo_patterns = _build_confidential_guard()
         content_id = str((qs.get("content_id") or [""])[0] or "").strip()
         req_path = str((qs.get("path") or [""])[0] or "").strip()

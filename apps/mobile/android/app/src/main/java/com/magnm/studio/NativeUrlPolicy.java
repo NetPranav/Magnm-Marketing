@@ -29,6 +29,11 @@ public final class NativeUrlPolicy {
     private static final Pattern PHONE_COPY_PATH = Pattern.compile(
             "^/storage/v1/object/sign/phone-files/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
                     + "/[0-9a-f]{64}\\.(?:png|jpg|jpeg|webp|mp4|webm|pdf)$");
+    // The one storage path the app may WRITE: its own object in the private phone-uploads bucket. It is reachable only
+    // through validateCloudUploadUrl (never through the general validateUrl), and never with a query.
+    private static final Pattern PHONE_UPLOAD_PATH = Pattern.compile(
+            "^/storage/v1/object/phone-uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                    + "/[0-9a-f]{64}\\.(?:png|jpg|jpeg|webp|mp4|webm|pdf)$");
     private static final Pattern PHONE_COPY_QUERY = Pattern.compile("^\\?token=[A-Za-z0-9._-]{8,4000}$");
 
     private static final Set<String> ALLOWED_METHODS;
@@ -167,6 +172,27 @@ public final class NativeUrlPolicy {
      * Validate a URL against the native allowlist without ever embedding the URL in errors.
      */
     public String validateUrl(String rawUrl) {
+        return validateUrlInternal(rawUrl, false);
+    }
+
+    /**
+     * Validate the upload URL of one phone file: https, the configured Supabase host, exactly the phone-uploads object
+     * path (owner folder, 64 hex name, allowed extension) and no query. The folder is checked against the account in JS
+     * and by the cloud's row level security; here only the shape is fixed.
+     */
+    public String validateCloudUploadUrl(String rawUrl) {
+        String normalized = validateUrlInternal(rawUrl, true);
+        if (!normalized.startsWith("https://") || normalized.indexOf('?') >= 0) {
+            throw new PolicyException("An upload URL takes no query.");
+        }
+        int slashIdx = normalized.indexOf('/', "https://".length());
+        if (slashIdx < 0 || !PHONE_UPLOAD_PATH.matcher(normalized.substring(slashIdx)).matches()) {
+            throw new PolicyException("Upload URL must be a phone upload path.");
+        }
+        return normalized;
+    }
+
+    private String validateUrlInternal(String rawUrl, boolean allowUploadPath) {
         if (rawUrl == null || rawUrl.isEmpty()) {
             throw new PolicyException("Request URL is required.");
         }
@@ -265,7 +291,7 @@ public final class NativeUrlPolicy {
         }
         String lowerHost = host.toLowerCase(Locale.ROOT);
         if (lowerHost.equals(supabaseHost)) {
-            if (!isAllowedSupabasePath(path)) {
+            if (!isAllowedSupabasePath(path) && !(allowUploadPath && PHONE_UPLOAD_PATH.matcher(path).matches())) {
                 throw new PolicyException("Supabase endpoint path is not allowed.");
             }
             if (PHONE_COPY_PATH.matcher(path).matches() && !query.isEmpty() && !PHONE_COPY_QUERY.matcher(query).matches()) {
