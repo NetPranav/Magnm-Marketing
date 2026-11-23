@@ -31,6 +31,8 @@ BACKOFF_STEPS_S = (60.0, 120.0, 300.0, 600.0)
 SHUTDOWN_OFFLINE_TIMEOUT_S = 1.0
 
 DELETED_HASH = "__deleted__"
+# Kinds whose records could not be built this time: absent is then not the same as deleted.
+_SKIP_DELETE_KINDS = frozenset()
 ACTIVITY_CURSOR_KIND = "_activity_cursor"
 ACTIVITY_CURSOR_ID = "activity"
 OUTBOX_ERROR_KIND = "_outbox_error"
@@ -623,6 +625,17 @@ def build_mirror_records(now_iso=None):
             )
         )
 
+    # Proposals for the phone. If they cannot be built (a broken install, unreadable Pitch files), nothing else is
+    # held back, and the proposals already in the cloud are neither changed nor removed (see _SKIP_DELETE_KINDS).
+    global _SKIP_DELETE_KINDS
+    _SKIP_DELETE_KINDS = frozenset()
+    try:
+        import phone_pitch
+        records.extend(phone_pitch.mirror_records(_make_record, fallback_ts))
+    except Exception as exc:
+        _SKIP_DELETE_KINDS = frozenset({"pitch_proposal"})
+        _log_warning(f"pitch proposals not mirrored: {exc}")
+
     return [_stub_if_mentions_confidential(rec, checker) for rec in records]
 
 
@@ -783,7 +796,7 @@ def _compute_pending_items(user_id):
         pending.append((rec["kind"], rec["local_id"], rec_hash, payload))
 
     for (kind, local_id), prev in state.items():
-        if kind.startswith("_") or (kind, local_id) in current_keys:
+        if kind.startswith("_") or (kind, local_id) in current_keys or kind in _SKIP_DELETE_KINDS:
             continue
         if prev["hash"] == DELETED_HASH:
             continue

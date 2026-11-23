@@ -1,6 +1,9 @@
-import { useCallback, useEffect, useRef } from 'react';
-import { Card, Label, Row, RowList } from '@magnm/design/react';
-import type { PitchProposalItem } from '../types';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Card, Label, PillButton, Row } from '@magnm/design/react';
+import type { ActionInput } from '../actions';
+import { catalogFromProposals, linkStatusOf, proposalOfRequest, requestItemNames } from '../pitchPhone';
+import type { PhoneAction, PitchProposalItem, QuoteRequestItem } from '../types';
+import { PitchEditor } from './PitchEditor';
 
 export const MAX_PITCH_PDF_BYTES = 10 * 1024 * 1024;
 const MAX_FILENAME_CHARS = 200;
@@ -14,7 +17,15 @@ export interface PitchTabProps {
   onSelectProposal: (proposal: PitchProposalItem) => void;
   onExitPresent: () => void;
   onSharePdf: (base64: string, title?: string) => Promise<void>;
+  /** Pitch without the laptop (all optional: without them the tab only lists and presents). */
+  signedIn?: boolean;
+  phoneActions?: PhoneAction[];
+  requests?: QuoteRequestItem[];
+  onQueueAction?: (input: ActionInput, okMessage: string) => Promise<boolean>;
+  onCopyText?: (text: string) => Promise<void> | void;
 }
+
+type PitchView = { kind: 'list' } | { kind: 'edit'; id: string } | { kind: 'new' } | { kind: 'requests' };
 
 function formatPitchKind(kind?: string): string {
   switch (kind) {
@@ -72,8 +83,14 @@ export function PitchTab({
   onSelectProposal,
   onExitPresent,
   onSharePdf,
+  signedIn = false,
+  phoneActions = [],
+  requests = [],
+  onQueueAction,
+  onCopyText,
 }: PitchTabProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [view, setView] = useState<PitchView>({ kind: 'list' });
 
   const sendPayloadToFrame = useCallback(() => {
     if (!presentingProposal || presentingProposal.confidential) return;
@@ -156,6 +173,79 @@ export function PitchTab({
     );
   }
 
+  const manage = Boolean(onQueueAction);
+  const catalog = catalogFromProposals(proposals);
+
+  if (manage && onQueueAction && view.kind === 'new') {
+    return (
+      <PitchEditor
+        mode="new"
+        catalog={catalog}
+        signedIn={signedIn}
+        actions={phoneActions}
+        onQueue={onQueueAction}
+        onBack={() => setView({ kind: 'list' })}
+      />
+    );
+  }
+
+  if (manage && onQueueAction && view.kind === 'edit') {
+    const target = proposals.find((p) => p.id === view.id && !p.confidential && p.cloud);
+    if (target) {
+      return (
+        <PitchEditor
+          key={target.id}
+          mode="edit"
+          item={target}
+          catalog={target.cloud?.catalog ?? catalog}
+          signedIn={signedIn}
+          actions={phoneActions}
+          onQueue={onQueueAction}
+          onCopyText={onCopyText}
+          onBack={() => setView({ kind: 'list' })}
+        />
+      );
+    }
+  }
+
+  if (manage && view.kind === 'requests') {
+    return (
+      <section aria-label="Quote requests" className="mob-stack">
+        <div className="mob-row-between">
+          <Label>Quote requests</Label>
+          <PillButton variant="outline" size="sm" onClick={() => setView({ kind: 'list' })}>
+            Back
+          </PillButton>
+        </div>
+        {requests.length === 0 ? (
+          <Card>
+            <p className="mob-body-text">No quote requests yet. Clients send them through a published link.</p>
+          </Card>
+        ) : (
+          requests.map((req) => {
+            const owner = proposalOfRequest(req, proposals);
+            const items = requestItemNames(req, proposals);
+            return (
+              <Card key={req.id}>
+                <div className="mob-stack-sm mob-wrap-text" data-testid="quote-request">
+                  <h2 className="mob-card-title">{[req.name, req.business].filter(Boolean).join(' · ') || 'A client'}</h2>
+                  {owner ? <p className="mob-mono">For {owner.name || owner.id}</p> : null}
+                  {req.phone ? <p className="mob-body-text">{req.phone}</p> : null}
+                  {items.length > 0 ? <p className="mob-body-text">Chose: {items.join(', ')}</p> : null}
+                  {req.total_shown !== null ? (
+                    <p className="mob-body-text">Total shown to the client: {'\u20b9'}{req.total_shown.toLocaleString('en-IN')}</p>
+                  ) : null}
+                  {req.notes ? <p className="mob-body-text">{req.notes}</p> : null}
+                  <p className="mob-mono">{req.created_at ? new Date(req.created_at).toLocaleString() : ''}{req.seen_at ? ' · seen on the laptop' : ''}</p>
+                </div>
+              </Card>
+            );
+          })
+        )}
+      </section>
+    );
+  }
+
   return (
     <section aria-label="Pitch" className="mob-stack">
       <div className="mob-row-between">
@@ -166,6 +256,17 @@ export function PitchTab({
           </span>
         ) : null}
       </div>
+
+      {manage ? (
+        <div className="mob-actions">
+          <PillButton size="sm" onClick={() => setView({ kind: 'new' })}>
+            New proposal
+          </PillButton>
+          <PillButton variant="outline" size="sm" onClick={() => setView({ kind: 'requests' })}>
+            {requests.length > 0 ? `Quote requests (${requests.length})` : 'Quote requests'}
+          </PillButton>
+        </div>
+      ) : null}
 
       {!laptopReachable && pricesAsOfLabel ? (
         <div className="mg-notice">
@@ -188,26 +289,50 @@ export function PitchTab({
           </div>
         </Card>
       ) : (
-        <RowList>
-          {proposals.map((item) =>
-            item.confidential ? (
-              <Row
-                key={item.id}
-                title="Confidential proposal"
-                description="Open Magnm Studio on your laptop to view or present."
-                meta="Confidential"
-              />
-            ) : (
-              <Row
-                key={item.id}
-                title={item.name || item.id}
-                description={formatPitchKind(item.kind)}
-                meta="Present"
-                onClick={() => onSelectProposal(item)}
-              />
-            ),
-          )}
-        </RowList>
+        <div className="mg-rows">
+          {proposals.map((item) => {
+            if (item.confidential) {
+              return (
+                <Row
+                  key={item.id}
+                  title="Confidential proposal"
+                  description="Open Magnm Studio on your laptop to view or present."
+                  meta="Confidential"
+                />
+              );
+            }
+            const link = linkStatusOf(item, phoneActions);
+            const title = item.name || item.id;
+            return (
+              <div key={item.id} className="mob-pitch-item">
+                <Row
+                  title={title}
+                  description={formatPitchKind(item.kind)}
+                  meta="Present"
+                  onClick={() => onSelectProposal(item)}
+                />
+                {manage ? (
+                  <div className="mob-pitch-item-actions">
+                    {item.cloud ? (
+                      <PillButton
+                        variant="outline"
+                        size="sm"
+                        aria-label={`Manage ${title}`}
+                        onClick={() => setView({ kind: 'edit', id: item.id })}
+                      >
+                        Manage
+                      </PillButton>
+                    ) : (
+                      <span className="mob-mono">Manage opens once the laptop has synced this proposal.</span>
+                    )}
+                    {link.waiting ? <span className="mg-chip">Link waiting for the laptop</span> : null}
+                    {!link.waiting && link.state === 'live' ? <span className="mg-chip">Link live</span> : null}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
       )}
     </section>
   );

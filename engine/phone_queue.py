@@ -37,6 +37,7 @@ import cloud_sync
 import confidential_guard
 import db
 import notifications
+import phone_pitch
 import phone_server
 import review_studio
 import team_auth
@@ -53,7 +54,7 @@ MAX_ATTEMPTS = 3
 MAX_TOUCHES = MAX_ATTEMPTS + 3
 ATTEMPTS_KIND = "_phone_action_attempts"
 FAILED_REASON = "Not applied: this laptop could not apply it."
-KINDS = ("draft_comment", "draft_posted", "reminder_done", "agent_task")
+KINDS = ("draft_comment", "draft_posted", "reminder_done", "agent_task") + phone_pitch.KINDS
 COMMENT_AUTHOR = "phone:cloud"
 AGENT_TASK = "agent_task"
 MAX_AGENT_MESSAGE_CHARS = 4000
@@ -91,12 +92,8 @@ class SignedOutAbort(Exception):
     """The user signed out or switched account while the queue was being worked."""
 
 
-class _Reject(Exception):
-    """An action that must not be applied, with a short reason that is safe to show."""
-
-    def __init__(self, reason):
-        super().__init__(reason)
-        self.reason = reason
+# One refusal type for every kind (the pitch kinds raise it from phone_pitch).
+_Reject = phone_pitch.Reject
 
 
 def _check(user_id, is_signed_out):
@@ -218,6 +215,8 @@ def validate_payload(kind, payload):
         ):
             raise _Reject("Not applied: the request text was empty, too long or malformed.")
         return {"message": message.strip()}
+    if kind in phone_pitch.KINDS:
+        return phone_pitch.validate_payload(kind, payload)
     raise _Reject("Not applied: this laptop does not support that kind of action.")
 
 
@@ -227,6 +226,8 @@ def target_exists(kind, target_id):
         return db.get_content_item(target_id) is not None
     if kind == "reminder_done":
         return db.get_reminder(target_id) is not None
+    if kind in phone_pitch.KINDS:
+        return phone_pitch.target_exists(kind, target_id)
     # An agent task is claimed and then checked, so a bad or unknown agent id is rejected with a reason.
     return True
 
@@ -245,6 +246,8 @@ def _apply(user_id, row, guard):
     kind, target = row["kind"], row["target_id"]
     try:
         params = validate_payload(kind, row["payload"])
+        if kind in phone_pitch.KINDS:
+            return phone_pitch.apply(kind, user_id, row["id"], target, params, guard)
         if kind == "draft_comment":
             if _names_confidential(guard, params["body"]):
                 raise _Reject(CONFIDENTIAL_TEXT_REASON)
