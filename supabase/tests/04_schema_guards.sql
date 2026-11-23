@@ -7,15 +7,15 @@ declare
   v_bad text;
   v_table_count integer;
 begin
-  -- 1. Confirm all 16 expected public tables exist (including team_repos) and every table in public has RLS enabled.
+  -- 1. Confirm all 17 expected public tables exist (including team_repos and phone_actions) and every table in public has RLS enabled.
   select count(*) into v_table_count
   from pg_class c
   join pg_namespace n on n.oid = c.relnamespace
   where n.nspname = 'public'
     and c.relkind = 'r';
 
-  if v_table_count < 16 then
-    raise exception 'FAIL: expected at least 16 tables in public, found %', v_table_count;
+  if v_table_count < 17 then
+    raise exception 'FAIL: expected at least 17 tables in public, found %', v_table_count;
   end if;
 
   select string_agg(c.relname, ', ')
@@ -75,6 +75,20 @@ begin
     raise exception 'FAIL: anon has privileges on public.team_repos';
   end if;
   raise notice 'PASS: team_repos exists and anon has no access to it';
+
+  -- 3a2. phone_actions: anon has nothing, clients cannot update or delete, and only the two RPCs are callable by signed-in clients.
+  if has_table_privilege('anon', 'public.phone_actions', 'SELECT') or has_table_privilege('anon', 'public.phone_actions', 'INSERT')
+     or has_table_privilege('authenticated', 'public.phone_actions', 'UPDATE')
+     or has_table_privilege('authenticated', 'public.phone_actions', 'DELETE') then
+    raise exception 'FAIL: phone_actions grants more than select and insert to signed-in clients, or anything to anon';
+  end if;
+  if has_function_privilege('anon', 'public.claim_phone_action(uuid, text)', 'EXECUTE')
+     or has_function_privilege('anon', 'public.finish_phone_action(uuid, text, text, text)', 'EXECUTE')
+     or has_function_privilege('authenticated', 'public.guard_phone_action_update()', 'EXECUTE')
+     or has_function_privilege('authenticated', 'public.limit_phone_action_queue()', 'EXECUTE') then
+    raise exception 'FAIL: phone action functions are executable by the wrong roles';
+  end if;
+  raise notice 'PASS: phone_actions has no anon access, no client update or delete, and guarded functions';
 
   -- 3b. Confirm shared AI service-role functions are NOT executable by public, anon, or authenticated.
   select string_agg(p.proname, ', ')

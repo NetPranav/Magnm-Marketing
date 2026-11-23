@@ -161,6 +161,10 @@ export function sanitizeMirrorRecordForCache(rec: MirrorRecord): MirrorRecord {
       platform: typeof dataObj.platform === 'string' ? dataObj.platform : undefined,
       status: typeof dataObj.status === 'string' ? dataObj.status : undefined,
       updated_at: typeof dataObj.updated_at === 'string' ? dataObj.updated_at : undefined,
+      // A confidential reminder stays a stub, but the phone still needs to know it is an open reminder.
+      kind: dataObj.kind === 'reminder' ? 'reminder' : undefined,
+      due_at: dataObj.kind === 'reminder' && typeof dataObj.due_at === 'string' ? dataObj.due_at : undefined,
+      done_at: dataObj.kind === 'reminder' && typeof dataObj.done_at === 'string' ? dataObj.done_at : undefined,
     },
     local_updated_at: rec.local_updated_at,
     synced_at: rec.synced_at,
@@ -356,6 +360,7 @@ export function saveMirrorRecords(
   ownerUid: string,
   records: Array<Omit<MirrorRecord, 'cached_at'>>,
   nowMs: number = Date.now(),
+  kept: MirrorRecord[] = [],
 ): ContextCacheState {
   const cleanUid = ownerUid.trim();
   if (!cleanUid) {
@@ -374,7 +379,11 @@ export function saveMirrorRecords(
     {
       ...base,
       ownerUid: cleanUid,
-      mirrorRecords: normalized,
+      // Saved records of a kind that could not be fetched this time keep their own age (so the 14-day limit holds).
+      mirrorRecords: [
+        ...normalized,
+        ...kept.filter((rec) => rec && rec.owner_id === cleanUid).map(sanitizeMirrorRecordForCache),
+      ],
     },
     nowMs,
   );

@@ -219,6 +219,35 @@ export interface QueuedInboxItem {
   last_error?: string | null;
 }
 
+/** Things the phone can do for the laptop while the laptop is away. Enabled kinds only; more are added later. */
+export type PhoneActionKind = 'draft_comment' | 'draft_posted' | 'reminder_done';
+
+export type PhoneActionState = 'waiting' | 'applied' | 'rejected';
+
+export interface PhoneActionPayload {
+  body?: string;
+  version?: number;
+  url?: string;
+}
+
+/** One action queued on this phone. It is bound to the account that made it and sent to the cloud by itself. */
+export interface PhoneAction {
+  /** Made here (a random uuid): sending the same action twice is harmless. */
+  id: string;
+  kind: PhoneActionKind;
+  target_id: string;
+  payload: PhoneActionPayload;
+  /** Short name of the draft or reminder, for the list only. Never confidential. */
+  label: string | null;
+  created_at: string;
+  owner_uid: string;
+  /** True once the cloud has it. */
+  sent: boolean;
+  state: PhoneActionState;
+  /** The laptop's short reason or confirmation, or why the cloud refused it. */
+  result: string | null;
+}
+
 export interface InboxAckItem {
   client_id: string;
   kind: string;

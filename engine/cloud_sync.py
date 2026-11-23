@@ -1154,6 +1154,8 @@ def sync_once():
             except team_auth.TeamAuthError as exc:
                 _handle_rest_error(exc)
 
+            _apply_phone_actions(user_id, expected_gen)
+
             pending, _ = _compute_pending_items(user_id)
             if pending:
                 _upload_mirror_batches(user_id, pending, expected_gen)
@@ -1249,6 +1251,22 @@ def _pull_team_repos(user_id, role, expected_gen):
         if exc.status == 401:
             raise _SignedOutAbort() from exc
         _log_warning(f"team repos pull failed: {exc.message}")
+
+
+def _apply_phone_actions(user_id, expected_gen):
+    """Apply what the user queued from the phone, before the mirror upload so the result shows in the same cycle.
+
+    A failed pull or a bug in one action never stops the rest of the sync; sign-out always does.
+    """
+    import phone_queue
+    try:
+        phone_queue.sync(user_id, is_signed_out=lambda: _is_signed_out_or_stale(expected_gen))
+    except phone_queue.SignedOutAbort as exc:
+        raise _SignedOutAbort() from exc
+    except phone_queue.PhoneQueueError as exc:
+        _log_warning(f"phone actions: {exc.message}")
+    except Exception as exc:
+        _log_warning(f"phone actions error: {exc}")
 
 
 def notify_signed_out():

@@ -128,12 +128,16 @@ Phone connections work strictly over **Tailscale** (same-Wi-Fi discovery is disa
 6. Back on your laptop under **Pending approval**, click **Approve** for your phone.
 7. Paired phones appear under **Paired devices**, where you can click **Revoke** at any time.
 
+### Using the phone while the laptop is away
+
+When you are signed in, the phone can comment on a draft, mark it posted and finish a reminder even when the laptop is off or unreachable. The action shows at once as **Waiting for laptop**, goes to the cloud by itself (with no internet it stays on the phone and is sent later), and your laptop applies it on its next sync, after which the phone shows **Applied**, or **Not applied** with the reason. **More > Phone actions** lists them all. Text that names a confidential product is refused on the phone and never queued (the phone checks it against the product rules bundled with the app plus any the team shared; shared rules can only add), an action kind a laptop does not know is left for a newer laptop, one broken action never blocks the others, confidential drafts and reminders have no actions, and an action is applied only on the laptop that has that draft or reminder. If the laptop is reachable the phone keeps using the direct connection. Queued actions are bound to your account and are wiped when you sign out.
+
 ---
 
 ## Where your data lives
 
 - **Running `engine/server.py` from source (without `MAGNM_HOME`)**: data is stored inside the repository folder (`state/magnm.db`, `outputs/`, `assets/`, `logs/`, `config/`, and `.env`).
-- **Your repositories** are per-user data (`config/repos.json`, never shipped with the app). Older installs lose only the two repositories that earlier versions shipped, once, after a backup in `state/backups/`; everything else you added stays. Team repositories are cached separately in `state/team_repos.json` and cleared when you sign out.
+- **Your repositories** are per-user data (`config/repos.json`, never shipped with the app). Older installs lose only the two repositories that earlier versions shipped, once, after a backup in `state/backups/`; everything else you added stays. Team repositories are cached separately in `state/team_repos.json` and cleared when you sign out. Phone actions the laptop has applied are remembered in `state/magnm.db` (table `phone_action_receipts`) so each runs exactly once.
 - **Running with `MAGNM_HOME` or `--data-dir`**: data is stored in that directory instead.
 - **Desktop app (`studio.magnm.desktop`)**:
   - **Linux**: `$XDG_DATA_HOME/studio.magnm.desktop` (usually `~/.local/share/studio.magnm.desktop`)

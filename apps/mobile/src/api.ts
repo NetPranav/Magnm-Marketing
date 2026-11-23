@@ -2,6 +2,7 @@ import modelsConfig from '@magnm/config/models.json';
 import { getPersonalNimKey, getStoredSession, getValidAccessToken } from './auth';
 import {
   getCachedProductRules,
+  loadCache,
   saveCachedProductRules,
   saveMirrorRecords,
 } from './cache';
@@ -620,6 +621,16 @@ export async function postLaptopSocialLiveInput(
   return laptopCall<{ ok: boolean }>(pairing, 'POST', 'social/live/input', payload, bridge, 5000);
 }
 
+// What the phone needs from the mirror, one small query per kind so none crowds the others out of the 200 cap:
+// drafts, their versions and comments, and open reminders (which the laptop mirrors as tasks).
+const MIRROR_SELECT = 'id,owner_id,kind,local_id,parent_local_id,title,data,local_updated_at,synced_at';
+const MIRROR_QUERIES: ReadonlyArray<{ kind: string; filter: string; limit: number }> = [
+  { kind: 'content_item', filter: 'kind=eq.content_item', limit: 60 },
+  { kind: 'content_version', filter: 'kind=eq.content_version', limit: 60 },
+  { kind: 'review_comment', filter: 'kind=eq.review_comment', limit: 40 },
+  { kind: 'task', filter: 'kind=eq.task&data-%3E%3Ekind=eq.reminder&data-%3E%3Edone_at=is.null', limit: 40 },
+];
+
 /** Fetch ONLY the signed-in user's own mirror_records (always filtered owner_id=eq.<uid>). */
 export async function fetchOwnMirrorRecords(
   ownerUid: string,
@@ -635,25 +646,46 @@ export async function fetchOwnMirrorRecords(
     throw new Error('Sign in required to sync mirror_records.');
   }
   const cfg = getPublicSupabaseConfig();
-  const rows = await netJson<Array<Omit<MirrorRecord, 'cached_at'>>>(
-    {
-      destination: 'supabase',
-      method: 'GET',
-      url: `${cfg.url}/rest/v1/mirror_records?owner_id=eq.${encodeURIComponent(uid)}&deleted_at=is.null&select=id,owner_id,kind,local_id,parent_local_id,title,data,local_updated_at,synced_at&order=local_updated_at.desc&limit=200`,
-    },
-    {
-      supabaseUrl: cfg.url,
-      supabaseAnonKey: cfg.publishableKey,
-      supabaseAccessToken: token,
-    },
-    bridge,
+  const creds = { supabaseUrl: cfg.url, supabaseAnonKey: cfg.publishableKey, supabaseAccessToken: token };
+  const settled = await Promise.allSettled(
+    MIRROR_QUERIES.map((q) =>
+      netJson<Array<Omit<MirrorRecord, 'cached_at'>>>(
+        {
+          destination: 'supabase',
+          method: 'GET',
+          url: `${cfg.url}/rest/v1/mirror_records?owner_id=eq.${encodeURIComponent(uid)}&deleted_at=is.null&${q.filter}&select=${MIRROR_SELECT}&order=local_updated_at.desc&limit=${q.limit}`,
+        },
+        creds,
+        bridge,
+      ),
+    ),
   );
   if (gen !== getStateGeneration()) {
     return [];
   }
-  const clean = Array.isArray(rows) ? rows : [];
-  saveMirrorRecords(uid, clean);
-  return clean.map((r) => ({ ...r, cached_at: Date.now() }));
+  const failed = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (failed && settled.every((r) => r.status === 'rejected')) {
+    throw failed.reason;
+  }
+  const byId = new Map<string, Omit<MirrorRecord, 'cached_at'>>();
+  for (const result of settled) {
+    if (result.status !== 'fulfilled' || !Array.isArray(result.value)) continue;
+    for (const rec of result.value) {
+      if (rec && typeof rec.id === 'string' && !byId.has(rec.id)) byId.set(rec.id, rec);
+    }
+  }
+  const clean = Array.from(byId.values());
+  // A kind whose request failed keeps what was saved (this account's only, with its original age). A request that
+  // answered, even with nothing, replaces that kind.
+  const failedKinds = new Set(MIRROR_QUERIES.filter((_, i) => settled[i].status === 'rejected').map((q) => q.kind));
+  const kept =
+    failedKinds.size > 0
+      ? loadCache(Date.now(), { ownerUid: uid }).mirrorRecords.filter(
+          (r) => r.owner_id === uid && failedKinds.has(r.kind) && !byId.has(r.id),
+        )
+      : [];
+  saveMirrorRecords(uid, clean, Date.now(), kept);
+  return clean.filter((r) => r.owner_id === uid).map((r) => ({ ...r, cached_at: Date.now() }));
 }
 
 /** Fetch product_rules from Supabase shared_knowledge and cache them locally. */

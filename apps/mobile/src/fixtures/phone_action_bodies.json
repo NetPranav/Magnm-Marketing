@@ -1,0 +1,32 @@
+{
+  "note": "The exact request bodies the phone sends to phone_actions, shared by the phone tests (src/phone_actions.test.ts) and the laptop tests (engine/tests/test_phone_queue.py). Targets are the draft cnt_pub and the reminder rem_pub of the laptop test data.",
+  "actions": [
+    {
+      "name": "comment",
+      "body": {
+        "id": "5a1f0c1e-0000-4000-8000-000000000001",
+        "kind": "draft_comment",
+        "target_id": "cnt_pub",
+        "payload": { "body": "Tighten the opening.", "version": 1 }
+      }
+    },
+    {
+      "name": "posted",
+      "body": {
+        "id": "5a1f0c1e-0000-4000-8000-000000000002",
+        "kind": "draft_posted",
+        "target_id": "cnt_pub",
+        "payload": { "url": "https://example.com/p/1" }
+      }
+    },
+    {
+      "name": "reminder",
+      "body": {
+        "id": "5a1f0c1e-0000-4000-8000-000000000003",
+        "kind": "reminder_done",
+        "target_id": "rem_pub",
+        "payload": {}
+      }
+    }
+  ]
+}

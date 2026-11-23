@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Dialog, NumberedTabs, PillButton, StatusDot, Wordmark, type TabItem } from '@magnm/design/react';
+import { enqueueAction, loadActions, removeAction, type ActionInput } from './actions';
 import {
   ConfidentialRefusalError,
   cancelLaptopSocialRun,
@@ -50,6 +51,8 @@ import {
   saveLaptopSnapshot,
   type LaptopCachedSnapshot,
 } from './cache';
+import { syncPhoneActions } from './cloudActions';
+import { rulesForQueue } from './queueRules';
 import { ChatTab, DEFAULT_LITE_AGENTS } from './components/ChatTab';
 import { DraftsTab } from './components/DraftsTab';
 import { MoreTab } from './components/MoreTab';
@@ -58,6 +61,7 @@ import { ShareInModal } from './components/ShareInModal';
 import { SocialLiveView } from './components/SocialLiveView';
 import { TodayTab } from './components/TodayTab';
 import { getNativeBridge, type NativeBridge, type SharedItem } from './native';
+import { draftsFromCache, mirrorIsNewer, remindersFromCache } from './mirrorView';
 import { HttpStatusError, NetworkPolicyError } from './net';
 import {
   getPairingConfig,
@@ -84,6 +88,7 @@ import type {
   MobileTabId,
   PairingConfig,
   ParsedQrPayload,
+  PhoneAction,
   PhoneAgentInfo,
   PhoneNotification,
   PitchProposalItem,
@@ -119,55 +124,6 @@ function isLaptopNetworkError(err: unknown): boolean {
   return true;
 }
 
-function mirrorDraftsFromCache(cache: ReturnType<typeof loadCache>): DraftItem[] {
-  const cachedLaptop = cache.laptop?.drafts ?? [];
-  if (cachedLaptop.length > 0) return cachedLaptop;
-
-  const versionsByParent = new Map<string, Array<{ version: number; body: string }>>();
-  for (const rec of cache.mirrorRecords) {
-    if (rec.kind === 'content_version' && rec.parent_local_id && !rec.data?.confidential) {
-      const body = typeof rec.data?.body === 'string' ? rec.data.body : '';
-      const verNum = typeof rec.data?.version === 'number' ? rec.data.version : 0;
-      if (body) {
-        const list = versionsByParent.get(rec.parent_local_id) ?? [];
-        list.push({ version: verNum, body });
-        versionsByParent.set(rec.parent_local_id, list);
-      }
-    }
-  }
-
-  return cache.mirrorRecords
-    .filter((rec) => rec.kind === 'content_item')
-    .map((rec) => {
-      const isConf = Boolean(rec.data?.confidential);
-      const currentVer =
-        typeof rec.data?.current_version === 'number' ? rec.data.current_version : null;
-      const verList = versionsByParent.get(rec.local_id) ?? [];
-      let chosenBody: string | null = null;
-      if (!isConf && verList.length > 0) {
-        const byCurrent =
-          currentVer !== null ? verList.find((v) => v.version === currentVer) : undefined;
-        if (byCurrent) {
-          chosenBody = byCurrent.body;
-        } else {
-          const highest = verList.reduce((best, cur) => (cur.version >= best.version ? cur : best));
-          chosenBody = highest.body;
-        }
-      }
-      return {
-        id: rec.local_id,
-        title: isConf ? 'Confidential item' : rec.title || 'Untitled draft',
-        platform: typeof rec.data?.platform === 'string' ? rec.data.platform : null,
-        status: typeof rec.data?.status === 'string' ? rec.data.status : null,
-        confidential: isConf,
-        body: isConf ? null : chosenBody,
-        current_version: currentVer,
-        versions: isConf ? [] : verList.map((v) => ({ version: v.version, body: v.body })),
-        updated_at: rec.local_updated_at,
-      };
-    });
-}
-
 export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
   const bridge = propBridge ?? getNativeBridge();
   const initialPairing = useMemo(() => getPairingConfig(), []);
@@ -198,11 +154,9 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
   const [laptopReachable, setLaptopReachable] = useState(false);
   const [laptopAuthError, setLaptopAuthError] = useState<string | null>(null);
   const [laptopStatus, setLaptopStatus] = useState<LaptopStatus | null>(null);
-  const [drafts, setDrafts] = useState<DraftItem[]>(() => mirrorDraftsFromCache(initialCache));
+  const [drafts, setDrafts] = useState<DraftItem[]>(() => draftsFromCache(initialCache));
   const [selectedDraft, setSelectedDraft] = useState<DraftItem | null>(null);
-  const [reminders, setReminders] = useState<ReminderItem[]>(
-    () => initialCache.laptop?.reminders ?? [],
-  );
+  const [reminders, setReminders] = useState<ReminderItem[]>(() => remindersFromCache(initialCache));
   const [notifications, setNotifications] = useState<PhoneNotification[]>(
     () => initialCache.laptop?.notifications ?? [],
   );
@@ -243,6 +197,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
   const [queueItems, setQueueItems] = useState<QueuedInboxItem[]>(() =>
     initialPairing ? getBoundQueueItems(initialPairing.deviceId) : [],
   );
+  const [phoneActions, setPhoneActions] = useState<PhoneAction[]>([]);
   const [cacheVersion, setCacheVersion] = useState(0);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -263,6 +218,9 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
   pairingRef.current = pairing;
   const sessionRef = useRef(session);
   sessionRef.current = session;
+  const laptopReachableRef = useRef(false);
+  laptopReachableRef.current = laptopReachable;
+  const lastMirrorAtRef = useRef(0);
   const backStateRef = useRef({
     confirmOpen: false,
     socialLiveOpen: false,
@@ -341,6 +299,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
     setDraftsError(null);
     setMoreError(null);
     setQueueItems([]);
+    setPhoneActions([]);
     setConfirmDialog(null);
     // Requests cut off by the wipe never reach their own cleanup.
     setBusyAction(null);
@@ -369,8 +328,8 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
         ownerUid: s?.user_id ?? null,
         laptopDeviceId: p?.deviceId ?? null,
       });
-      setDrafts(mirrorDraftsFromCache(cache));
-      setReminders(cache.laptop?.reminders ?? []);
+      setDrafts(draftsFromCache(cache));
+      setReminders(remindersFromCache(cache));
       setNotifications(cache.laptop?.notifications ?? []);
       setUnreadCount(cache.laptop?.unreadCount ?? 0);
       setSummary(cache.laptop?.summary ?? null);
@@ -397,6 +356,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
     if (isStale()) return;
 
     setSession(stored);
+    setPhoneActions(loadActions(stored?.user_id));
     setHasPersonalNimKey(Boolean(nimKey));
     setAccountInitialized(true);
 
@@ -423,6 +383,41 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
       setProfile(null);
     }
   }, [bridge]);
+
+  // Cloud side of the app: send waiting phone actions, read back what the laptop did, and refresh the mirror
+  // (so drafts, comments and reminders show without any laptop connection and without the Sync button).
+  const syncCloud = useCallback(
+    async (opts: { mirror?: boolean; force?: boolean } = {}) => {
+      const uid = sessionRef.current?.user_id;
+      if (!uid) return;
+      const gen = appGenRef.current;
+      const stateGen = getStateGeneration();
+      const isStale = () =>
+        appGenRef.current !== gen || getStateGeneration() !== stateGen || sessionRef.current?.user_id !== uid;
+      try {
+        await syncPhoneActions(uid, bridge);
+        if (isStale()) return;
+        setPhoneActions(loadActions(uid));
+        const wantMirror =
+          opts.mirror !== false && (opts.force === true || Date.now() - lastMirrorAtRef.current > 5000);
+        if (!wantMirror) return;
+        lastMirrorAtRef.current = Date.now();
+        await fetchOwnMirrorRecords(uid, bridge);
+        if (isStale()) return;
+        // Refresh the shared rules every time (a failed fetch keeps the saved copy).
+        await fetchSharedProductRules(uid, bridge).catch(() => undefined);
+        if (isStale()) return;
+        if (laptopReachableRef.current) {
+          setCacheVersion((v) => v + 1);
+        } else {
+          hydrateFromCache(pairingRef.current, sessionRef.current);
+        }
+      } catch {
+        // Offline or the cloud is down: the next open, foreground or timer tries again.
+      }
+    },
+    [bridge, hydrateFromCache],
+  );
 
   const refreshLaptop = useCallback(
     async (activePairing: PairingConfig | null, activeSession: AuthSession | null) => {
@@ -629,6 +624,23 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
     void refreshLaptop(pairingRef.current, sessionRef.current);
   }, [accountInitialized, pairingDeviceId, pairingHost, pairingPort, sessionUid, refreshLaptop]);
 
+  // On open and sign-in, and whenever the phone gets its connection back.
+  useEffect(() => {
+    if (!accountInitialized || !sessionUid) return undefined;
+    void syncCloud({ force: true });
+    const onOnline = () => void syncCloud({ force: true });
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, [accountInitialized, sessionUid, syncCloud]);
+
+  // While something waits for the laptop and the app is open, look again every 30 seconds.
+  const waitingActionCount = phoneActions.filter((a) => a.state === 'waiting').length;
+  useEffect(() => {
+    if (!sessionUid || waitingActionCount === 0 || !isForeground) return undefined;
+    const timer = setInterval(() => void syncCloud({ mirror: false }), 30_000);
+    return () => clearInterval(timer);
+  }, [sessionUid, waitingActionCount, isForeground, syncCloud]);
+
   useEffect(() => {
     const unsub = bridge.onDeepLink((url) => {
       if (!url || handledDeepLinksRef.current.has(url)) {
@@ -666,6 +678,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
       setIsForeground(true);
       void checkSharedItems();
       void refreshLaptop(pairingRef.current, sessionRef.current);
+      void syncCloud({ force: true });
     };
     const handleBackground = () => {
       isForegroundRef.current = false;
@@ -698,7 +711,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
     return () => {
       for (const fn of unsubs) fn();
     };
-  }, [bridge, checkSharedItems, refreshLaptop]);
+  }, [bridge, checkSharedItems, refreshLaptop, syncCloud]);
 
   useEffect(() => {
     if (!bridge.onBackButton) return undefined;
@@ -903,7 +916,52 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
       }
     }
     const cachedDetail = cacheSnapshot.laptop?.draftDetails?.[id];
-    setSelectedDraft(cachedDetail ?? local);
+    // The cloud copy (with its comments) wins when it is newer than the last live copy from the laptop.
+    setSelectedDraft(mirrorIsNewer(cacheSnapshot) && local ? local : cachedDetail ?? local);
+  }
+
+  /**
+   * Queue an action for the laptop through the cloud (the laptop is away). It shows as waiting at once, goes to the
+   * cloud by itself and is applied when the laptop is back. Text is checked against the product rules first.
+   */
+  async function queueCloudAction(
+    input: ActionInput,
+    okMessage: string,
+    setError: (message: string | null) => void,
+  ): Promise<boolean> {
+    const uid = sessionRef.current?.user_id;
+    if (!uid) {
+      const msg = 'Sign in to queue actions while the laptop is away.';
+      setError(msg);
+      showToast(msg);
+      return false;
+    }
+    const gen = appGenRef.current;
+    const stateGen = getStateGeneration();
+    const isStale = () =>
+      appGenRef.current !== gen || getStateGeneration() !== stateGen || sessionRef.current?.user_id !== uid;
+    let rules = getCachedProductRules(uid);
+    if (!rules) {
+      try {
+        rules = await fetchSharedProductRules(uid, bridge);
+      } catch {
+        rules = null;
+      }
+      if (isStale()) return false;
+    }
+    try {
+      // The bundled baseline guards the queue even if the team never published rules; shared rules can only add.
+      enqueueAction(input, uid, rulesForQueue(rules));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Could not queue this action.';
+      setError(msg);
+      showToast(msg);
+      return false;
+    }
+    setPhoneActions(loadActions(uid));
+    showToast(okMessage);
+    void syncCloud({ mirror: false });
+    return true;
   }
 
   async function handleAddComment(
@@ -912,61 +970,134 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
     version?: number | null,
   ): Promise<boolean> {
     const activePairing = pairingRef.current;
-    if (!activePairing) return false;
     const gen = appGenRef.current;
     const stateGen = getStateGeneration();
     setDraftsError(null);
-    setBusyAction('comment');
-    try {
-      const comment = await postLaptopDraftComment(activePairing, contentId, body, version, bridge);
-      if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return false;
-      setSelectedDraft((prev) =>
-        prev && prev.id === contentId
-          ? { ...prev, comments: [...(prev.comments ?? []), comment] }
-          : prev,
-      );
-      showToast('Comment added');
-      return true;
-    } catch (err) {
-      if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return false;
-      handleLaptopActionError(err);
-      const msg = err instanceof Error ? err.message : 'Could not add comment';
-      setDraftsError(msg);
-      showToast(msg);
-      return false;
-    } finally {
-      if (appGenRef.current === gen && getStateGeneration() === stateGen) {
-        setBusyAction(null);
+    if (activePairing && laptopReachable) {
+      setBusyAction('comment');
+      try {
+        const comment = await postLaptopDraftComment(activePairing, contentId, body, version, bridge);
+        if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return false;
+        setSelectedDraft((prev) =>
+          prev && prev.id === contentId
+            ? { ...prev, comments: [...(prev.comments ?? []), comment] }
+            : prev,
+        );
+        showToast('Comment added');
+        return true;
+      } catch (err) {
+        if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return false;
+        handleLaptopActionError(err);
+        if (!isLaptopNetworkError(err)) {
+          const msg = err instanceof Error ? err.message : 'Could not add comment';
+          setDraftsError(msg);
+          showToast(msg);
+          return false;
+        }
+        // The laptop went away: queue it through the cloud instead.
+      } finally {
+        if (appGenRef.current === gen && getStateGeneration() === stateGen) {
+          setBusyAction(null);
+        }
       }
     }
+    const draft = drafts.find((d) => d.id === contentId) ?? selectedDraft;
+    return queueCloudAction(
+      {
+        kind: 'draft_comment',
+        target_id: contentId,
+        payload: { body, version: version ?? undefined },
+        label: draft?.title ?? null,
+        targetConfidential: Boolean(draft?.confidential),
+      },
+      'Comment saved: waiting for laptop',
+      setDraftsError,
+    );
   }
 
   async function handleMarkPosted(contentId: string, url?: string): Promise<boolean> {
     const activePairing = pairingRef.current;
-    if (!activePairing) return false;
     const gen = appGenRef.current;
     const stateGen = getStateGeneration();
     setDraftsError(null);
-    setBusyAction('posted');
-    try {
-      const updated = await postLaptopDraftPosted(activePairing, contentId, url, bridge);
-      if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return false;
-      setSelectedDraft((prev) => (prev && prev.id === contentId ? { ...prev, ...updated } : prev));
-      setDrafts((prev) => prev.map((d) => (d.id === contentId ? { ...d, ...updated } : d)));
-      showToast('Marked as posted');
-      return true;
-    } catch (err) {
-      if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return false;
-      handleLaptopActionError(err);
-      const msg = err instanceof Error ? err.message : 'Could not mark as posted';
-      setDraftsError(msg);
-      showToast(msg);
-      return false;
-    } finally {
-      if (appGenRef.current === gen && getStateGeneration() === stateGen) {
-        setBusyAction(null);
+    if (activePairing && laptopReachable) {
+      setBusyAction('posted');
+      try {
+        const updated = await postLaptopDraftPosted(activePairing, contentId, url, bridge);
+        if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return false;
+        setSelectedDraft((prev) => (prev && prev.id === contentId ? { ...prev, ...updated } : prev));
+        setDrafts((prev) => prev.map((d) => (d.id === contentId ? { ...d, ...updated } : d)));
+        showToast('Marked as posted');
+        return true;
+      } catch (err) {
+        if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return false;
+        handleLaptopActionError(err);
+        if (!isLaptopNetworkError(err)) {
+          const msg = err instanceof Error ? err.message : 'Could not mark as posted';
+          setDraftsError(msg);
+          showToast(msg);
+          return false;
+        }
+      } finally {
+        if (appGenRef.current === gen && getStateGeneration() === stateGen) {
+          setBusyAction(null);
+        }
       }
     }
+    const draft = drafts.find((d) => d.id === contentId) ?? selectedDraft;
+    return queueCloudAction(
+      {
+        kind: 'draft_posted',
+        target_id: contentId,
+        payload: url ? { url } : {},
+        label: draft?.title ?? null,
+        targetConfidential: Boolean(draft?.confidential),
+      },
+      'Marked as posted: waiting for laptop',
+      setDraftsError,
+    );
+  }
+
+  async function handleMarkReminderDone(id: string): Promise<void> {
+    const activePairing = pairingRef.current;
+    const gen = appGenRef.current;
+    const stateGen = getStateGeneration();
+    setTodayError(null);
+    if (activePairing && laptopReachable) {
+      setBusyAction(`rem-${id}`);
+      try {
+        await postLaptopReminderDone(activePairing, id, bridge);
+        if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return;
+        setReminders((prev) => prev.filter((r) => r.id !== id));
+        showToast('Reminder marked done');
+        return;
+      } catch (err) {
+        if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return;
+        handleLaptopActionError(err);
+        if (!isLaptopNetworkError(err)) {
+          const msg = err instanceof Error ? err.message : 'Could not update reminder.';
+          setTodayError(msg);
+          showToast(msg);
+          return;
+        }
+      } finally {
+        if (appGenRef.current === gen && getStateGeneration() === stateGen) {
+          setBusyAction(null);
+        }
+      }
+    }
+    const reminder = reminders.find((r) => r.id === id);
+    await queueCloudAction(
+      {
+        kind: 'reminder_done',
+        target_id: id,
+        payload: {},
+        label: reminder?.title ?? null,
+        targetConfidential: Boolean(reminder?.confidential),
+      },
+      'Reminder done: waiting for laptop',
+      setTodayError,
+    );
   }
 
   async function handleCopyText(text: string): Promise<boolean> {
@@ -1747,6 +1878,9 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
             {queueItems.length > 0 ? (
               <span className="mg-chip">{queueItems.length} queued</span>
             ) : null}
+            {waitingActionCount > 0 ? (
+              <span className="mg-chip">{waitingActionCount} waiting for laptop</span>
+            ) : null}
           </div>
         </header>
       ) : null}
@@ -1801,32 +1935,9 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
             errorMessage={todayError}
             onRefresh={() => void refreshLaptop(pairingRef.current, sessionRef.current)}
             onGoToPairing={() => setTab('more')}
-            onMarkReminderDone={(id) => {
-              const activePairing = pairingRef.current;
-              if (!activePairing) return;
-              const gen = appGenRef.current;
-              const stateGen = getStateGeneration();
-              setTodayError(null);
-              setBusyAction(`rem-${id}`);
-              void postLaptopReminderDone(activePairing, id, bridge)
-                .then(() => {
-                  if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return;
-                  setReminders((prev) => prev.filter((r) => r.id !== id));
-                  showToast('Reminder marked done');
-                })
-                .catch((err) => {
-                  if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return;
-                  handleLaptopActionError(err);
-                  const msg = err instanceof Error ? err.message : 'Could not update reminder.';
-                  setTodayError(msg);
-                  showToast(msg);
-                })
-                .finally(() => {
-                  if (appGenRef.current === gen && getStateGeneration() === stateGen) {
-                    setBusyAction(null);
-                  }
-                });
-            }}
+            onMarkReminderDone={(id) => void handleMarkReminderDone(id)}
+            phoneActions={phoneActions}
+            canQueue={Boolean(session)}
             onMarkAllNotificationsRead={() => {
               const activePairing = pairingRef.current;
               if (!activePairing) return;
@@ -1897,6 +2008,8 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
             laptopReachable={laptopReachable}
             savedCopyLabel={savedCopyLabel}
             canQueueOffline={Boolean(pairing)}
+            phoneActions={phoneActions}
+            canQueue={Boolean(session)}
             busyAction={busyAction}
             errorMessage={draftsError}
             onSelectDraft={(id) => void handleSelectDraft(id)}
@@ -1964,6 +2077,13 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
             moreError={moreError}
             hasPersonalNimKey={hasPersonalNimKey}
             queueItems={queueItems}
+            phoneActions={phoneActions}
+            onRemovePhoneAction={(id) => {
+              const uid = sessionRef.current?.user_id;
+              if (!uid) return;
+              removeAction(id, uid);
+              setPhoneActions(loadActions(uid));
+            }}
             laptopReachable={laptopReachable}
             mirrorRecordCount={cacheSnapshot.mirrorRecords.length}
             savedCopyLabel={savedCopyLabel}
@@ -2062,6 +2182,9 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
               setMoreError(null);
               setBusyAction('sync-mirror');
               try {
+                await syncPhoneActions(uid, bridge);
+                if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return;
+                setPhoneActions(loadActions(uid));
                 await fetchOwnMirrorRecords(uid, bridge);
                 if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return;
                 await fetchSharedProductRules(uid, bridge).catch(() => {});

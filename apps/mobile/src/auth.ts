@@ -1,3 +1,4 @@
+import { wipeActions } from './actions';
 import { ensureCacheOwner, loadCache, wipeCache } from './cache';
 import { getNativeBridge, type NativeBridge } from './native';
 import { getPublicSupabaseConfig, HttpStatusError, netJson } from './net';
@@ -107,6 +108,7 @@ export async function wipeAllLocalState(bridge: NativeBridge = getNativeBridge()
   removeNonSecretKey(PAIRING_META_KEY);
   wipeCache();
   wipeQueue();
+  wipeActions();
 }
 
 /** Begin Google PKCE sign-in, storing verifier + state in secureStore and opening system browser. */

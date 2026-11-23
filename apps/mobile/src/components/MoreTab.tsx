@@ -9,11 +9,13 @@ import {
   TextInput,
   ThemeToggle,
 } from '@magnm/design/react';
+import { kindLabel, stateLabel } from '../actions';
 import type {
   AccountProfile,
   AuthSession,
   PairingConfig,
   ParsedQrPayload,
+  PhoneAction,
   QueuedInboxItem,
 } from '../types';
 
@@ -28,6 +30,9 @@ export interface MoreTabProps {
   moreError: string | null;
   hasPersonalNimKey: boolean;
   queueItems: QueuedInboxItem[];
+  /** Actions queued on this phone for the laptop (this account's only). */
+  phoneActions?: PhoneAction[];
+  onRemovePhoneAction?: (id: string) => void;
   laptopReachable: boolean;
   mirrorRecordCount: number;
   savedCopyLabel: string | null;
@@ -57,6 +62,8 @@ export function MoreTab({
   moreError,
   hasPersonalNimKey,
   queueItems,
+  phoneActions = [],
+  onRemovePhoneAction,
   laptopReachable,
   mirrorRecordCount,
   savedCopyLabel,
@@ -319,6 +326,50 @@ export function MoreTab({
           ) : null}
         </div>
       </Card>
+
+      {session ? (
+        <Card>
+          <div className="mob-stack-sm">
+            <div className="mob-row-between">
+              <Label>Phone actions</Label>
+              <span className="mob-mono">
+                {phoneActions.filter((a) => a.state === 'waiting').length} waiting
+              </span>
+            </div>
+            {phoneActions.length === 0 ? (
+              <p className="mob-mono">
+                Comments, posted marks and finished reminders made while your laptop is away show here.
+              </p>
+            ) : (
+              <RowList>
+                {[...phoneActions].reverse().map((action) => (
+                  <Row
+                    key={action.id}
+                    title={`${kindLabel(action.kind)}${action.label ? `: ${action.label}` : ''}`}
+                    description={
+                      action.state === 'waiting'
+                        ? action.sent
+                          ? 'The laptop will apply this when it is back.'
+                          : 'Will be sent as soon as the phone is online.'
+                        : action.result || undefined
+                    }
+                    meta={
+                      <>
+                        <span className="mg-chip">{stateLabel(action)}</span>
+                        {onRemovePhoneAction && (action.state !== 'waiting' || !action.sent) ? (
+                          <PillButton variant="outline" size="sm" onClick={() => onRemovePhoneAction(action.id)}>
+                            Remove
+                          </PillButton>
+                        ) : null}
+                      </>
+                    }
+                  />
+                ))}
+              </RowList>
+            )}
+          </div>
+        </Card>
+      ) : null}
 
       <Card>
         <div className="mob-stack-sm">

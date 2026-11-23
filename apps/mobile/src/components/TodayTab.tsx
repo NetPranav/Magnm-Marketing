@@ -20,6 +20,7 @@ import type {
   MetricProposal,
   PairingConfig,
   PhoneNotification,
+  PhoneAction,
   ReminderItem,
   WeeklySummary,
 } from '../types';
@@ -40,6 +41,10 @@ export interface TodayTabProps {
   onRefresh: () => void;
   onGoToPairing: () => void;
   onMarkReminderDone: (id: string) => void;
+  /** Actions queued on this phone for the laptop (this account's only). */
+  phoneActions?: PhoneAction[];
+  /** Signed in: a reminder can be finished through the cloud while the laptop is away. */
+  canQueue?: boolean;
   onMarkAllNotificationsRead: () => void;
   onOpenNotification?: (notif: PhoneNotification) => void;
   onConfirmResult: (
@@ -75,6 +80,8 @@ export function TodayTab({
   onRefresh,
   onGoToPairing,
   onMarkReminderDone,
+  phoneActions = [],
+  canQueue = false,
   onMarkAllNotificationsRead,
   onOpenNotification,
   onConfirmResult,
@@ -126,6 +133,12 @@ export function TodayTab({
       setEditingProposalId(null);
     }
   }
+
+  // A reminder the laptop has already finished (from this phone) is gone from the list.
+  const finished = new Set(
+    phoneActions.filter((a) => a.kind === 'reminder_done' && a.state === 'applied').map((a) => a.target_id),
+  );
+  const visibleReminders = reminders.filter((r) => !finished.has(r.id));
 
   const summaryHighlights =
     summary?.highlights && typeof summary.highlights === 'object'
@@ -321,33 +334,46 @@ export function TodayTab({
         <div className="mob-stack-sm">
           <div className="mob-row-between">
             <Label>Reminders</Label>
-            <span className="mob-mono">{reminders.length} open</span>
+            <span className="mob-mono">{visibleReminders.length} open</span>
           </div>
-          {reminders.length === 0 ? (
+          {visibleReminders.length === 0 ? (
             <p className="mob-mono">No open reminders.</p>
           ) : (
             <RowList>
-              {reminders.map((rem) => (
-                <Row
-                  key={rem.id}
-                  title={rem.confidential ? 'Confidential reminder' : rem.title}
-                  description={rem.confidential ? 'Open on laptop to view details.' : rem.note || undefined}
-                  meta={
-                    rem.confidential ? (
-                      'Confidential'
-                    ) : (
-                      <PillButton
-                        variant="outline"
-                        size="sm"
-                        disabled={!laptopReachable || busyAction === `rem-${rem.id}`}
-                        onClick={() => onMarkReminderDone(rem.id)}
-                      >
-                        Done
-                      </PillButton>
-                    )
-                  }
-                />
-              ))}
+              {visibleReminders.map((rem) => {
+                const mine = phoneActions.filter((a) => a.kind === 'reminder_done' && a.target_id === rem.id);
+                const waiting = mine.some((a) => a.state === 'waiting');
+                const lastRejected = [...mine].reverse().find((a) => a.state === 'rejected');
+                const description = rem.confidential
+                  ? 'Open on laptop to view details.'
+                  : [rem.note, !waiting && lastRejected?.result ? lastRejected.result : null]
+                      .filter(Boolean)
+                      .join(' · ') || undefined;
+                return (
+                  <Row
+                    key={rem.id}
+                    title={rem.confidential ? 'Confidential reminder' : rem.title}
+                    description={description}
+                    meta={
+                      rem.confidential ? (
+                        'Confidential'
+                      ) : waiting ? (
+                        <span className="mg-chip">Waiting for laptop</span>
+                      ) : (
+                        <PillButton
+                          variant="outline"
+                          size="sm"
+                          disabled={!(laptopReachable || canQueue) || busyAction === `rem-${rem.id}`}
+                          title={laptopReachable || canQueue ? undefined : 'Connect to your laptop or sign in'}
+                          onClick={() => onMarkReminderDone(rem.id)}
+                        >
+                          Done
+                        </PillButton>
+                      )
+                    }
+                  />
+                );
+              })}
             </RowList>
           )}
         </div>

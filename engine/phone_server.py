@@ -522,6 +522,55 @@ def _is_valid_http_url(raw_url):
     return parsed.scheme.lower() in ("http", "https") and bool(parsed.netloc)
 
 
+def _require_open_item(content_id, guard):
+    """The draft, or a 404 if it is missing and a 403 if it is confidential (phone writes never touch those)."""
+    conf_sids, conf_cids, conf_pids, checker, repo_patterns = guard
+    item = db.get_content_item(content_id, include_versions=True)
+    if item is None:
+        raise PhoneApiError("Draft not found", status=404)
+    if _content_item_is_confidential(item, conf_sids, conf_cids, conf_pids, checker, repo_patterns):
+        raise PhoneApiError("Confidential items cannot be modified from phone", status=403)
+    return item
+
+
+def apply_draft_comment(content_id, params, author, guard=None, comment_id=None):
+    """Add a review comment made on the phone. The one place both the live route and the cloud queue go through."""
+    guard = guard or _build_confidential_guard()
+    _require_open_item(content_id, guard)
+    body = params.get("body")
+    return review_studio.create_comment(
+        content_id,
+        kind="general",
+        version=params.get("version"),
+        body=body if isinstance(body, str) else "",
+        author=author,
+        comment_id=comment_id,
+    )
+
+
+def apply_draft_posted(content_id, params, guard=None):
+    """Mark a draft posted from the phone, with an optional http(s) link. Shared by the live route and the queue."""
+    guard = guard or _build_confidential_guard()
+    _require_open_item(content_id, guard)
+    raw_url = params.get("url")
+    if raw_url is not None and str(raw_url).strip() and not _is_valid_http_url(raw_url):
+        raise PhoneApiError("url must be a valid http or https URL", status=400)
+    return review_studio.mark_posted(
+        content_id,
+        url=str(raw_url).strip() if raw_url is not None and str(raw_url).strip() else None,
+    )
+
+
+def apply_reminder_done(reminder_id, guard=None):
+    """Finish a reminder. Returns (reminder, is_confidential): the live route shows a stub for a confidential one."""
+    guard = guard or _build_confidential_guard()
+    _, conf_cids, _, checker, repo_patterns = guard
+    if db.get_reminder(reminder_id) is None:
+        raise PhoneApiError("Reminder not found", status=404)
+    updated = reminders.mark_done(reminder_id)
+    return updated, _reminder_is_confidential(updated, conf_cids, checker, repo_patterns)
+
+
 # A retry can arrive while the first attempt is still saving, so check-then-create runs one request at a time.
 _INBOX_LOCK = threading.Lock()
 
@@ -1162,46 +1211,13 @@ class PhoneHandler(BaseHTTPRequestHandler):
     # --- POST handlers ---
 
     def _handle_post_draft_comment(self, device, content_id, params):
-        conf_sids, conf_cids, conf_pids, checker, repo_patterns = _build_confidential_guard()
-        item = db.get_content_item(content_id, include_versions=True)
-        if item is None:
-            raise PhoneApiError("Draft not found", status=404)
-        if _content_item_is_confidential(
-            item, conf_sids, conf_cids, conf_pids, checker, repo_patterns
-        ):
-            raise PhoneApiError("Confidential items cannot be modified from phone", status=403)
-
-        body = params.get("body")
-        version = params.get("version")
-        created = review_studio.create_comment(
-            content_id,
-            kind="general",
-            version=version,
-            body=body if isinstance(body, str) else "",
-            author=f"phone:{device['name']}",
-        )
+        created = apply_draft_comment(content_id, params, author=f"phone:{device['name']}")
         _log_device_activity(device, "review", f"phone_comment:{content_id}", content_id)
         cloud_sync.request_sync()
         self._send_json({"comment": created})
 
     def _handle_post_draft_posted(self, device, content_id, params):
-        conf_sids, conf_cids, conf_pids, checker, repo_patterns = _build_confidential_guard()
-        item = db.get_content_item(content_id, include_versions=True)
-        if item is None:
-            raise PhoneApiError("Draft not found", status=404)
-        if _content_item_is_confidential(
-            item, conf_sids, conf_cids, conf_pids, checker, repo_patterns
-        ):
-            raise PhoneApiError("Confidential items cannot be modified from phone", status=403)
-
-        raw_url = params.get("url")
-        if raw_url is not None and str(raw_url).strip() and not _is_valid_http_url(raw_url):
-            raise PhoneApiError("url must be a valid http or https URL", status=400)
-
-        updated = review_studio.mark_posted(
-            content_id,
-            url=str(raw_url).strip() if raw_url is not None and str(raw_url).strip() else None,
-        )
+        updated = apply_draft_posted(content_id, params)
         _log_device_activity(device, "content", f"phone_posted:{content_id}", content_id)
         cloud_sync.request_sync()
         self._send_json({"item": updated})
@@ -1463,18 +1479,10 @@ class PhoneHandler(BaseHTTPRequestHandler):
         self._send_json(out)
 
     def _handle_post_reminder_done(self, device, reminder_id):
-        conf_sids, conf_cids, conf_pids, checker, repo_patterns = _build_confidential_guard()
-        del conf_sids, conf_pids
-        existing = db.get_reminder(reminder_id)
-        if existing is None:
-            raise PhoneApiError("Reminder not found", status=404)
-        updated = reminders.mark_done(reminder_id)
+        updated, is_conf = apply_reminder_done(reminder_id)
         _log_device_activity(device, "reminders", f"phone_reminder_done:{reminder_id}", reminder_id)
         cloud_sync.request_sync()
-        if _reminder_is_confidential(updated, conf_cids, checker, repo_patterns):
-            self._send_json({"reminder": _stub_reminder(updated)})
-            return
-        self._send_json({"reminder": updated})
+        self._send_json({"reminder": _stub_reminder(updated) if is_conf else updated})
 
     def _handle_post_notifications_read(self, device, params):
         _build_confidential_guard()
