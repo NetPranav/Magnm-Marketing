@@ -327,3 +327,147 @@ body {
   display: grid;
   gap: var(--s-2);
 }
+
+/* Pitch and Admin on the phone: everything wraps at phone width, nothing is clipped or pushes the page sideways. */
+.mob-tabs-wrap .mg-tabs {
+  flex-wrap: wrap;
+  overflow-x: visible;
+  row-gap: 0;
+}
+
+.mob-shell .mg-btn {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.mob-wrap-text {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.mob-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.mob-subtab {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 44px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line-2);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.2;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.mob-subtab[aria-selected="true"] {
+  background: var(--fg);
+  color: var(--bg);
+  border-color: var(--fg);
+}
+
+.mob-pitch-item {
+  display: grid;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.mob-pitch-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.mob-pitch-editor {
+  display: grid;
+  gap: var(--s-4);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.mob-pitch-editor .mg-field,
+.mob-pitch-editor .mg-input,
+.mob-pitch-editor .mg-textarea,
+.mob-pitch-editor .mg-select {
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.mob-service-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-4);
+  padding: var(--s-2) 0;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+
+.mob-service-name {
+  flex: 1 1 100%;
+  min-width: 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.mob-admin {
+  display: grid;
+  gap: var(--s-4);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.mob-admin .mg-field,
+.mob-admin .mg-input,
+.mob-admin .mg-select {
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.mob-admin-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.mob-admin-member {
+  display: grid;
+  gap: var(--s-2);
+  padding: var(--s-3) 0;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+
+.mob-admin-member-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.mob-pitch-item {
+  padding-bottom: var(--s-2);
+}
+
+.mob-admin-member > .mg-chip {
+  justify-self: start;
+}

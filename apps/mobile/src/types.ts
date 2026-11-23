@@ -1,4 +1,4 @@
-export type MobileTabId = 'today' | 'drafts' | 'pitch' | 'chat' | 'more';
+export type MobileTabId = 'today' | 'drafts' | 'pitch' | 'chat' | 'more' | 'admin';
 
 export type QueueItemKind = 'draft' | 'note' | 'idea' | 'social_request';
 
@@ -111,6 +111,41 @@ export interface DraftItem {
   warnings?: Array<{ severity?: string; message?: string; product?: string } | string>;
 }
 
+export interface PitchCatalogItem {
+  g: string;
+  n: string;
+  /** The base price with the team's admin prices applied. */
+  p: number;
+}
+
+export interface PitchCatalog {
+  items: Record<string, PitchCatalogItem>;
+  groups: string[];
+  presets: Array<{ slug: string; name: string }>;
+}
+
+/** What the phone knows from the cloud copy of a proposal: everything it needs to edit it. */
+export interface PitchCloudInfo {
+  /** The proposal's updated_at on the laptop: the version an edit from this phone is based on. */
+  version: string;
+  editable: boolean;
+  status: string | null;
+  client_name: string;
+  business_name: string;
+  contact: PitchContactFields;
+  notes: string;
+  preset: Required<Omit<PitchPresetFields, 'sections'>> & { sections: Partial<Record<'p2' | 'p3' | 'p4' | 'p5', string[]>> };
+  hidden_sheets: string[];
+  hidden_about: string[];
+  price_overrides: Record<string, number>;
+  share_id: string | null;
+  link_status: 'live' | 'withdrawn' | null;
+  link_url: string | null;
+  /** The cloud copy was cut down to fit: it can be presented but not edited here. */
+  truncated: boolean;
+  catalog: PitchCatalog | null;
+}
+
 export interface PitchProposalItem {
   id: string;
   name?: string;
@@ -118,6 +153,22 @@ export interface PitchProposalItem {
   updated_at?: string;
   payload?: Record<string, unknown>;
   confidential?: boolean;
+  /** Present when the proposal comes from (or is also in) the cloud mirror. */
+  cloud?: PitchCloudInfo;
+}
+
+/** One quote request a client sent through a published link (read straight from the cloud). */
+export interface QuoteRequestItem {
+  id: string;
+  share_id: string;
+  created_at: string;
+  seen_at: string | null;
+  name: string;
+  business: string;
+  phone: string;
+  notes: string;
+  selected: string[];
+  total_shown: number | null;
 }
 
 export interface ReminderItem {
@@ -220,7 +271,15 @@ export interface QueuedInboxItem {
 }
 
 /** Things the phone can do for the laptop while the laptop is away. Enabled kinds only; more are added later. */
-export type PhoneActionKind = 'draft_comment' | 'draft_posted' | 'reminder_done' | 'agent_task';
+export type PhoneActionKind =
+  | 'draft_comment'
+  | 'draft_posted'
+  | 'reminder_done'
+  | 'agent_task'
+  | 'pitch_create'
+  | 'pitch_update'
+  | 'pitch_finalize'
+  | 'pitch_link';
 
 export type PhoneActionState = 'waiting' | 'applied' | 'rejected';
 
@@ -230,6 +289,54 @@ export interface PhoneActionPayload {
   url?: string;
   /** agent_task only: what the owner asked the agent (the agent id is the action's target). */
   message?: string;
+  /** pitch_update only: the proposal version (its updated_at) the phone saw, and what the phone changed. */
+  base_version?: string;
+  fields?: PitchFields;
+  /** pitch_link only. */
+  action?: 'publish' | 'withdraw';
+  /** pitch_create only: the fields of the new proposal sit beside these. */
+  kind?: 'proposal' | 'quote_form';
+  from_preset?: string;
+  client_name?: string;
+  business_name?: string;
+  contact?: PitchContactFields;
+  notes?: string;
+  preset?: PitchPresetFields;
+  hidden_sheets?: string[];
+  hidden_about?: string[];
+  price_overrides?: Record<string, number>;
+}
+
+/** The five contact details of a proposal's client. */
+export interface PitchContactFields {
+  name?: string;
+  business?: string;
+  email?: string;
+  phone?: string;
+  notes?: string;
+}
+
+/** The texts and services of a proposal a phone may change. */
+export interface PitchPresetFields {
+  title?: string;
+  lead?: string;
+  whatWeDo?: string;
+  portfolio?: string;
+  thisPlan?: string;
+  initialSelected?: string[];
+  sections?: Partial<Record<'p2' | 'p3' | 'p4' | 'p5', string[]>>;
+}
+
+/** Everything a phone may change on a proposal (the whitelist the cloud and the laptop enforce too). */
+export interface PitchFields {
+  client_name?: string;
+  business_name?: string;
+  contact?: PitchContactFields;
+  notes?: string;
+  preset?: PitchPresetFields;
+  hidden_sheets?: string[];
+  hidden_about?: string[];
+  price_overrides?: Record<string, number>;
 }
 
 /** One action queued on this phone. It is bound to the account that made it and sent to the cloud by itself. */

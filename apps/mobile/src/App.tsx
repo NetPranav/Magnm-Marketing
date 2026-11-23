@@ -58,7 +58,10 @@ import { rulesForQueue } from './queueRules';
 import { ChatTab, DEFAULT_LITE_AGENTS } from './components/ChatTab';
 import { DraftsTab } from './components/DraftsTab';
 import { MoreTab } from './components/MoreTab';
+import { AdminTab } from './components/AdminTab';
 import { PitchTab } from './components/PitchTab';
+import { mergePitchLists, proposalsFromMirror } from './pitchPhone';
+import { fetchQuoteRequests } from './pitchRequests';
 import { ShareInModal } from './components/ShareInModal';
 import { SocialLiveView } from './components/SocialLiveView';
 import { TodayTab } from './components/TodayTab';
@@ -96,6 +99,7 @@ import type {
   PitchProposalItem,
   QueueItemKind,
   QueuedInboxItem,
+  QuoteRequestItem,
   ReminderItem,
   SocialPlatform,
   SocialRecipe,
@@ -111,6 +115,8 @@ const MOBILE_TABS: TabItem[] = [
   { id: 'chat', label: 'Chat' },
   { id: 'more', label: 'More' },
 ];
+// Only an active admin is offered this one (the database enforces it either way).
+const ADMIN_TAB: TabItem = { id: 'admin', label: 'Admin' };
 
 export interface AppProps {
   bridge?: NativeBridge;
@@ -179,6 +185,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
   );
   const [presentingPitch, setPresentingPitch] = useState<PitchProposalItem | null>(null);
   const [pitchError, setPitchError] = useState<string | null>(null);
+  const [quoteRequests, setQuoteRequests] = useState<QuoteRequestItem[]>([]);
   const [agents, setAgents] = useState<PhoneAgentInfo[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState('writer');
   const [chatMessages, setChatMessages] = useState<ChatTurn[]>([]);
@@ -295,6 +302,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
     setPitchPricesAsOf(null);
     setPresentingPitch(null);
     setPitchError(null);
+    setQuoteRequests([]);
     setAgents([]);
     setSelectedAgentId('writer');
     setChatMessages([]);
@@ -414,6 +422,12 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
             showToast(`${getConfiguredAgent(a.target_id)?.name ?? 'An agent'} replied`);
           }
         }
+        // A pitch edit the laptop just applied: the new proposal reaches the cloud mirror in the same laptop cycle.
+        for (const a of nextActions) {
+          if (a.kind.startsWith('pitch_') && a.state !== 'waiting' && known.get(a.id) === 'waiting') {
+            lastMirrorAtRef.current = 0;
+          }
+        }
         setPhoneActions(nextActions);
         const wantMirror =
           opts.mirror !== false && (opts.force === true || Date.now() - lastMirrorAtRef.current > 5000);
@@ -421,6 +435,12 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
         lastMirrorAtRef.current = Date.now();
         await fetchOwnMirrorRecords(uid, bridge);
         if (isStale()) return;
+        // Quote requests clients sent through published links (this account's only, read straight from the cloud).
+        void fetchQuoteRequests(uid, bridge)
+          .then((list) => {
+            if (!isStale()) setQuoteRequests(list);
+          })
+          .catch(() => undefined);
         // The full-quality copies of finished draft files the laptop keeps in the cloud (this account's only).
         void fetchPhoneCopies(uid, bridge)
           .then((copies) => {
@@ -894,6 +914,17 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
 
   const hasProductRules = Boolean(cacheSnapshot.productRules?.rules);
 
+  // Proposals: the live copies from the laptop and the cloud copies, merged (confidential ones stay stubs).
+  const pitchList = useMemo(
+    () => mergePitchLists(pitchProposals, proposalsFromMirror(cacheSnapshot)),
+    [pitchProposals, cacheSnapshot],
+  );
+  const isAdmin = Boolean(session && profile && profile.role === 'admin' && profile.active !== false);
+  const mobileTabs = useMemo(() => (isAdmin ? [...MOBILE_TABS, ADMIN_TAB] : MOBILE_TABS), [isAdmin]);
+  useEffect(() => {
+    if (tab === 'admin' && !isAdmin && accountInitialized) setTab('today');
+  }, [tab, isAdmin, accountInitialized]);
+
   const visibleAgents =
     laptopReachable && agents.length > 0 ? agents : DEFAULT_LITE_AGENTS;
   const effectiveAgentId = visibleAgents.some((a) => a.id === selectedAgentId)
@@ -1255,7 +1286,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
         // Keep raw segment if malformed.
       }
       if (!targetId) return;
-      let list = pitchProposals;
+      let list = pitchList;
       if (!list.some((p) => p.id === targetId) && activePairing && laptopReachable) {
         try {
           const fresh = await fetchLaptopPitchProposals(activePairing, bridge);
@@ -1952,7 +1983,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
       {!isPresentingPitch ? (
         <nav className="mob-tabs-wrap" aria-label="Mobile sections">
           <NumberedTabs
-            items={MOBILE_TABS}
+            items={mobileTabs}
             current={tab}
             onSelect={(next) => setTab(next as MobileTabId)}
             orientation="horizontal"
@@ -1964,7 +1995,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
       <main className={isPresentingPitch ? 'mob-main mob-main--present' : 'mob-main'}>
         {isPresentingPitch ? (
           <PitchTab
-            proposals={pitchProposals}
+            proposals={pitchList}
             presentingProposal={presentingPitch}
             laptopReachable={laptopReachable}
             pricesAsOfLabel={pricesAsOfLabel}
@@ -2094,8 +2125,15 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
 
         {!isPresentingPitch && tab === 'pitch' ? (
           <PitchTab
-            proposals={pitchProposals}
+            proposals={pitchList}
             presentingProposal={null}
+            signedIn={Boolean(session)}
+            phoneActions={phoneActions}
+            requests={quoteRequests}
+            onQueueAction={(input, okMessage) => queueCloudAction(input, okMessage, setPitchError)}
+            onCopyText={async (text) => {
+              await handleCopyText(text);
+            }}
             laptopReachable={laptopReachable}
             pricesAsOfLabel={pricesAsOfLabel}
             errorMessage={pitchError}
@@ -2112,6 +2150,8 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
             onSharePdf={handleSharePitchPdf}
           />
         ) : null}
+
+        {!isPresentingPitch && tab === 'admin' && isAdmin ? <AdminTab profile={profile} bridge={bridge} /> : null}
 
         {!isPresentingPitch && tab === 'chat' ? (
           <ChatTab
