@@ -1,0 +1,73 @@
+{
+  "note": "The exact request bodies the phone sends to phone_actions for Pitch, shared by the phone tests (src/pitch_phone.test.ts) and the laptop tests (engine/tests/test_phone_pitch.py). {{PROPOSAL}} is the id of the laptop test proposal and {{VERSION}} its version (its updated_at) when the phone last saw it.",
+  "actions": [
+    {
+      "name": "create",
+      "body": {
+        "id": "7a1f0c1e-0000-4000-8000-000000000001",
+        "kind": "pitch_create",
+        "target_id": "new",
+        "payload": {
+          "kind": "proposal",
+          "client_name": "Meera Shah",
+          "business_name": "Shah Clinics",
+          "contact": { "name": "Meera Shah", "phone": "+91 90000 00000" },
+          "notes": "Warm lead"
+        }
+      }
+    },
+    {
+      "name": "create_from_preset",
+      "body": {
+        "id": "7a1f0c1e-0000-4000-8000-000000000002",
+        "kind": "pitch_create",
+        "target_id": "new",
+        "payload": { "kind": "quote_form", "from_preset": "urban-company", "client_name": "Urban demo" }
+      }
+    },
+    {
+      "name": "update",
+      "body": {
+        "id": "7a1f0c1e-0000-4000-8000-000000000003",
+        "kind": "pitch_update",
+        "target_id": "{{PROPOSAL}}",
+        "payload": {
+          "base_version": "{{VERSION}}",
+          "fields": {
+            "client_name": "Meera S.",
+            "preset": { "title": "Clinic plan", "lead": "A plan for the clinic." },
+            "hidden_about": ["portfolio"],
+            "price_overrides": { "w_front": 6500 }
+          }
+        }
+      }
+    },
+    {
+      "name": "finalize",
+      "body": {
+        "id": "7a1f0c1e-0000-4000-8000-000000000004",
+        "kind": "pitch_finalize",
+        "target_id": "{{PROPOSAL}}",
+        "payload": {}
+      }
+    },
+    {
+      "name": "publish",
+      "body": {
+        "id": "7a1f0c1e-0000-4000-8000-000000000005",
+        "kind": "pitch_link",
+        "target_id": "{{PROPOSAL}}",
+        "payload": { "action": "publish" }
+      }
+    },
+    {
+      "name": "withdraw",
+      "body": {
+        "id": "7a1f0c1e-0000-4000-8000-000000000006",
+        "kind": "pitch_link",
+        "target_id": "{{PROPOSAL}}",
+        "payload": { "action": "withdraw" }
+      }
+    }
+  ]
+}

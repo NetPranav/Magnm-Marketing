@@ -3,6 +3,13 @@
 // The same checks run when an action is made, when it is loaded and again just before it is sent.
 
 import { getConfiguredAgent } from './agentTools';
+import {
+  cleanPitchFields,
+  collectStrings,
+  MAX_VERSION_CHARS,
+  NEW_PROPOSAL_TARGET,
+  PitchRuleError,
+} from './pitchRules';
 import { findConfidentialMention } from './productRules';
 import {
   readNonSecretJson,
@@ -19,7 +26,14 @@ import type {
 } from './types';
 
 export const ACTIONS_STORAGE_KEY = 'magnm.mobile.phoneActions.v1';
-export const ACTION_KINDS: readonly PhoneActionKind[] = ['draft_comment', 'draft_posted', 'reminder_done', 'agent_task'];
+export const PITCH_ACTION_KINDS: readonly PhoneActionKind[] = ['pitch_create', 'pitch_update', 'pitch_finalize', 'pitch_link'];
+export const ACTION_KINDS: readonly PhoneActionKind[] = [
+  'draft_comment',
+  'draft_posted',
+  'reminder_done',
+  'agent_task',
+  ...PITCH_ACTION_KINDS,
+];
 export const MAX_COMMENT_CHARS = 4000;
 export const MAX_AGENT_MESSAGE_CHARS = 4000;
 export const MAX_URL_CHARS = 2000;
@@ -84,6 +98,10 @@ export function validateActionInput(input: ActionInput | CleanActionInput): Clea
   }
   const keys = Object.keys(payload);
 
+  if (PITCH_ACTION_KINDS.includes(kind)) {
+    return validatePitchInput(kind, target, payload, keys);
+  }
+
   if (kind === 'draft_comment') {
     if (keys.some((k) => k !== 'body' && k !== 'version')) {
       throw new PhoneActionError('The comment has unexpected details.');
@@ -140,6 +158,44 @@ export function validateActionInput(input: ActionInput | CleanActionInput): Clea
     throw new PhoneActionError('A reminder needs no details.');
   }
   return { kind, target_id: target, payload: {} };
+}
+
+function validatePitchInput(
+  kind: PhoneActionKind,
+  target: string,
+  payload: PhoneActionPayload,
+  keys: string[],
+): CleanActionInput {
+  try {
+    if (kind === 'pitch_create') {
+      if (target !== NEW_PROPOSAL_TARGET) throw new PitchRuleError('A new proposal has no target.');
+      return { kind, target_id: target, payload: cleanPitchFields(payload, true) as PhoneActionPayload };
+    }
+    if (target === NEW_PROPOSAL_TARGET) throw new PitchRuleError('Choose the proposal this is about.');
+    if (kind === 'pitch_update') {
+      if (keys.length !== 2 || !keys.includes('base_version') || !keys.includes('fields')) {
+        throw new PitchRuleError('The edit has unexpected details.');
+      }
+      const base = payload.base_version;
+      if (typeof base !== 'string' || base.length < 1 || base.length > MAX_VERSION_CHARS || CONTROL_RE.test(base)) {
+        throw new PitchRuleError('The proposal version is not valid.');
+      }
+      const fields = cleanPitchFields(payload.fields, false);
+      if (Object.keys(fields).length === 0) throw new PitchRuleError('There is nothing to change.');
+      return { kind, target_id: target, payload: { base_version: base, fields } };
+    }
+    if (kind === 'pitch_finalize') {
+      if (keys.length > 0) throw new PitchRuleError('A final quotation needs no details.');
+      return { kind, target_id: target, payload: {} };
+    }
+    if (keys.length !== 1 || (payload.action !== 'publish' && payload.action !== 'withdraw')) {
+      throw new PitchRuleError('The link change is not valid.');
+    }
+    return { kind, target_id: target, payload: { action: payload.action } };
+  } catch (err) {
+    if (err instanceof PitchRuleError) throw new PhoneActionError(err.message);
+    throw err;
+  }
 }
 
 function newActionId(): string {
@@ -286,12 +342,21 @@ export function enqueueAction(
     throw new PhoneActionError('Confidential items can only be changed on the laptop.');
   }
   const clean = validateActionInput(input);
-  mentionsConfidential([clean.payload.body, clean.payload.url, clean.payload.message], rules);
+  const pitchTexts = PITCH_ACTION_KINDS.includes(clean.kind) ? collectStrings(clean.payload) : [];
+  mentionsConfidential([clean.payload.body, clean.payload.url, clean.payload.message, ...pitchTexts], rules);
 
   // Another account's items are not adopted: they go when a different account queues.
   const mine = readAll().filter((a) => a.owner_uid === uid);
   if (mine.filter((a) => a.state === 'waiting').length >= MAX_WAITING_ACTIONS) {
     throw new PhoneActionError('Too many actions are waiting. Wait for the laptop to catch up.');
+  }
+  // An edit is based on the version the phone saw. A second edit of the same proposal before the laptop has applied
+  // the first would be based on a stale version and always become a copy, so it waits its turn.
+  if (
+    clean.kind === 'pitch_update' &&
+    mine.some((a) => a.kind === 'pitch_update' && a.state === 'waiting' && a.target_id === clean.target_id)
+  ) {
+    throw new PhoneActionError('An earlier edit of this proposal is still waiting for the laptop. Try again when it is applied.');
   }
   const id = (clientId ?? '').trim().toLowerCase() || newActionId();
   if (!UUID_RE.test(id)) {
@@ -320,6 +385,10 @@ export function stateLabel(action: PhoneAction): string {
 }
 
 export function kindLabel(kind: PhoneActionKind): string {
+  if (kind === 'pitch_create') return 'New proposal';
+  if (kind === 'pitch_update') return 'Proposal edit';
+  if (kind === 'pitch_finalize') return 'Final quotation';
+  if (kind === 'pitch_link') return 'Client link';
   if (kind === 'draft_comment') return 'Comment';
   if (kind === 'draft_posted') return 'Mark as posted';
   if (kind === 'agent_task') return 'Agent request';

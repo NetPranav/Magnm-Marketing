@@ -16,6 +16,7 @@ export const WORKSPACE_KIND_TABS: WorkspaceKindTab[] = [
   { id: 'posted_link', label: 'Posted links' },
   { id: 'metric', label: 'Results' },
   { id: 'team_message', label: 'Team room' },
+  { id: 'pitch_proposal', label: 'Proposals' },
 ];
 
 /** Map derived member presence string to StatusDot state. */

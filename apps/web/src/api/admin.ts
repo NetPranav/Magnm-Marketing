@@ -77,7 +77,8 @@ export type MirrorRecordKind =
   | 'metric'
   | 'team_message'
   | 'content_version'
-  | 'chat_turn';
+  | 'chat_turn'
+  | 'pitch_proposal';
 
 export interface MirrorRecordSummary {
   id: string;

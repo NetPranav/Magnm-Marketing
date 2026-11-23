@@ -624,13 +624,15 @@ export async function postLaptopSocialLiveInput(
 }
 
 // What the phone needs from the mirror, one small query per kind so none crowds the others out of the 200 cap:
-// drafts, their versions and comments, and open reminders (which the laptop mirrors as tasks).
+// drafts, their versions and comments, open reminders (which the laptop mirrors as tasks) and Pitch proposals.
 const MIRROR_SELECT = 'id,owner_id,kind,local_id,parent_local_id,title,data,local_updated_at,synced_at';
 const MIRROR_QUERIES: ReadonlyArray<{ kind: string; filter: string; limit: number }> = [
-  { kind: 'content_item', filter: 'kind=eq.content_item', limit: 60 },
-  { kind: 'content_version', filter: 'kind=eq.content_version', limit: 60 },
+  { kind: 'content_item', filter: 'kind=eq.content_item', limit: 50 },
+  { kind: 'content_version', filter: 'kind=eq.content_version', limit: 50 },
   { kind: 'review_comment', filter: 'kind=eq.review_comment', limit: 40 },
-  { kind: 'task', filter: 'kind=eq.task&data-%3E%3Ekind=eq.reminder&data-%3E%3Edone_at=is.null', limit: 40 },
+  { kind: 'task', filter: 'kind=eq.task&data-%3E%3Ekind=eq.reminder&data-%3E%3Edone_at=is.null', limit: 30 },
+  // Proposals (to list, present and edit them) are mirrored by the laptop; the four limits add up to the cache cap.
+  { kind: 'pitch_proposal', filter: 'kind=eq.pitch_proposal', limit: 30 },
 ];
 
 /** Fetch ONLY the signed-in user's own mirror_records (always filtered owner_id=eq.<uid>). */
