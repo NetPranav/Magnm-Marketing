@@ -37,7 +37,9 @@ import cloud_sync
 import confidential_guard
 import db
 import notifications
+import phone_library
 import phone_pitch
+import phone_plan
 import phone_server
 import review_studio
 import team_auth
@@ -54,7 +56,9 @@ MAX_ATTEMPTS = 3
 MAX_TOUCHES = MAX_ATTEMPTS + 3
 ATTEMPTS_KIND = "_phone_action_attempts"
 FAILED_REASON = "Not applied: this laptop could not apply it."
-KINDS = ("draft_comment", "draft_posted", "reminder_done", "agent_task") + phone_pitch.KINDS
+KINDS = (
+    ("draft_comment", "draft_posted", "reminder_done", "agent_task") + phone_pitch.KINDS + phone_library.KINDS + phone_plan.KINDS
+)
 COMMENT_AUTHOR = "phone:cloud"
 AGENT_TASK = "agent_task"
 MAX_AGENT_MESSAGE_CHARS = 4000
@@ -174,8 +178,12 @@ def clean_row(raw, user_id):
     }
 
 
-def validate_payload(kind, payload):
+def validate_payload(kind, payload, target=None):
     """Return the checked parameters for a known kind, or raise _Reject. Never trusts the shape it is given."""
+    if kind in phone_library.KINDS:
+        return phone_library.validate_payload(payload)
+    if kind in phone_plan.KINDS:
+        return phone_plan.validate_payload(kind, payload, target)
     if kind == "draft_comment":
         if not isinstance(payload, dict) or not set(payload) <= {"body", "version"}:
             raise _Reject("Not applied: the comment was malformed.")
@@ -228,6 +236,8 @@ def target_exists(kind, target_id):
         return db.get_reminder(target_id) is not None
     if kind in phone_pitch.KINDS:
         return phone_pitch.target_exists(kind, target_id)
+    if kind in phone_library.KINDS or kind in phone_plan.KINDS:
+        return True  # checked after the claim, so a bad or unknown target is rejected with a reason
     # An agent task is claimed and then checked, so a bad or unknown agent id is rejected with a reason.
     return True
 
@@ -245,7 +255,11 @@ def _apply(user_id, row, guard):
     """Apply one claimed action. Returns (outcome, result); outcome is 'applied' or 'rejected'. Repeatable."""
     kind, target = row["kind"], row["target_id"]
     try:
+        if kind in phone_plan.KINDS:
+            return phone_plan.apply(kind, user_id, row["id"], target, row["payload"], guard)
         params = validate_payload(kind, row["payload"])
+        if kind in phone_library.KINDS:
+            return phone_library.apply(user_id, row["id"], target, params, guard)
         if kind in phone_pitch.KINDS:
             return phone_pitch.apply(kind, user_id, row["id"], target, params, guard)
         if kind == "draft_comment":
@@ -278,6 +292,10 @@ def _apply(user_id, row, guard):
         return "applied", "Reminder done."
     except _Reject as exc:
         return "rejected", exc.reason
+    except phone_library.SignedOutAbort as exc:
+        raise SignedOutAbort() from exc
+    except phone_library.PhoneLibraryError as exc:
+        raise PhoneQueueError(exc.message, status=exc.status, code=exc.code) from exc
     except phone_server.PhoneApiError as exc:
         if exc.status == 403:
             return "rejected", CONFIDENTIAL_REASON

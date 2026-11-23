@@ -194,6 +194,127 @@ public class MagnmNativePlugin extends Plugin {
         executor.execute(() -> executeHttp(call, method, validatedUrl, validatedHeaders, hasBody, bodyBytes, timeoutMs));
     }
 
+    private File uploadStageDir() {
+        return new File(getContext().getCacheDir(), "upload-stage");
+    }
+
+    /** Add one piece (base64, in order) to the private staged file of an upload. */
+    @PluginMethod
+    public void stageUploadChunk(PluginCall call) {
+        final String id = call.getString("uploadId");
+        final Integer index = call.getInt("index");
+        final String base64 = call.getString("base64");
+        executor.execute(() -> {
+            try {
+                if (index == null || base64 == null) {
+                    call.reject("Invalid upload piece.");
+                    return;
+                }
+                UploadStage.sweep(uploadStageDir(), 6L * 60 * 60 * 1000, System.currentTimeMillis());
+                UploadStage.appendChunk(uploadStageDir(), id, index, Base64.decode(base64, Base64.DEFAULT));
+                call.resolve();
+            } catch (UploadStage.StageException ex) {
+                call.reject(ex.getMessage());
+            } catch (Exception ex) {
+                call.reject("Could not stage the upload.");
+            }
+        });
+    }
+
+    /** Send the staged file to the owner's phone-uploads object. Checked again here; the file is only read and sent. */
+    @PluginMethod
+    public void finishCloudUpload(PluginCall call) {
+        final String id = call.getString("uploadId");
+        final String validatedUrl;
+        final Map<String, String> validatedHeaders;
+        final String contentType = call.getString("contentType");
+        final Long announced;
+        try {
+            UploadStage.validateId(id);
+            validatedUrl = urlPolicy.validateCloudUploadUrl(call.getString("url"));
+            validatedHeaders = urlPolicy.validateHeaders(extractHeaders(call.getObject("headers")));
+            announced = call.getLong("bytes");
+            if (announced == null || contentType == null) {
+                throw new UploadStage.StageException("Invalid upload request.");
+            }
+        } catch (NativeUrlPolicy.PolicyException | UploadStage.StageException ex) {
+            call.reject(ex.getMessage());
+            return;
+        } catch (Exception ex) {
+            call.reject("Invalid upload request.");
+            return;
+        }
+        executor.execute(() -> executeCloudUpload(call, id, validatedUrl, validatedHeaders, contentType, announced));
+    }
+
+    @PluginMethod
+    public void abortUpload(PluginCall call) {
+        try {
+            UploadStage.discard(uploadStageDir(), call.getString("uploadId"));
+            call.resolve();
+        } catch (UploadStage.StageException ex) {
+            call.reject(ex.getMessage());
+        }
+    }
+
+    private void executeCloudUpload(
+            PluginCall call, String id, String validatedUrl, Map<String, String> headers, String contentType, long announced) {
+        HttpURLConnection conn = null;
+        File staged = null;
+        try {
+            staged = UploadStage.verify(uploadStageDir(), id, announced, UploadStage.extensionOf(validatedUrl), contentType);
+            URL url = new URL(validatedUrl);
+            conn = (HttpURLConnection) url.openConnection(Proxy.NO_PROXY);
+            conn.setInstanceFollowRedirects(false);
+            conn.setUseCaches(false);
+            conn.setConnectTimeout(30_000);
+            conn.setReadTimeout(180_000);
+            conn.setRequestMethod("POST");
+            for (Map.Entry<String, String> h : headers.entrySet()) {
+                conn.setRequestProperty(h.getKey(), h.getValue());
+            }
+            conn.setRequestProperty("Content-Type", contentType);
+            conn.setRequestProperty("x-upsert", "false");
+            conn.setDoOutput(true);
+            conn.setFixedLengthStreamingMode(staged.length());
+            try (java.io.FileInputStream in = new java.io.FileInputStream(staged); java.io.OutputStream out = conn.getOutputStream()) {
+                byte[] buf = new byte[16 * 1024];
+                int n;
+                while ((n = in.read(buf)) != -1) {
+                    out.write(buf, 0, n);
+                }
+            }
+            int status = conn.getResponseCode();
+            URL finalUrl = conn.getURL();
+            if (finalUrl != null && !url.getHost().equalsIgnoreCase(finalUrl.getHost())) {
+                call.reject("HTTP redirects are refused.");
+                return;
+            }
+            String respBody = "";
+            InputStream stream = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
+            if (stream != null) {
+                try (InputStream is = stream) {
+                    respBody = new String(readResponseBounded(is, 64 * 1024), StandardCharsets.UTF_8);
+                }
+            }
+            JSObject ret = new JSObject();
+            ret.put("status", status);
+            ret.put("body", respBody);
+            call.resolve(ret);
+        } catch (UploadStage.StageException ex) {
+            call.reject(ex.getMessage());
+        } catch (SocketTimeoutException ex) {
+            call.reject("The upload timed out.");
+        } catch (Exception ex) {
+            call.reject("The upload failed.");
+        } finally {
+            UploadStage.discard(uploadStageDir(), id);
+            if (conn != null) {
+                conn.disconnect();
+            }
+        }
+    }
+
     @PluginMethod
     public void takeSharedItems(PluginCall call) {
         executor.execute(() -> {

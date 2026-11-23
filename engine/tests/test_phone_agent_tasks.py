@@ -96,7 +96,7 @@ class RunTests(_TaskBase):
     def test_the_pull_asks_for_the_new_kind_too(self):
         self.task()
         self.run_sync()
-        self.assertEqual(self.kinds_asked_for(), "in.(draft_comment,draft_posted,reminder_done,agent_task,pitch_create,pitch_update,pitch_finalize,pitch_link)")
+        self.assertEqual(self.kinds_asked_for(), "in.(draft_comment,draft_posted,reminder_done,agent_task,pitch_create,pitch_update,pitch_finalize,pitch_link,library_upload,schedule_update,draft_create,workflow_request)")
 
     def test_every_configured_agent_can_be_asked(self):
         with open(os.path.join(REPO_ROOT, "config", "agents.json"), "r", encoding="utf-8") as f:

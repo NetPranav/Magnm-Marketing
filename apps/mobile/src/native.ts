@@ -49,6 +49,26 @@ export interface ShareCloudFileOptions {
   title?: string;
 }
 
+/** One piece of a file being uploaded: staged on the phone first so a big file never travels as one message. */
+export interface StageUploadChunkOptions {
+  uploadId: string;
+  index: number;
+  base64: string;
+}
+
+export interface FinishCloudUploadOptions {
+  uploadId: string;
+  url: string;
+  headers: Record<string, string>;
+  contentType: string;
+  bytes: number;
+}
+
+export interface UploadResult {
+  status: number;
+  body: string;
+}
+
 export interface SharePdfOptions {
   base64: string;
   title?: string;
@@ -71,6 +91,9 @@ export interface NativeBridge {
   shareLaptopFile?(options: ShareLaptopFileOptions): Promise<void>;
   shareCloudFile?(options: ShareCloudFileOptions): Promise<void>;
   sharePdf?(options: SharePdfOptions): Promise<void>;
+  stageUploadChunk?(options: StageUploadChunkOptions): Promise<void>;
+  finishCloudUpload?(options: FinishCloudUploadOptions): Promise<UploadResult>;
+  abortUpload?(options: { uploadId: string }): Promise<void>;
   openBrowser(url: string): Promise<void>;
   closeBrowser(): Promise<void>;
   scanQrCode(): Promise<string | null>;
@@ -94,6 +117,9 @@ interface MagnmNativePlugin {
   shareLaptopFile(options: ShareLaptopFileOptions): Promise<void>;
   shareCloudFile(options: ShareCloudFileOptions): Promise<void>;
   sharePdf(options: SharePdfOptions): Promise<void>;
+  stageUploadChunk(options: StageUploadChunkOptions): Promise<void>;
+  finishCloudUpload(options: FinishCloudUploadOptions): Promise<UploadResult>;
+  abortUpload(options: { uploadId: string }): Promise<void>;
 }
 
 const MagnmNative = registerPlugin<MagnmNativePlugin>('MagnmNative');
@@ -109,6 +135,14 @@ export interface PreviewBridgeOptions {
   onShareLaptopFile?: (options: ShareLaptopFileOptions) => Promise<void> | void;
   onShareCloudFile?: (options: ShareCloudFileOptions) => Promise<void> | void;
   onSharePdf?: (options: SharePdfOptions) => Promise<void> | void;
+  /** Called with everything staged for one upload (the bytes already joined); returns the cloud's answer. */
+  onUploadCloudFile?: (info: {
+    url: string;
+    headers: Record<string, string>;
+    contentType: string;
+    bytes: number;
+    data: Uint8Array;
+  }) => UploadResult | Promise<UploadResult>;
   onMinimize?: () => void;
 }
 
@@ -135,6 +169,7 @@ export function createPreviewNativeBridge(
   let dictateValue = options.dictateResult ?? null;
   let scanQrValue = options.scanQrResult ?? null;
   let minimizeCount = 0;
+  const staged = new Map<string, Uint8Array[]>();
 
   return {
     isPreview: true,
@@ -189,6 +224,31 @@ export function createPreviewNativeBridge(
         return;
       }
       throw new Error(`${PREVIEW_BANNER_LABEL}: PDF sharing is available in the Android app.`);
+    },
+    async stageUploadChunk(opts: StageUploadChunkOptions): Promise<void> {
+      const chunks = staged.get(opts.uploadId) ?? [];
+      if (opts.index !== chunks.length) throw new Error('Upload chunks must arrive in order.');
+      const raw = atob(opts.base64);
+      chunks.push(Uint8Array.from(raw, (c) => c.charCodeAt(0)));
+      staged.set(opts.uploadId, chunks);
+    },
+    async finishCloudUpload(opts: FinishCloudUploadOptions): Promise<UploadResult> {
+      const chunks = staged.get(opts.uploadId) ?? [];
+      staged.delete(opts.uploadId);
+      if (!options.onUploadCloudFile) {
+        throw new Error(`${PREVIEW_BANNER_LABEL}: uploading files is available in the Android app.`);
+      }
+      const data = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+      let at = 0;
+      for (const c of chunks) {
+        data.set(c, at);
+        at += c.length;
+      }
+      if (data.length !== opts.bytes) throw new Error('The staged bytes do not match the file size.');
+      return options.onUploadCloudFile({ url: opts.url, headers: opts.headers, contentType: opts.contentType, bytes: opts.bytes, data });
+    },
+    async abortUpload(opts: { uploadId: string }): Promise<void> {
+      staged.delete(opts.uploadId);
     },
     async openBrowser(url: string): Promise<void> {
       options.onOpenBrowser?.(url);
@@ -336,6 +396,15 @@ export function createCapacitorNativeBridge(): NativeBridge {
     },
     async sharePdf(options: SharePdfOptions): Promise<void> {
       await MagnmNative.sharePdf(options);
+    },
+    async stageUploadChunk(options: StageUploadChunkOptions): Promise<void> {
+      await MagnmNative.stageUploadChunk(options);
+    },
+    async finishCloudUpload(options: FinishCloudUploadOptions): Promise<UploadResult> {
+      return MagnmNative.finishCloudUpload(options);
+    },
+    async abortUpload(options: { uploadId: string }): Promise<void> {
+      await MagnmNative.abortUpload(options);
     },
     async openBrowser(url: string): Promise<void> {
       await Browser.open({ url });

@@ -490,3 +490,47 @@ body {
 .mob-admin-member > .mg-chip {
   justify-self: start;
 }
+
+/* Work tab (Library, Plan, Create): small stacked rows that never scroll sideways. */
+.mob-asset {
+  display: grid;
+  gap: var(--s-1);
+  min-width: 0;
+  padding: var(--s-2) 0;
+  border-top: 1px solid var(--line);
+}
+
+.mob-asset:first-of-type {
+  border-top: 0;
+}
+
+.mob-asset[data-grey="true"] {
+  opacity: 0.55;
+}
+
+.mob-asset-meta {
+  min-width: 0;
+  font-size: 13px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.mob-asset-edit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  align-items: center;
+  min-width: 0;
+}
+
+.mob-asset-edit > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.mob-main .mg-input,
+.mob-main .mg-select,
+.mob-main .mg-textarea {
+  max-width: 100%;
+  min-width: 0;
+}

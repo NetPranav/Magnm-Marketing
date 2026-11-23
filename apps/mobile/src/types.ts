@@ -1,4 +1,4 @@
-export type MobileTabId = 'today' | 'drafts' | 'pitch' | 'chat' | 'more' | 'admin';
+export type MobileTabId = 'today' | 'drafts' | 'pitch' | 'work' | 'chat' | 'more' | 'admin';
 
 export type QueueItemKind = 'draft' | 'note' | 'idea' | 'social_request';
 
@@ -279,7 +279,11 @@ export type PhoneActionKind =
   | 'pitch_create'
   | 'pitch_update'
   | 'pitch_finalize'
-  | 'pitch_link';
+  | 'pitch_link'
+  | 'library_upload'
+  | 'schedule_update'
+  | 'draft_create'
+  | 'workflow_request';
 
 export type PhoneActionState = 'waiting' | 'applied' | 'rejected';
 
@@ -305,6 +309,30 @@ export interface PhoneActionPayload {
   hidden_sheets?: string[];
   hidden_about?: string[];
   price_overrides?: Record<string, number>;
+  /** library_upload: the Library category and an optional short note (the file itself is in the phone-uploads bucket). */
+  category?: string;
+  description?: string;
+  /** schedule_update: what to change on the schedule named by the target. */
+  enabled?: boolean;
+  interval_hours?: number;
+  time?: string;
+  day?: string;
+  /** draft_create: a text-only result written on the phone. */
+  platform?: string;
+  title?: string;
+  mode?: 'post' | 'thread' | 'rewrite';
+  /** workflow_request: the inputs of the workflow named by the target. */
+  brief?: string;
+  topic?: string;
+  platforms?: string[];
+  with_image?: boolean;
+  repo_id?: string;
+  duration_s?: number;
+  aspect?: string;
+  content_id?: string;
+  targets?: string[];
+  posts_per_week?: number;
+  week_start?: string;
 }
 
 /** The five contact details of a proposal's client. */

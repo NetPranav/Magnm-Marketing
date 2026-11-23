@@ -98,9 +98,9 @@ describe('mirror requests', () => {
       JSON.stringify({ access_token: 'jwt', refresh_token: 'r', expires_at: 9_999_999_999, user_id: UID, email: 'a@example.com' }),
     );
     const records = await fetchOwnMirrorRecords(UID, bridge);
-    expect(urls).toHaveLength(5);
+    expect(urls).toHaveLength(9);
     expect(urls.every((u) => u.includes(`owner_id=eq.${UID}`) && u.includes('deleted_at=is.null'))).toBe(true);
-    for (const kind of ['content_item', 'content_version', 'review_comment', 'task', 'pitch_proposal']) {
+    for (const kind of ['content_item', 'content_version', 'review_comment', 'task', 'pitch_proposal', 'asset', 'schedule', 'editorial_plan', 'brief']) {
       expect(urls.some((u) => u.includes(`kind=eq.${kind}`))).toBe(true);
     }
     expect(urls.some((u) => u.includes('done_at=is.null'))).toBe(true);
@@ -120,7 +120,7 @@ describe('mirror requests', () => {
       SESSION_SECRET_KEY,
       JSON.stringify({ access_token: 'jwt', refresh_token: 'r', expires_at: 9_999_999_999, user_id: UID, email: 'a@example.com' }),
     );
-    expect((await fetchOwnMirrorRecords(UID, bridge)).length).toBe(4);
+    expect((await fetchOwnMirrorRecords(UID, bridge)).length).toBe(8);
     const down = createPreviewNativeBridge({ httpHandler: async () => ({ status: 500, headers: {}, body: '{}' }) });
     await down.secureStore.set(
       SESSION_SECRET_KEY,
