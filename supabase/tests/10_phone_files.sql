@@ -366,7 +366,8 @@ begin
     if v_n <> 0 then
       raise exception 'FAIL: the expired object was not deleted';
     end if;
-  exception when raise_exception then
+  exception when others then
+    if sqlerrm like 'FAIL:%' then raise; end if;
     -- Real Supabase only deletes objects through the Storage API (storage.protect_delete): check the policy instead.
     if not exists (
       select 1 from pg_policies
@@ -426,7 +427,11 @@ begin
           '10101010-1010-4010-8010-101010101002/' || repeat('4', 64) || '.png', repeat('4', 64));
   delete from public.phone_files where content_id = 'cnt_b';
   raise notice 'PASS: the 1 GB budget is shared by all members';
-  delete from storage.objects where bucket_id = 'phone-files';
+  begin
+    delete from storage.objects where bucket_id = 'phone-files';
+  exception when others then
+    if sqlerrm like 'FAIL:%' then raise; end if;  -- real Supabase blocks direct deletes for everyone
+  end;
   update storage.objects set name = name where bucket_id = 'phone-files';
   raise notice 'PASS: member B cannot read, change or delete member A copies or objects';
 end;
