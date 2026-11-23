@@ -53,6 +53,8 @@ import learnings
 import mcp_tools
 import media_previews
 import phone_files
+import personal_keys
+import personal_repo_sync
 import notifications
 import paths
 import phone_pairing
@@ -404,6 +406,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.send_json(phone_files.status())
             elif url.path == "/api/account/ai":
                 self.send_json(ai_gateway.get_account_ai_status())
+            elif url.path == "/api/account/keys":
+                self.send_json({"keys": personal_keys.status(), "keychain": _is_keychain_mode()})
             else:
                 self.send_error(404, "Not Found")
         except team_auth.TeamAuthError as exc:
@@ -449,6 +453,20 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.send_json({"url": signed})
             elif url.path == "/api/account/phone-files/remove":
                 self._handle_phone_files_remove(params)
+            elif url.path == "/api/account/keys/sync":
+                cloud_sync.request_sync(immediate=True)
+                self.send_json({"ok": True})
+            elif url.path == "/api/account/keys/forget":
+                personal_keys.forget(params.get("name"))
+                cloud_sync.request_sync(immediate=True)
+                self.send_json({"ok": True})
+            elif url.path == "/api/account/keys/pending":
+                self.send_json({"ops": personal_keys.pending_ops()})
+            elif url.path == "/api/account/keys/applied":
+                names = params.get("names")
+                if not isinstance(names, list) or len(names) > 11:
+                    raise ValueError("names must be a list of key slots")
+                self.send_json({"applied": personal_keys.acknowledge(names)})
             else:
                 self.send_error(404, "Unknown endpoint")
         except ValueError as exc:
@@ -2024,6 +2042,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                     "recent_commits": sdata.get("recent_commits") or [],
                     "rate_limited": bool(sdata.get("rate_limited")),
                     "rate_limit_message": sdata.get("rate_limit_message"),
+                    "cloud": personal_repo_sync.cloud_info(r["id"]) if r.get("scope") == "personal" else None,
                 })
             self.send_json(enriched)
 
@@ -2386,6 +2405,18 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": str(exc)}, status=400)
             except Exception as exc:
                 self.send_json({"error": str(exc)}, status=500)
+
+        elif re.match(r"^/api/repos/[^/]+/update$", url.path):
+            repo_id = urllib.parse.unquote(url.path.split("/")[3])
+            if self._refuse_global_repo(repo_id):
+                return
+            try:
+                updated = repos.update_repo(repo_id, params)
+                cloud_sync.request_sync()
+                self.send_json({"success": True, "repo": updated})
+            except ValueError as exc:
+                msg = str(exc)
+                self.send_json({"error": msg}, status=404 if msg == "Repository not found" else 400)
 
         elif re.match(r"^/api/repos/[^/]+/sync$", url.path):
             repo_id = urllib.parse.unquote(url.path.split("/")[3])

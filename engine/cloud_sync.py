@@ -1197,6 +1197,8 @@ def sync_once():
         try:
             confidential_checker()
             _pull_team_repos(user_id, user_role, expected_gen)
+            _sync_personal_keys(user_id, expected_gen)
+            _sync_personal_repos(user_id, expected_gen)
             import team_knowledge
             try:
                 team_knowledge.sync(
@@ -1309,6 +1311,32 @@ def _pull_team_repos(user_id, role, expected_gen):
         if exc.status == 401:
             raise _SignedOutAbort() from exc
         _log_warning(f"team repos pull failed: {exc.message}")
+
+
+def _sync_personal_keys(user_id, expected_gen):
+    """Keep the owner's personal NVIDIA keys the same here and in the cloud. Sign-out stops the cycle; the rest only logs."""
+    import personal_keys
+    try:
+        personal_keys.sync(user_id, is_signed_out=lambda: _is_signed_out_or_stale(expected_gen))
+    except personal_keys.SignedOutAbort as exc:
+        raise _SignedOutAbort() from exc
+    except personal_keys.PersonalKeysError as exc:
+        _log_warning(f"personal keys: {exc.message}")
+    except Exception as exc:
+        _log_warning(f"personal keys error: {exc}")
+
+
+def _sync_personal_repos(user_id, expected_gen):
+    """Keep the owner's personal repositories the same here and in the cloud. Sign-out stops the cycle; the rest only logs."""
+    import personal_repo_sync
+    try:
+        personal_repo_sync.sync(user_id, is_signed_out=lambda: _is_signed_out_or_stale(expected_gen))
+    except personal_repo_sync.SignedOutAbort as exc:
+        raise _SignedOutAbort() from exc
+    except personal_repo_sync.PersonalReposError as exc:
+        _log_warning(f"personal repos: {exc.message}")
+    except Exception as exc:
+        _log_warning(f"personal repos error: {exc}")
 
 
 def _sync_phone_files(user_id, expected_gen):

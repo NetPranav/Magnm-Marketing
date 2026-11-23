@@ -273,6 +273,8 @@ export interface RepoRecord {
   scope?: 'personal' | 'global';
   /** The team's id for a global repo (the id above can differ when it merged with the user's own copy). */
   global_id?: string;
+  /** For your own repos: whether the phone sees it, and whether a folder path from the phone was refused. */
+  cloud?: { synced: boolean; path_rejected: boolean } | null;
 }
 
 export interface ShippedItem {

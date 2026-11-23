@@ -1,5 +1,6 @@
 import { ApiError, api } from '../api';
 import { isDesktop, isSecretEnvName, setSecret } from '../desktop';
+import { isPersonalKeySlot, requestKeySync } from './keys';
 import type {
   BakeoffResult,
   EngineStatusInfo,
@@ -110,6 +111,10 @@ export async function saveEnvConfig(updates: Record<string, string>): Promise<Sa
 
   for (const [name, value] of secretEntries) {
     await setSecret(name, value);
+  }
+  if (secretEntries.some(([name]) => isPersonalKeySlot(name))) {
+    // The engine restarted in place; tell it to share the new key with the phone now.
+    await requestKeySync();
   }
 
   return {

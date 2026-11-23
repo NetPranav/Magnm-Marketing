@@ -10,6 +10,9 @@ import {
   ThemeToggle,
 } from '@magnm/design/react';
 import { kindLabel, stateLabel } from '../actions';
+import type { NativeBridge } from '../native';
+import { PersonalKeysPanel } from './PersonalKeysPanel';
+import { ReposPanel } from './ReposPanel';
 import type {
   AccountProfile,
   AuthSession,
@@ -28,7 +31,9 @@ export interface MoreTabProps {
   profile: AccountProfile | null;
   authError: string | null;
   moreError: string | null;
-  hasPersonalNimKey: boolean;
+  bridge: NativeBridge;
+  /** Called when the personal keys on this phone changed, with whether one is left. */
+  onPersonalKeysChanged?: (hasKey: boolean) => void;
   queueItems: QueuedInboxItem[];
   /** Actions queued on this phone for the laptop (this account's only). */
   phoneActions?: PhoneAction[];
@@ -44,8 +49,6 @@ export interface MoreTabProps {
   onUnpair: () => void;
   onGoogleSignIn: () => Promise<void>;
   onSignOut: () => void;
-  onSavePersonalKey: (key: string) => Promise<boolean>;
-  onRemovePersonalKey: () => Promise<void>;
   onFlushQueue: () => Promise<void>;
   onRemoveQueuedItem: (clientId: string) => void;
   onSyncMirror: () => Promise<void>;
@@ -60,7 +63,8 @@ export function MoreTab({
   profile,
   authError,
   moreError,
-  hasPersonalNimKey,
+  bridge,
+  onPersonalKeysChanged,
   queueItems,
   phoneActions = [],
   onRemovePhoneAction,
@@ -75,15 +79,12 @@ export function MoreTab({
   onUnpair,
   onGoogleSignIn,
   onSignOut,
-  onSavePersonalKey,
-  onRemovePersonalKey,
   onFlushQueue,
   onRemoveQueuedItem,
   onSyncMirror,
 }: MoreTabProps) {
   const [qrInput, setQrInput] = useState('');
   const [phoneName, setPhoneName] = useState('My Android Phone');
-  const [nimKeyInput, setNimKeyInput] = useState('');
 
   return (
     <section aria-label="More" className="mob-stack">
@@ -234,56 +235,9 @@ export function MoreTab({
         </div>
       </Card>
 
-      <Card>
-        <div className="mob-stack-sm">
-          <Label>Personal NVIDIA NIM key</Label>
-          <span className="mob-mono">
-            {hasPersonalNimKey
-              ? 'Stored in secure store (never shown).'
-              : 'Not configured — Phone Lite uses shared team AI when signed in.'}
-          </span>
-          <Field
-            label="Update personal key"
-            htmlFor="nim-personal-key"
-            hint="Stored only in the native secure keystore."
-          >
-            <TextInput
-              id="nim-personal-key"
-              type="password"
-              autoComplete="off"
-              value={nimKeyInput}
-              onChange={(e) => setNimKeyInput(e.target.value)}
-              placeholder="nvapi-..."
-            />
-          </Field>
-          <div className="mob-actions">
-            <PillButton
-              size="sm"
-              disabled={!nimKeyInput.trim() || busyAction === 'nim-key'}
-              onClick={() => {
-                void (async () => {
-                  const ok = await onSavePersonalKey(nimKeyInput.trim());
-                  if (ok) {
-                    setNimKeyInput('');
-                  }
-                })();
-              }}
-            >
-              Save key
-            </PillButton>
-            {hasPersonalNimKey ? (
-              <PillButton
-                variant="outline"
-                size="sm"
-                disabled={busyAction === 'nim-key'}
-                onClick={() => void onRemovePersonalKey()}
-              >
-                Remove key
-              </PillButton>
-            ) : null}
-          </div>
-        </div>
-      </Card>
+      <PersonalKeysPanel bridge={bridge} signedIn={Boolean(session)} onChanged={onPersonalKeysChanged} />
+
+      <ReposPanel bridge={bridge} userId={session?.user_id ?? null} />
 
       <Card>
         <div className="mob-stack-sm">

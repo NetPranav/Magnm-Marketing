@@ -110,6 +110,23 @@ async fn delete_secret(
     restart_in_place(&app, supervisor.inner()).await
 }
 
+/// One key to store (the value is never logged or echoed in an error).
+#[derive(serde::Deserialize)]
+struct SecretSet {
+    name: String,
+    value: String,
+}
+
+/// Write and remove several allow-listed keys in the OS keychain WITHOUT restarting the engine. The engine asks for
+/// this when keys were added or removed on the phone; it already knows the change and confirms it afterwards.
+#[tauri::command]
+async fn store_secrets(sets: Vec<SecretSet>, deletes: Vec<String>) -> Result<(), String> {
+    let pairs: Vec<(String, String)> = sets.into_iter().map(|s| (s.name, s.value)).collect();
+    tauri::async_runtime::spawn_blocking(move || secrets::store_secret_values(&pairs, &deletes))
+        .await
+        .map_err(|err| format!("Failed to store secrets: {err}"))?
+}
+
 /// Restart the local Python engine in place; the window navigates only if the engine moved.
 #[tauri::command]
 async fn restart_engine(
@@ -199,6 +216,7 @@ pub fn run() {
             list_secrets,
             set_secret,
             delete_secret,
+            store_secrets,
             restart_engine,
             get_engine_logs,
         ])

@@ -54,6 +54,28 @@ export function removeTeamRepo(teamRepoId: string): Promise<{ success: boolean; 
   );
 }
 
+/** The fields of one of your own repositories that can be edited. Send only what changed. */
+export interface RepoEditFields {
+  name?: string;
+  id?: string;
+  branch?: string;
+  status?: string;
+  marketing_angle?: string;
+  confidential?: boolean;
+  local_path?: string;
+}
+
+/** Edit one of your own repositories. A new id moves its snapshots, facts and references; the engine checks a path. */
+export function updateRepo(
+  repoId: string,
+  changes: RepoEditFields,
+): Promise<{ success: boolean; repo: RepoRecord }> {
+  return api.post<{ success: boolean; repo: RepoRecord }>(
+    `/api/repos/${encodeURIComponent(repoId)}/update`,
+    changes,
+  );
+}
+
 /** Sync a connected repository immediately. */
 export function syncRepo(repoId: string): Promise<{ success: boolean; repo: RepoRecord }> {
   return api.post<{ success: boolean; repo: RepoRecord }>(

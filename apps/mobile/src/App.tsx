@@ -39,7 +39,6 @@ import {
   getPersonalNimKey,
   getStoredSession,
   handleAuthDeepLink,
-  setPersonalNimKey,
   signOut,
   startGoogleSignIn,
 } from './auth';
@@ -68,6 +67,7 @@ import { ShareInModal } from './components/ShareInModal';
 import { SocialLiveView } from './components/SocialLiveView';
 import { TodayTab } from './components/TodayTab';
 import { WelcomeGate } from './components/WelcomeGate';
+import { syncPersonalKeys } from './personalKeys';
 import { getNativeBridge, type NativeBridge, type SharedItem } from './native';
 import { draftsFromCache, mirrorIsNewer, remindersFromCache } from './mirrorView';
 import { HttpStatusError, NetworkPolicyError } from './net';
@@ -407,6 +407,25 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
       setProfile(null);
     }
   }, [bridge]);
+
+  // Keep the personal keys the same as on the laptop while signed in, wherever the user is in the app.
+  const sessionUserId = session?.user_id ?? null;
+  useEffect(() => {
+    if (!sessionUserId) return undefined;
+    let stopped = false;
+    const tick = async () => {
+      const out = await syncPersonalKeys(bridge);
+      if (stopped || !out) return;
+      const key = await getPersonalNimKey(bridge);
+      if (!stopped) setHasPersonalNimKey(Boolean(key));
+    };
+    void tick();
+    const timer = setInterval(() => void tick(), 90_000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [bridge, sessionUserId]);
 
   // Cloud side of the app: send waiting phone actions, read back what the laptop did, and refresh the mirror
   // (so drafts, comments and reminders show without any laptop connection and without the Sync button).
@@ -2238,7 +2257,8 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
             profile={profile}
             authError={authError}
             moreError={moreError}
-            hasPersonalNimKey={hasPersonalNimKey}
+            bridge={bridge}
+            onPersonalKeysChanged={setHasPersonalNimKey}
             queueItems={queueItems}
             phoneActions={phoneActions}
             onRemovePhoneAction={(id) => {
@@ -2258,38 +2278,6 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
             onUnpair={requestUnpair}
             onGoogleSignIn={handleGoogleSignIn}
             onSignOut={requestSignOut}
-            onSavePersonalKey={async (key) => {
-              setMoreError(null);
-              setBusyAction('nim-key');
-              try {
-                await setPersonalNimKey(key, bridge);
-                setHasPersonalNimKey(true);
-                showToast('Personal key saved');
-                return true;
-              } catch (err) {
-                const msg = err instanceof Error ? err.message : 'Could not save personal key.';
-                setMoreError(msg);
-                showToast(msg);
-                return false;
-              } finally {
-                setBusyAction(null);
-              }
-            }}
-            onRemovePersonalKey={async () => {
-              setMoreError(null);
-              setBusyAction('nim-key');
-              try {
-                await setPersonalNimKey(null, bridge);
-                setHasPersonalNimKey(false);
-                showToast('Personal key removed');
-              } catch (err) {
-                const msg = err instanceof Error ? err.message : 'Could not remove personal key.';
-                setMoreError(msg);
-                showToast(msg);
-              } finally {
-                setBusyAction(null);
-              }
-            }}
             onFlushQueue={async () => {
               const activePairing = pairingRef.current;
               if (!activePairing) return;

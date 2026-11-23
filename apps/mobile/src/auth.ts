@@ -14,6 +14,9 @@ export const REFRESH_LEEWAY_S = 60;
 export const PKCE_SECRET_KEY = 'magnm.auth.pkce';
 export const SESSION_SECRET_KEY = 'magnm.auth.session';
 export const NIM_KEY_SECRET_KEY = 'magnm.nim.personalKey';
+// Personal keys synced with the laptop (see personalKeys.ts); wiped on sign-out like the single key above.
+export const KEYS_MAP_SECRET_KEY = 'magnm.nim.personalKeys';
+export const KEYS_SYNC_SECRET_KEY = 'magnm.nim.keySync';
 
 const NOT_INVITED_MESSAGE =
   'This Google account is not invited to Magnm Studio. Ask your admin to invite it.';
@@ -105,6 +108,8 @@ export async function wipeAllLocalState(bridge: NativeBridge = getNativeBridge()
   await bridge.secureStore.remove(PKCE_SECRET_KEY);
   await bridge.secureStore.remove(LAPTOP_TOKEN_SECRET_KEY);
   await bridge.secureStore.remove(NIM_KEY_SECRET_KEY);
+  await bridge.secureStore.remove(KEYS_MAP_SECRET_KEY);
+  await bridge.secureStore.remove(KEYS_SYNC_SECRET_KEY);
   removeNonSecretKey(PAIRING_META_KEY);
   wipeCache();
   wipeQueue();

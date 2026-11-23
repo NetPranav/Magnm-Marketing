@@ -37,6 +37,7 @@ import type {
   ShippedItem,
 } from '../../types';
 import { formatTimestamp, isSafeHttpUrl } from '../../ui/format';
+import { RepoEditDialog } from './RepoEditDialog';
 
 const STATUS_LABELS: Record<string, string> = {
   released: 'Released',
@@ -85,6 +86,7 @@ export function ReposSection() {
 
   // Confirm remove dialog state
   const [confirmRemove, setConfirmRemove] = useState<RepoRecord | null>(null);
+  const [editingRepo, setEditingRepo] = useState<RepoRecord | null>(null);
 
   // Edit product rule dialog state
   const [editingRule, setEditingRule] = useState<ProductRule | null>(null);
@@ -557,13 +559,22 @@ export function ReposSection() {
                             <span className="studio-hint">Managed by your admin</span>
                           )
                         ) : (
-                          <PillButton
-                            variant="danger"
-                            size="sm"
-                            onClick={() => setConfirmRemove(repo)}
-                          >
-                            Remove
-                          </PillButton>
+                          <>
+                            <PillButton
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setEditingRepo(repo)}
+                            >
+                              Edit
+                            </PillButton>
+                            <PillButton
+                              variant="danger"
+                              size="sm"
+                              onClick={() => setConfirmRemove(repo)}
+                            >
+                              Remove
+                            </PillButton>
+                          </>
                         )}
                       </div>
                     </div>
@@ -951,6 +962,16 @@ export function ReposSection() {
           )}
         </div>
       </Dialog>
+
+      <RepoEditDialog
+        repo={editingRepo}
+        onClose={() => setEditingRepo(null)}
+        onSaved={(saved) => {
+          setEditingRepo(null);
+          setNotice(`Saved ${saved.name}.`);
+          void loadAll();
+        }}
+      />
 
       <Dialog
         open={Boolean(confirmRemove)}

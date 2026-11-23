@@ -38,6 +38,7 @@ import { ReposSection } from './sections/repos/ReposSection';
 import { ResearchSection } from './sections/research/ResearchSection';
 import { ReviewSection } from './sections/review/ReviewSection';
 import { SettingsSection } from './sections/settings/SettingsSection';
+import { usePersonalKeysSync } from './sections/settings/usePersonalKeysSync';
 import { TeamSection } from './sections/team/TeamSection';
 import { TodaySection } from './sections/today/TodaySection';
 import type { EngineStatusInfo, HealthInfo, JobRecord, SocialRunRecord } from './types';
@@ -377,6 +378,8 @@ export function App() {
       })
       .catch(() => {});
   }, []);
+
+  usePersonalKeysSync(Boolean(account?.signed_in) && !sessionEnded);
 
   if (sessionEnded) {
     return <SessionEndedScreen />;
