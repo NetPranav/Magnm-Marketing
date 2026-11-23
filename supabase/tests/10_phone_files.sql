@@ -360,11 +360,26 @@ begin
   if v_n <> 1 then
     raise exception 'FAIL: an expired copy marked for removal cannot be seen for deletion';
   end if;
-  delete from storage.objects where bucket_id = 'phone-files' and name = v_path;
+  begin
+    delete from storage.objects where bucket_id = 'phone-files' and name = v_path;
+    select count(*) into v_n from storage.objects where bucket_id = 'phone-files' and name = v_path;
+    if v_n <> 0 then
+      raise exception 'FAIL: the expired object was not deleted';
+    end if;
+  exception when raise_exception then
+    -- Real Supabase only deletes objects through the Storage API (storage.protect_delete): check the policy instead.
+    if not exists (
+      select 1 from pg_policies
+      where schemaname = 'storage' and tablename = 'objects' and policyname = 'phone_files_delete_own'
+        and cmd = 'DELETE' and roles = '{authenticated}'
+    ) then
+      raise exception 'FAIL: no owner delete policy for phone-files objects';
+    end if;
+  end;
   delete from public.phone_files where content_id = 'cnt_2';
   select count(*) into v_n from storage.objects where bucket_id = 'phone-files' and name = v_path;
   if v_n <> 0 then
-    raise exception 'FAIL: the expired object was not deleted';
+    raise exception 'FAIL: an object stays reachable after its copy row is gone';
   end if;
   raise notice 'PASS: an expired copy cannot be read; the laptop marks it, deletes the object, then the row';
 
