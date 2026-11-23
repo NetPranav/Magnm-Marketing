@@ -241,9 +241,10 @@ begin
   end loop;
   raise notice 'PASS: storage accepts only <own id>/<hash>.<ext> objects that an unexpired copy row points at';
 
-  -- 1 GB budget: previews count too.
+  -- 1 GB budget: previews count too. Leave exactly 100 bytes free, counting whatever the database already holds.
   insert into public.media_previews (local_source_id, source_kind, kind, storage_path, content_type, bytes)
-  values ('asset:big', 'asset', 'video_preview', v_a::text || '/video_preview/big.mp4', 'video/mp4', 1073741824 - 102558800 - 100);
+  values ('asset:big', 'asset', 'video_preview', v_a::text || '/video_preview/big.mp4', 'video/mp4',
+          1073741824 - public.team_storage_used() - 100);
   begin
     insert into public.phone_files (content_id, file_path, file_name, kind, content_type, bytes, storage_path, source_hash)
     values ('cnt_3', 'o/x.png', 'x.png', 'image', 'image/png', 200,
@@ -385,8 +386,8 @@ begin
   raise notice 'PASS: an expired copy cannot be read; the laptop marks it, deletes the object, then the row';
 
   -- Leave the owner exactly 100 bytes under the whole-project budget, for the next member.
-  select coalesce(sum(bytes), 0) into v_other from public.phone_files;
-  update public.media_previews set bytes = v_limit - 100 - v_other where local_source_id = 'asset:big';
+  v_other := public.team_storage_used();
+  update public.media_previews set bytes = bytes + (v_limit - 100 - v_other) where local_source_id = 'asset:big';
 end;
 $$;
 
