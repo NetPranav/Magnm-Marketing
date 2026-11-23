@@ -11,6 +11,7 @@ import {
   TextInput,
 } from '@magnm/design/react';
 import { stateLabel } from '../actions';
+import { copyExpiryLabel, formatCopySize, isCopyUsable, type PhoneCopy } from '../phoneCopies';
 import type { DraftComment, DraftFileEntry, DraftItem, PhoneAction, QueueItemKind } from '../types';
 
 const SHAREABLE_EXTENSIONS = ['.mp4', '.webm', '.png', '.jpg', '.jpeg', '.webp', '.pdf'];
@@ -41,6 +42,40 @@ export function extractShareableDraftFiles(files: DraftFileEntry[] | undefined):
   return out;
 }
 
+export interface DraftFileRow {
+  /** The path as the laptop knows it (live file) or as the cloud copy was made. */
+  path: string;
+  label: string;
+  kind: string;
+  /** The laptop lists this file on the draft right now. */
+  live: boolean;
+  copy: PhoneCopy | null;
+}
+
+function normalizeFilePath(raw: string): string {
+  return raw.replace(/\\/g, '/').replace(/^(\.\/)+/, '').replace(/\/{2,}/g, '/');
+}
+
+/** Files on the draft (from the laptop) joined with their cloud copies; a copy alone is still listed. */
+export function mergeFileRows(live: ShareableDraftFile[], copies: PhoneCopy[]): DraftFileRow[] {
+  const byPath = new Map<string, PhoneCopy>();
+  for (const copy of copies) byPath.set(normalizeFilePath(copy.file_path), copy);
+  const rows: DraftFileRow[] = [];
+  const seen = new Set<string>();
+  for (const file of live) {
+    const key = normalizeFilePath(file.path);
+    seen.add(key);
+    rows.push({ path: file.path, label: file.label, kind: file.kind, live: true, copy: byPath.get(key) ?? null });
+  }
+  for (const copy of copies) {
+    const key = normalizeFilePath(copy.file_path);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push({ path: copy.file_path, label: copy.file_name, kind: copy.kind, live: false, copy });
+  }
+  return rows;
+}
+
 export interface DraftsTabProps {
   drafts: DraftItem[];
   selectedDraft: DraftItem | null;
@@ -51,6 +86,9 @@ export interface DraftsTabProps {
   phoneActions?: PhoneAction[];
   /** Signed in: comment and mark-posted can be queued through the cloud while the laptop is away. */
   canQueue?: boolean;
+  /** Full-quality cloud copies of this account's finished draft files (the laptop keeps them 14 days). */
+  phoneCopies?: PhoneCopy[];
+  ownerUid?: string | null;
   busyAction: string | null;
   errorMessage: string | null;
   onSelectDraft: (id: string) => void;
@@ -59,7 +97,8 @@ export interface DraftsTabProps {
   onMarkPosted: (contentId: string, url?: string) => Promise<boolean>;
   onCopyText: (text: string) => Promise<boolean>;
   onShareOut: (title: string, text: string) => Promise<boolean>;
-  onShareFile?: (contentId: string, filePath: string, title?: string) => Promise<boolean>;
+  /** Get a file on the phone: the direct laptop path when reachable, else the cloud copy. */
+  onGetOnPhone?: (contentId: string, filePath: string, title?: string) => Promise<boolean>;
   onCreateOfflineItem: (input: {
     kind: QueueItemKind;
     title: string;
@@ -135,6 +174,8 @@ export function DraftsTab({
   canQueueOffline,
   phoneActions = [],
   canQueue = false,
+  phoneCopies = [],
+  ownerUid = null,
   busyAction,
   errorMessage,
   onSelectDraft,
@@ -143,7 +184,7 @@ export function DraftsTab({
   onMarkPosted,
   onCopyText,
   onShareOut,
-  onShareFile,
+  onGetOnPhone,
   onCreateOfflineItem,
 }: DraftsTabProps) {
   const [commentText, setCommentText] = useState('');
@@ -200,7 +241,10 @@ export function DraftsTab({
     const warnings = selectedDraft.warnings ?? [];
     const comments = selectedDraft.comments ?? [];
     const totalCommentCount = countComments(comments);
-    const shareableFiles = extractShareableDraftFiles(selectedDraft.files);
+    const fileRows = mergeFileRows(
+      extractShareableDraftFiles(selectedDraft.files),
+      phoneCopies.filter((c) => c.content_id === selectedDraft.id),
+    );
     const canAct = laptopReachable || canQueue;
     // Actions made on this phone for this draft. A comment the laptop applied is hidden once its own copy arrives.
     const phoneComments = flattenComments(comments)
@@ -257,27 +301,38 @@ export function DraftsTab({
           </div>
         </Card>
 
-        {shareableFiles.length > 0 ? (
+        {fileRows.length > 0 ? (
           <Card>
             <div className="mob-stack-sm">
-              <Label>Files ({shareableFiles.length})</Label>
+              <Label>Files ({fileRows.length})</Label>
               <RowList>
-                {shareableFiles.map((file) => {
+                {fileRows.map((file) => {
                   const fileBusy = busyAction === `share-file:${file.path}`;
+                  const cloudOk = file.copy ? isCopyUsable(file.copy, ownerUid ?? '') : false;
+                  const laptopOk = laptopReachable && file.live;
+                  const expired = Boolean(file.copy) && !cloudOk;
+                  const details = [file.kind];
+                  if (file.copy) details.push(formatCopySize(file.copy.bytes), copyExpiryLabel(file.copy));
                   return (
                     <Row
                       key={file.path}
                       title={file.label}
-                      description={file.kind}
+                      description={details.join(' · ')}
                       meta={
                         <PillButton
                           variant="outline"
                           size="sm"
-                          disabled={!laptopReachable || fileBusy || !onShareFile}
-                          title={laptopReachable ? undefined : 'Connect to laptop to share files'}
+                          disabled={!(laptopOk || cloudOk) || fileBusy || !onGetOnPhone}
+                          title={
+                            laptopOk || cloudOk
+                              ? undefined
+                              : expired
+                                ? 'This copy has expired. Connect to your laptop to get the file.'
+                                : 'Connect to your laptop to get this file'
+                          }
                           onClick={() => {
-                            if (onShareFile) {
-                              void onShareFile(
+                            if (onGetOnPhone) {
+                              void onGetOnPhone(
                                 selectedDraft.id,
                                 file.path,
                                 selectedDraft.title || file.label,
@@ -285,7 +340,7 @@ export function DraftsTab({
                             }
                           }}
                         >
-                          {fileBusy ? 'Preparing...' : 'Share'}
+                          {fileBusy ? 'Preparing...' : 'Get on phone'}
                         </PillButton>
                       }
                     />

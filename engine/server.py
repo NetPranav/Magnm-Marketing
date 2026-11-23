@@ -52,6 +52,7 @@ import key_pool
 import learnings
 import mcp_tools
 import media_previews
+import phone_files
 import notifications
 import paths
 import phone_pairing
@@ -399,6 +400,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 self.send_json(media_previews.status())
             elif url.path == "/api/account/storage":
                 self.send_json(media_previews.storage_usage())
+            elif url.path == "/api/account/phone-files":
+                self.send_json(phone_files.status())
             elif url.path == "/api/account/ai":
                 self.send_json(ai_gateway.get_account_ai_status())
             else:
@@ -444,6 +447,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                     return
                 signed = media_previews.signed_url(storage_path, expires_in=expires_in)
                 self.send_json({"url": signed})
+            elif url.path == "/api/account/phone-files/remove":
+                self._handle_phone_files_remove(params)
             else:
                 self.send_error(404, "Unknown endpoint")
         except ValueError as exc:
@@ -451,6 +456,30 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         except team_auth.TeamAuthError as exc:
             status = exc.status if isinstance(exc.status, int) and 400 <= exc.status < 600 else 400
             self.send_json({"error": exc.message}, status=status)
+
+    def _handle_phone_files_remove(self, params):
+        """The owner's request to remove the cloud copies of draft files (one, or all). Local files are untouched."""
+        sess = team_auth.get_session_info()
+        if not sess or not sess.get("user_id"):
+            self.send_json({"error": "Sign in to manage phone copies."}, status=401)
+            return
+        remove_all = params.get("all")
+        if remove_all is not None and remove_all is not True:
+            raise ValueError("all must be true when given")
+        try:
+            out = phone_files.remove(
+                str(sess["user_id"]),
+                content_id=params.get("content_id"),
+                file_path=params.get("file_path"),
+                remove_all=bool(remove_all),
+            )
+        except phone_files.SignedOutAbort:
+            self.send_json({"error": "Sign in to manage phone copies."}, status=401)
+            return
+        except phone_files.PhoneFilesError as exc:
+            self.send_json({"error": exc.message}, status=exc.status if 400 <= exc.status < 600 else 502)
+            return
+        self.send_json(out)
 
     def _handle_team_get(self, url):
         path = url.path.rstrip("/") or "/"

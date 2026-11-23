@@ -585,4 +585,68 @@ describe('AccountPanel', () => {
       expect(screen.getByText('AI: no AI keys available')).toBeTruthy();
     });
   });
+
+  it('shows the phone copies line, a full-storage notice, and removes every cloud copy on request', async () => {
+    let copies = { copies: 3, bytes: 12 * 1024 * 1024, uploaded: 1, removed: 0, skipped_budget: 2, errors: 0, paused: false,
+      unavailable: false, last_error: null as string | null,
+      message: 'Cloud storage is full: 2 older file(s) were not copied to your phone. Remove copies or previews to make room.' };
+    const removeBodies: unknown[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/account') {
+        return jsonResponse({
+          configured: true, signed_in: true, deactivated: false,
+          user: { id: 'u-1', email: 'member@example.com', display_name: 'Maya', avatar_url: null, role: 'member', active: true },
+        });
+      }
+      if (url === '/api/account/sync') {
+        return jsonResponse({ enabled: true, signed_in: true, last_sync_at: null, last_error: null, pending: 0, synced_count: 0, running: false });
+      }
+      if (url === '/api/account/media') {
+        return jsonResponse({ ffmpeg: true, uploaded: 0, waiting: 0, failed: 0, last_error: null });
+      }
+      if (url === '/api/account/phone-files/remove') {
+        removeBodies.push(JSON.parse(String(init?.body ?? '{}')));
+        copies = { ...copies, copies: 0, bytes: 0, skipped_budget: 0, message: '' };
+        return jsonResponse({ removed: 3, errors: 0 });
+      }
+      if (url === '/api/account/phone-files') return jsonResponse(copies);
+      return jsonResponse({});
+    });
+
+    render(<AccountPanel />);
+    await waitFor(() => {
+      expect(screen.getByText('Phone copies: 3 files · 12 MB · kept 14 days')).toBeTruthy();
+    });
+    expect(screen.getByText(/Cloud storage is full: 2 older file\(s\) were not copied/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove phone copies' }));
+    expect(screen.getByText(/Files on this laptop stay/)).toBeTruthy();
+    expect(removeBodies).toEqual([]);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByText(/Files on this laptop stay/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove phone copies' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove all' }));
+    await waitFor(() => expect(removeBodies).toEqual([{ all: true }]));
+    await waitFor(() => expect(screen.getByText('Phone copies: none')).toBeTruthy());
+  });
+
+  it('shows nothing about phone copies when the engine does not report them', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/account') {
+        return jsonResponse({
+          configured: true, signed_in: true, deactivated: false,
+          user: { id: 'u-1', email: 'member@example.com', display_name: 'Maya', avatar_url: null, role: 'member', active: true },
+        });
+      }
+      if (url === '/api/account/media') return jsonResponse({ ffmpeg: true, uploaded: 0, waiting: 0, failed: 0, last_error: null });
+      return jsonResponse({});
+    });
+    render(<AccountPanel />);
+    await waitFor(() => expect(screen.getByText('Previews: 0 uploaded · 0 waiting')).toBeTruthy());
+    expect(screen.queryByText(/Phone copies/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Remove phone copies' })).toBeNull();
+  });
 });

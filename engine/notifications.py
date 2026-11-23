@@ -158,6 +158,14 @@ NOTIFICATION_KINDS = (
         "route": "#/today",
     },
     {
+        "kind": "agent_reply",
+        "label": "Agent replies to phone requests",
+        "description": "When an agent answers a request you queued from your phone",
+        "default": True,
+        "admin_only": False,
+        "route": "#/team",
+    },
+    {
         "kind": "social_challenge",
         "label": "Social research checks",
         "description": "When social research pauses for a login or security check",

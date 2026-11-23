@@ -210,4 +210,70 @@ public class NativeUrlPolicyTest {
             );
         }
     }
+
+    private static final String UID = "11111111-2222-4333-8444-555555555501";
+    private static final String HASH = "a".repeat(64);
+    private static final String TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJ1cmwiOiJ4In0.c2lnbmF0dXJl";
+    private static final String SIGN = SUPA_ORIGIN + "/storage/v1/object/sign/phone-files/" + UID + "/" + HASH;
+
+    @Test
+    public void allowsOnlyTheExactPhoneCopyStoragePath() {
+        assertEquals(SIGN + ".png", policy.validateUrl(SIGN + ".png"));
+        assertEquals(SIGN + ".pdf?token=" + TOKEN, policy.validateUrl(SIGN + ".pdf?token=" + TOKEN));
+        String[] bad = {
+                SUPA_ORIGIN + "/storage/v1/object/sign/previews/" + UID + "/" + HASH + ".png",
+                SUPA_ORIGIN + "/storage/v1/object/sign/phone-files/" + UID + "/x/" + HASH + ".png",
+                SIGN + ".html",
+                SIGN + ".svg",
+                SUPA_ORIGIN + "/storage/v1/object/sign/phone-files/" + UID + "/evil.png",
+                SUPA_ORIGIN + "/storage/v1/object/sign/phone-files/" + UID + "/" + "A".repeat(64) + ".png",
+                SUPA_ORIGIN + "/storage/v1/object/sign/phone-files/" + UID + "/" + "a".repeat(63) + ".png",
+                SUPA_ORIGIN + "/storage/v1/object/sign/phone-files/not-a-uuid/" + HASH + ".png",
+                SUPA_ORIGIN + "/storage/v1/object/sign/phone-files/" + UID + "/../" + UID + "/" + HASH + ".png",
+                SUPA_ORIGIN + "/storage/v1/object/sign/phone-files/" + UID + "/..%2F" + HASH + ".png",
+                SUPA_ORIGIN + "/storage/v1/object/sign/phone-files/",
+                SUPA_ORIGIN + "/storage/v1/object/phone-files/" + UID + "/" + HASH + ".png",
+                SUPA_ORIGIN + "/storage/v1/object/authenticated/phone-files/" + UID + "/" + HASH + ".png",
+                SUPA_ORIGIN + "/storage/v1/object/public/phone-files/" + UID + "/" + HASH + ".png",
+                SUPA_ORIGIN + "/storage/v1/object/list/phone-files",
+                SUPA_ORIGIN + "/storage/v1/bucket",
+                SIGN + ".png?token=" + TOKEN + "&download=1",
+                SIGN + ".png?other=" + TOKEN,
+                SIGN + ".png?token=",
+                SIGN + ".png?token=a b",
+                SIGN + ".png;x",
+                SIGN + ".png#frag",
+                "https://evil.example.com/storage/v1/object/sign/phone-files/" + UID + "/" + HASH + ".png",
+                "http://example-proj.supabase.co/storage/v1/object/sign/phone-files/" + UID + "/" + HASH + ".png",
+        };
+        for (String url : bad) {
+            assertThrows("Expected rejection for " + url, NativeUrlPolicy.PolicyException.class, () -> policy.validateUrl(url));
+        }
+    }
+
+    @Test
+    public void validatesSignedCloudFileUrlsStrictly() {
+        assertEquals(SIGN + ".mp4?token=" + TOKEN, policy.validateCloudFileUrl(SIGN + ".mp4?token=" + TOKEN));
+        String[] bad = {
+                SIGN + ".mp4",
+                SIGN + ".mp4?",
+                SIGN + ".mp4?token=",
+                SIGN + ".mp4?token=" + TOKEN + "&x=1",
+                SIGN + ".mp4?x=" + TOKEN,
+                SIGN + ".mp4?token=" + "x".repeat(5000),
+                SUPA_ORIGIN + "/rest/v1/profiles?token=" + TOKEN,
+                "http://100.64.0.1:8788/phone/v1/files?path=a.mp4",
+                "https://evil.example.com/storage/v1/object/sign/phone-files/" + UID + "/" + HASH + ".png?token=" + TOKEN,
+        };
+        for (String url : bad) {
+            assertThrows("Expected cloud file URL rejection for " + url, NativeUrlPolicy.PolicyException.class, () -> policy.validateCloudFileUrl(url));
+        }
+    }
+
+    @Test
+    public void earlierSupabasePathsStayAsNarrowAsBefore() {
+        assertEquals(SUPA_ORIGIN + "/rest/v1/phone_files?owner_id=eq.x", policy.validateUrl(SUPA_ORIGIN + "/rest/v1/phone_files?owner_id=eq.x"));
+        assertThrows(NativeUrlPolicy.PolicyException.class, () -> policy.validateUrl(SUPA_ORIGIN + "/storage/v1/object/previews/" + UID + "/x.webp"));
+        assertThrows(NativeUrlPolicy.PolicyException.class, () -> policy.validateUrl(SUPA_ORIGIN + "/functions/v1/other"));
+    }
 }

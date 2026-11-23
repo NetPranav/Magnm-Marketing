@@ -1174,6 +1174,8 @@ def sync_once():
             except Exception as exc:
                 _log_warning(f"media previews sync error: {exc}")
 
+            _sync_phone_files(user_id, expected_gen)
+
             import pitch_links
             pitch_links.sync_live_links(
                 user_id,
@@ -1253,6 +1255,19 @@ def _pull_team_repos(user_id, role, expected_gen):
         _log_warning(f"team repos pull failed: {exc.message}")
 
 
+def _sync_phone_files(user_id, expected_gen):
+    """Copy finished, non-confidential draft files for the phone. Sign-out stops the cycle; anything else only logs."""
+    import phone_files
+    try:
+        phone_files.sync(user_id, is_signed_out=lambda: _is_signed_out_or_stale(expected_gen))
+    except phone_files.SignedOutAbort as exc:
+        raise _SignedOutAbort() from exc
+    except phone_files.PhoneFilesError as exc:
+        _log_warning(f"phone copies: {exc.message}")
+    except Exception as exc:
+        _log_warning(f"phone copies error: {exc}")
+
+
 def _apply_phone_actions(user_id, expected_gen):
     """Apply what the user queued from the phone, before the mirror upload so the result shows in the same cycle.
 
@@ -1286,6 +1301,11 @@ def notify_signed_out():
     try:
         import team_knowledge
         team_knowledge.notify_signed_out()
+    except Exception:
+        pass
+    try:
+        import phone_files
+        phone_files.notify_signed_out()
     except Exception:
         pass
     _clear_team_repos()

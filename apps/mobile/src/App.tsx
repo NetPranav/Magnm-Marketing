@@ -51,7 +51,9 @@ import {
   saveLaptopSnapshot,
   type LaptopCachedSnapshot,
 } from './cache';
+import { decideRoute, getConfiguredAgent } from './agentTools';
 import { syncPhoneActions } from './cloudActions';
+import { PhoneCopyError, fetchPhoneCopies, getCopyOnPhone, isCopyUsable, type PhoneCopy } from './phoneCopies';
 import { rulesForQueue } from './queueRules';
 import { ChatTab, DEFAULT_LITE_AGENTS } from './components/ChatTab';
 import { DraftsTab } from './components/DraftsTab';
@@ -198,6 +200,8 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
     initialPairing ? getBoundQueueItems(initialPairing.deviceId) : [],
   );
   const [phoneActions, setPhoneActions] = useState<PhoneAction[]>([]);
+  const [phoneCopies, setPhoneCopies] = useState<PhoneCopy[]>([]);
+  const phoneActionsRef = useRef<PhoneAction[]>([]);
   const [cacheVersion, setCacheVersion] = useState(0);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -241,6 +245,10 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
   const showToast = useCallback((msg: string) => {
     setToast(msg);
   }, []);
+
+  useEffect(() => {
+    phoneActionsRef.current = phoneActions;
+  }, [phoneActions]);
 
   useEffect(() => {
     if (!toast) return undefined;
@@ -300,6 +308,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
     setMoreError(null);
     setQueueItems([]);
     setPhoneActions([]);
+    setPhoneCopies([]);
     setConfirmDialog(null);
     // Requests cut off by the wipe never reach their own cleanup.
     setBusyAction(null);
@@ -397,13 +406,27 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
       try {
         await syncPhoneActions(uid, bridge);
         if (isStale()) return;
-        setPhoneActions(loadActions(uid));
+        const nextActions = loadActions(uid);
+        // An agent that answered while the phone was open: tell the owner (never the reply text).
+        const known = new Map(phoneActionsRef.current.map((a) => [a.id, a.state]));
+        for (const a of nextActions) {
+          if (a.kind === 'agent_task' && a.state === 'applied' && known.get(a.id) === 'waiting') {
+            showToast(`${getConfiguredAgent(a.target_id)?.name ?? 'An agent'} replied`);
+          }
+        }
+        setPhoneActions(nextActions);
         const wantMirror =
           opts.mirror !== false && (opts.force === true || Date.now() - lastMirrorAtRef.current > 5000);
         if (!wantMirror) return;
         lastMirrorAtRef.current = Date.now();
         await fetchOwnMirrorRecords(uid, bridge);
         if (isStale()) return;
+        // The full-quality copies of finished draft files the laptop keeps in the cloud (this account's only).
+        void fetchPhoneCopies(uid, bridge)
+          .then((copies) => {
+            if (!isStale()) setPhoneCopies(copies);
+          })
+          .catch(() => undefined);
         // Refresh the shared rules every time (a failed fetch keeps the saved copy).
         await fetchSharedProductRules(uid, bridge).catch(() => undefined);
         if (isStale()) return;
@@ -416,7 +439,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
         // Offline or the cloud is down: the next open, foreground or timer tries again.
       }
     },
-    [bridge, hydrateFromCache],
+    [bridge, hydrateFromCache, showToast],
   );
 
   const refreshLaptop = useCallback(
@@ -1129,26 +1152,52 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
     }
   }
 
-  async function handleShareDraftFile(
+  /**
+   * Get a draft file on the phone and offer to save or share it. The direct laptop path is used when the laptop is
+   * reachable and lists the file; otherwise (or if the laptop turns out to be away) the 14-day cloud copy.
+   */
+  async function handleGetOnPhone(
     contentId: string,
     filePath: string,
     title?: string,
   ): Promise<boolean> {
     const activePairing = pairingRef.current;
-    if (!activePairing) return false;
+    const uid = sessionRef.current?.user_id ?? null;
     const gen = appGenRef.current;
     const stateGen = getStateGeneration();
+    const norm = (p: string) => p.replace(/\\/g, '/').replace(/^(\.\/)+/, '');
+    const copy = uid
+      ? phoneCopies.find((c) => c.content_id === contentId && norm(c.file_path) === norm(filePath)) ?? null
+      : null;
+    const liveFile = (selectedDraft?.files ?? []).some(
+      (f) => norm(typeof f === 'string' ? f : f?.path ?? '') === norm(filePath),
+    );
     setDraftsError(null);
     setBusyAction(`share-file:${filePath}`);
     try {
-      await shareLaptopDraftFile(activePairing, contentId, filePath, title, bridge);
+      if (activePairing && laptopReachable && liveFile) {
+        try {
+          await shareLaptopDraftFile(activePairing, contentId, filePath, title, bridge);
+          if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return false;
+          showToast('Opened share sheet');
+          return true;
+        } catch (err) {
+          if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return false;
+          handleLaptopActionError(err);
+          if (!isLaptopNetworkError(err) || !copy || !uid || !isCopyUsable(copy, uid)) throw err;
+          // The laptop went away: fall back to the cloud copy.
+        }
+      }
+      if (!copy || !uid) {
+        throw new PhoneCopyError('Connect to your laptop to get this file.');
+      }
+      await getCopyOnPhone(uid, copy, title, bridge);
       if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return false;
       showToast('Opened share sheet');
       return true;
     } catch (err) {
       if (appGenRef.current !== gen || getStateGeneration() !== stateGen) return false;
-      handleLaptopActionError(err);
-      const msg = err instanceof Error ? err.message : 'Could not share file.';
+      const msg = err instanceof Error ? err.message : 'Could not get the file.';
       setDraftsError(msg);
       showToast(msg);
       return false;
@@ -1366,6 +1415,21 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
         // The agent may have asked for a social run: show its card, with Start, straight away.
         void reloadSocialRuns(activePairing);
         return true;
+      }
+
+      // A request that needs one of the agent's laptop tools is queued for the laptop (decided from the agent's tool
+      // list and the owner's words only, never from a model reply); everything else is answered here in text.
+      if (decideRoute(activeAgentId, text).route === 'laptop') {
+        return queueCloudAction(
+          {
+            kind: 'agent_task',
+            target_id: activeAgentId,
+            payload: { message: text },
+            label: getConfiguredAgent(activeAgentId)?.name ?? null,
+          },
+          'Queued for your laptop',
+          setChatError,
+        );
       }
 
       // Cloud history contains ONLY successful Phone Lite turns from this account.
@@ -2021,7 +2085,9 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
             onMarkPosted={handleMarkPosted}
             onCopyText={handleCopyText}
             onShareOut={handleShareOut}
-            onShareFile={handleShareDraftFile}
+            onGetOnPhone={handleGetOnPhone}
+            phoneCopies={phoneCopies}
+            ownerUid={session?.user_id ?? null}
             onCreateOfflineItem={handleSaveInboxOrQueue}
           />
         ) : null}
@@ -2061,6 +2127,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
             errorMessage={chatError}
             onSendMessage={handleSendChatMessage}
             onDictate={() => bridge.dictate()}
+            phoneActions={phoneActions}
             socialResearch={socialResearchProps}
           />
         ) : null}

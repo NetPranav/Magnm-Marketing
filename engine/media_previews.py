@@ -502,7 +502,9 @@ def _sanitize_storage_path(storage_path):
 
 
 class SupabaseStorageBackend(StorageBackend):
-    """Supabase Storage implementation using user JWT and RLS on bucket 'previews'."""
+    """Supabase Storage implementation using user JWT and RLS on one private bucket ('previews' unless a subclass says)."""
+
+    BUCKET = "previews"
 
     def _raw_request(self, method, url, headers=None, data=None, timeout=UPLOAD_TIMEOUT_S):
         cfg = team_auth._require_config()
@@ -540,7 +542,7 @@ class SupabaseStorageBackend(StorageBackend):
         cfg = team_auth._require_config()
         rel = _sanitize_storage_path(storage_path)
         encoded = urllib.parse.quote(rel, safe="/")
-        url = f"{cfg['url']}/storage/v1/object/previews/{encoded}"
+        url = f"{cfg['url']}/storage/v1/object/{self.BUCKET}/{encoded}"
         self._raw_request(
             "POST",
             url,
@@ -557,7 +559,7 @@ class SupabaseStorageBackend(StorageBackend):
         if not paths_list:
             return
         cfg = team_auth._require_config()
-        url = f"{cfg['url']}/storage/v1/object/previews"
+        url = f"{cfg['url']}/storage/v1/object/{self.BUCKET}"
         self._raw_request(
             "DELETE",
             url,
@@ -579,7 +581,7 @@ class SupabaseStorageBackend(StorageBackend):
         if exp <= 0:
             raise ValueError("expires_in must be positive.")
         encoded = urllib.parse.quote(rel, safe="/")
-        url = f"{cfg['url']}/storage/v1/object/sign/previews/{encoded}"
+        url = f"{cfg['url']}/storage/v1/object/sign/{self.BUCKET}/{encoded}"
         raw = self._raw_request(
             "POST",
             url,

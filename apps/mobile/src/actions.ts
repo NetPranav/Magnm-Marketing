@@ -2,6 +2,7 @@
 // by itself so the laptop can apply them when it is back. Everything here is local and bound to one account.
 // The same checks run when an action is made, when it is loaded and again just before it is sent.
 
+import { getConfiguredAgent } from './agentTools';
 import { findConfidentialMention } from './productRules';
 import {
   readNonSecretJson,
@@ -18,8 +19,9 @@ import type {
 } from './types';
 
 export const ACTIONS_STORAGE_KEY = 'magnm.mobile.phoneActions.v1';
-export const ACTION_KINDS: readonly PhoneActionKind[] = ['draft_comment', 'draft_posted', 'reminder_done'];
+export const ACTION_KINDS: readonly PhoneActionKind[] = ['draft_comment', 'draft_posted', 'reminder_done', 'agent_task'];
 export const MAX_COMMENT_CHARS = 4000;
+export const MAX_AGENT_MESSAGE_CHARS = 4000;
 export const MAX_URL_CHARS = 2000;
 export const MAX_TARGET_CHARS = 200;
 export const MAX_WAITING_ACTIONS = 100;
@@ -115,6 +117,25 @@ export function validateActionInput(input: ActionInput | CleanActionInput): Clea
     return { kind, target_id: target, payload: { url } };
   }
 
+  if (kind === 'agent_task') {
+    if (getConfiguredAgent(target) === null) {
+      throw new PhoneActionError('That agent is not on your team.');
+    }
+    if (keys.length !== 1 || keys[0] !== 'message') {
+      throw new PhoneActionError('The request has unexpected details.');
+    }
+    const message = payload.message;
+    if (
+      typeof message !== 'string' ||
+      BODY_BAD_RE.test(message) ||
+      !message.trim() ||
+      message.trim().length > MAX_AGENT_MESSAGE_CHARS
+    ) {
+      throw new PhoneActionError(`A request must have 1 to ${MAX_AGENT_MESSAGE_CHARS} characters.`);
+    }
+    return { kind, target_id: target, payload: { message: message.trim() } };
+  }
+
   if (keys.length > 0) {
     throw new PhoneActionError('A reminder needs no details.');
   }
@@ -139,6 +160,13 @@ function cleanLabel(label: unknown): string | null {
   return one ? one.slice(0, 80) : null;
 }
 
+/** An agent's reply as shown on the phone: text only, no control characters, at most 4000 characters. */
+export function cleanReply(raw: string): string | null {
+  // eslint-disable-next-line no-control-regex
+  const text = raw.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, ' ').trim().slice(0, MAX_AGENT_MESSAGE_CHARS);
+  return text || null;
+}
+
 function asStoredAction(raw: unknown): PhoneAction | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Partial<PhoneAction>;
@@ -157,6 +185,12 @@ function asStoredAction(raw: unknown): PhoneAction | null {
       sent: r.sent,
       state: r.state as PhoneActionState,
       result: typeof r.result === 'string' ? r.result.slice(0, MAX_RESULT_CHARS) : null,
+      ...(clean.kind === 'agent_task'
+        ? {
+            reply: typeof r.reply === 'string' ? cleanReply(r.reply) : null,
+            laptop_only: r.laptop_only === true,
+          }
+        : {}),
     };
   } catch {
     return null;
@@ -199,7 +233,7 @@ export function loadActions(ownerUid: string | null | undefined): PhoneAction[] 
 export function patchAction(
   ownerUid: string,
   id: string,
-  patch: Partial<Pick<PhoneAction, 'sent' | 'state' | 'result'>>,
+  patch: Partial<Pick<PhoneAction, 'sent' | 'state' | 'result' | 'reply' | 'laptop_only'>>,
 ): boolean {
   const all = readAll();
   const at = all.findIndex((a) => a.id === id && a.owner_uid === ownerUid);
@@ -252,7 +286,7 @@ export function enqueueAction(
     throw new PhoneActionError('Confidential items can only be changed on the laptop.');
   }
   const clean = validateActionInput(input);
-  mentionsConfidential([clean.payload.body, clean.payload.url], rules);
+  mentionsConfidential([clean.payload.body, clean.payload.url, clean.payload.message], rules);
 
   // Another account's items are not adopted: they go when a different account queues.
   const mine = readAll().filter((a) => a.owner_uid === uid);
@@ -288,5 +322,6 @@ export function stateLabel(action: PhoneAction): string {
 export function kindLabel(kind: PhoneActionKind): string {
   if (kind === 'draft_comment') return 'Comment';
   if (kind === 'draft_posted') return 'Mark as posted';
+  if (kind === 'agent_task') return 'Agent request';
   return 'Reminder done';
 }

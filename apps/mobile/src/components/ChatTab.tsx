@@ -8,7 +8,9 @@ import {
   StatusDot,
   TextArea,
 } from '@magnm/design/react';
-import type { ChatTurn, PhoneAgentInfo } from '../types';
+import { stateLabel } from '../actions';
+import { configuredAgents, getConfiguredAgent } from '../agentTools';
+import type { ChatTurn, PhoneAction, PhoneAgentInfo } from '../types';
 import {
   SocialResearchPanel,
   type SocialResearchPanelProps,
@@ -27,13 +29,18 @@ export interface ChatTabProps {
   errorMessage: string | null;
   onSendMessage: (text: string, agentId: string) => Promise<boolean>;
   onDictate: () => Promise<string | null>;
+  /** Requests queued on this phone for the laptop (this account's only). */
+  phoneActions?: PhoneAction[];
   socialResearch?: Omit<SocialResearchPanelProps, 'idPrefix'>;
 }
 
-export const DEFAULT_LITE_AGENTS: PhoneAgentInfo[] = [
-  { id: 'writer', name: 'Writer', role: 'Posts, captions, threads, hooks' },
-  { id: 'cmo', name: 'CMO', role: 'Strategy, campaign ideas, messaging' },
-];
+/** Phone Lite talks to all seven configured agents, by their configured names and roles. */
+export const DEFAULT_LITE_AGENTS: PhoneAgentInfo[] = configuredAgents().map((a) => ({
+  id: a.id,
+  name: a.name,
+  code: a.code,
+  role: a.role,
+}));
 
 const QUICK_PROMPTS = [
   { label: 'Shorten', prompt: 'Shorten this post while keeping the core takeaway:\n\n' },
@@ -55,6 +62,7 @@ export function ChatTab({
   errorMessage,
   onSendMessage,
   onDictate,
+  phoneActions = [],
   socialResearch,
 }: ChatTabProps) {
   const [draftText, setDraftText] = useState('');
@@ -99,6 +107,7 @@ export function ChatTab({
   }
 
   const displayError = errorMessage || dictateError;
+  const agentTasks = phoneActions.filter((a) => a.kind === 'agent_task').slice(-10).reverse();
 
   return (
     <section aria-label="Chat" className="mob-stack">
@@ -114,7 +123,9 @@ export function ChatTab({
           {!laptopReachable ? (
             <div className="mob-stack-sm">
               <p className="mob-body-text">
-                Phone Lite mode: writing and quick actions only, no tools. Confidential products stay on your laptop.
+                Phone Lite mode: every agent answers in text here, without tools. A request that needs a laptop tool
+                (web or social research, images, repos, saving numbers, delegation) is queued for your laptop and its
+                reply comes back here. Confidential products stay on your laptop.
               </p>
               <span className="mob-mono">
                 Key: {liteSourceLabel} · Product rules: {hasProductRules ? 'Loaded' : 'Not cached'}
@@ -232,7 +243,40 @@ export function ChatTab({
         </div>
       </Card>
 
+      {agentTasks.length > 0 ? (
+        <Card>
+          <div className="mob-stack-sm" aria-label="Requests for your laptop">
+            <Label>Requests for your laptop</Label>
+            {agentTasks.map((task) => (
+              <AgentTaskEntry key={task.id} task={task} />
+            ))}
+          </div>
+        </Card>
+      ) : null}
+
       {socialResearch ? <SocialResearchPanel idPrefix="chat" {...socialResearch} /> : null}
     </section>
+  );
+}
+
+function AgentTaskEntry({ task }: { task: PhoneAction }) {
+  const agent = getConfiguredAgent(task.target_id);
+  const name = agent?.name ?? task.target_id;
+  let status: string;
+  if (task.state === 'waiting') status = 'Queued for your laptop';
+  else if (task.state === 'rejected') status = task.result || 'Not applied.';
+  else if (task.laptop_only) status = 'Replied on your laptop only. Open it there.';
+  else if (task.reply) status = `${name} replied`;
+  else status = `${name} replied. Loading the reply...`;
+  return (
+    <div className="mob-msg">
+      <div className="mob-row-between">
+        <span className="mob-mono">{name}</span>
+        <span className="mg-chip">{task.state === 'waiting' ? stateLabel(task) : task.state === 'applied' ? 'Applied' : 'Not applied'}</span>
+      </div>
+      <p className="mob-body-text">{task.payload.message}</p>
+      <p className="mob-mono">{status}</p>
+      {task.state === 'applied' && task.reply ? <p className="mob-body-text">{task.reply}</p> : null}
+    </div>
   );
 }

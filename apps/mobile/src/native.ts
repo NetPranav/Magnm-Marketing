@@ -43,6 +43,12 @@ export interface ShareLaptopFileOptions {
   title?: string;
 }
 
+/** A signed cloud copy of a draft file. Only a URL and a title: a signed link carries its own permission. */
+export interface ShareCloudFileOptions {
+  url: string;
+  title?: string;
+}
+
 export interface SharePdfOptions {
   base64: string;
   title?: string;
@@ -63,6 +69,7 @@ export interface NativeBridge {
   dictate(): Promise<string | null>;
   shareOut(options: ShareOutOptions): Promise<void>;
   shareLaptopFile?(options: ShareLaptopFileOptions): Promise<void>;
+  shareCloudFile?(options: ShareCloudFileOptions): Promise<void>;
   sharePdf?(options: SharePdfOptions): Promise<void>;
   openBrowser(url: string): Promise<void>;
   closeBrowser(): Promise<void>;
@@ -85,6 +92,7 @@ interface MagnmNativePlugin {
   dictate(): Promise<{ text: string | null }>;
   shareOut(options: ShareOutOptions): Promise<void>;
   shareLaptopFile(options: ShareLaptopFileOptions): Promise<void>;
+  shareCloudFile(options: ShareCloudFileOptions): Promise<void>;
   sharePdf(options: SharePdfOptions): Promise<void>;
 }
 
@@ -99,6 +107,7 @@ export interface PreviewBridgeOptions {
   onOpenBrowser?: (url: string) => void;
   onShareOut?: (options: ShareOutOptions) => void;
   onShareLaptopFile?: (options: ShareLaptopFileOptions) => Promise<void> | void;
+  onShareCloudFile?: (options: ShareCloudFileOptions) => Promise<void> | void;
   onSharePdf?: (options: SharePdfOptions) => Promise<void> | void;
   onMinimize?: () => void;
 }
@@ -163,6 +172,13 @@ export function createPreviewNativeBridge(
     async shareLaptopFile(opts: ShareLaptopFileOptions): Promise<void> {
       if (options.onShareLaptopFile) {
         await options.onShareLaptopFile(opts);
+        return;
+      }
+      throw new Error(`${PREVIEW_BANNER_LABEL}: file sharing is available in the Android app.`);
+    },
+    async shareCloudFile(opts: ShareCloudFileOptions): Promise<void> {
+      if (options.onShareCloudFile) {
+        await options.onShareCloudFile(opts);
         return;
       }
       throw new Error(`${PREVIEW_BANNER_LABEL}: file sharing is available in the Android app.`);
@@ -314,6 +330,9 @@ export function createCapacitorNativeBridge(): NativeBridge {
     },
     async shareLaptopFile(options: ShareLaptopFileOptions): Promise<void> {
       await MagnmNative.shareLaptopFile(options);
+    },
+    async shareCloudFile(options: ShareCloudFileOptions): Promise<void> {
+      await MagnmNative.shareCloudFile(options);
     },
     async sharePdf(options: SharePdfOptions): Promise<void> {
       await MagnmNative.sharePdf(options);

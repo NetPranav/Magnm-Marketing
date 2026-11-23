@@ -1,4 +1,5 @@
 import modelsConfig from '@magnm/config/models.json';
+import { getConfiguredAgent, type ConfiguredAgent } from './agentTools';
 import { getPersonalNimKey, getStoredSession, getValidAccessToken } from './auth';
 import {
   getCachedProductRules,
@@ -748,19 +749,18 @@ export async function resolveProductRulesForPhoneLite(
 }
 
 function selectPhoneLiteModel(agentId: string): string {
-  const clean = agentId.trim().toLowerCase();
   const roles = modelsConfig.roles as Record<string, string>;
   const tiers = modelsConfig.tiers as Record<string, { primary: string }>;
-  const tierName = clean === 'cmo' ? roles.cmo || 'reasoning' : roles.writer || 'writing';
+  const tierName = roles[agentId] || 'writing';
   return tiers[tierName]?.primary || 'minimaxai/minimax-m3.1-flash';
 }
 
-function buildPhoneLiteSystemPrompt(agentId: string, rules: ProductRulesConfig): string {
-  const roleLabel = agentId.toLowerCase() === 'cmo' ? 'CMO' : 'Writer';
+function buildPhoneLiteSystemPrompt(agent: ConfiguredAgent, rules: ProductRulesConfig): string {
   return [
-    `You are Magnm's ${roleLabel} running in Phone Lite mode.`,
-    'You are limited to writing, rewriting, hooks, captions, hashtags, and quick editorial feedback.',
+    `You are Magnm's ${agent.name} running in Phone Lite mode. Your role: ${agent.role}`,
+    'Answer with what you can do in text: writing, rewriting, planning, reviewing text and explaining.',
     'You have NO tools, NO web browsing, NO repo access, and NO media rendering on the phone.',
+    'If the request needs a tool, say plainly that it needs the laptop.',
     'Never invent unverified metrics or product features.',
     '',
     formatProductRulesPrompt(rules),
@@ -774,8 +774,8 @@ export interface PhoneLiteResult {
 }
 
 /**
- * Send a Phone Lite writing/quick-action request when laptop is offline.
- * Allows only writer and cmo, enforces product_rules presence, and refuses confidential products.
+ * Send a Phone Lite request when the laptop is away. Any of the configured agents may answer, with text only and
+ * no tools; product_rules must be present and a confidential product is refused.
  */
 export async function sendPhoneLiteMessage(params: {
   agentId: string;
@@ -784,10 +784,11 @@ export async function sendPhoneLiteMessage(params: {
   bridge?: NativeBridge;
 }): Promise<PhoneLiteResult> {
   const bridge = params.bridge ?? getNativeBridge();
-  const cleanAgent = params.agentId.trim().toLowerCase();
-  if (cleanAgent !== 'writer' && cleanAgent !== 'cmo') {
-    throw new Error(`Phone Lite only allows writer or cmo agents (got "${params.agentId}").`);
+  const agent = getConfiguredAgent(typeof params.agentId === 'string' ? params.agentId : '');
+  if (!agent) {
+    throw new Error(`Phone Lite can only talk to a configured agent (got "${String(params.agentId).slice(0, 40)}").`);
   }
+  const cleanAgent = agent.id;
 
   const text = params.text.trim();
   if (!text) {
@@ -815,7 +816,7 @@ export async function sendPhoneLiteMessage(params: {
 
   const personalNimKey = await getPersonalNimKey(bridge);
   const model = selectPhoneLiteModel(cleanAgent);
-  const systemPrompt = buildPhoneLiteSystemPrompt(cleanAgent, rules);
+  const systemPrompt = buildPhoneLiteSystemPrompt(agent, rules);
 
   const messages = [
     { role: 'system', content: systemPrompt },

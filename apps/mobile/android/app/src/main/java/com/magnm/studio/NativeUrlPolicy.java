@@ -25,6 +25,11 @@ public final class NativeUrlPolicy {
     private static final String NIM_HOST = "integrate.api.nvidia.com";
     private static final Pattern STRICT_OCTET = Pattern.compile("^(0|[1-9][0-9]{0,2})$");
     private static final Pattern STRICT_PORT = Pattern.compile("^[1-9][0-9]{0,4}$");
+    // The one storage path the app may use: <owner id>/<64 hex>.<extension> in the private phone-files bucket.
+    private static final Pattern PHONE_COPY_PATH = Pattern.compile(
+            "^/storage/v1/object/sign/phone-files/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+                    + "/[0-9a-f]{64}\\.(?:png|jpg|jpeg|webp|mp4|webm|pdf)$");
+    private static final Pattern PHONE_COPY_QUERY = Pattern.compile("^\\?token=[A-Za-z0-9._-]{8,4000}$");
 
     private static final Set<String> ALLOWED_METHODS;
     private static final Set<String> FORBIDDEN_HEADERS;
@@ -263,6 +268,9 @@ public final class NativeUrlPolicy {
             if (!isAllowedSupabasePath(path)) {
                 throw new PolicyException("Supabase endpoint path is not allowed.");
             }
+            if (PHONE_COPY_PATH.matcher(path).matches() && !query.isEmpty() && !PHONE_COPY_QUERY.matcher(query).matches()) {
+                throw new PolicyException("A phone copy link takes only its token.");
+            }
             return "https://" + supabaseHost + path + query;
         }
         if (lowerHost.equals(NIM_HOST)) {
@@ -300,7 +308,31 @@ public final class NativeUrlPolicy {
     private static boolean isAllowedSupabasePath(String path) {
         return path.startsWith("/auth/v1/")
                 || path.startsWith("/rest/v1/")
-                || "/functions/v1/ai-proxy".equals(path);
+                || "/functions/v1/ai-proxy".equals(path)
+                || PHONE_COPY_PATH.matcher(path).matches();
+    }
+
+    /**
+     * Validate the signed download link of a draft file copy: the exact storage path of one object in the private
+     * phone-files bucket, with exactly one token query and nothing else.
+     */
+    public String validateCloudFileUrl(String rawUrl) {
+        String normalized = validateUrl(rawUrl);
+        if (!normalized.startsWith("https://")) {
+            throw new PolicyException("Cloud files must use https.");
+        }
+        int slashIdx = normalized.indexOf('/', "https://".length());
+        if (slashIdx < 0) {
+            throw new PolicyException("Cloud file URL path is missing.");
+        }
+        String remainder = normalized.substring(slashIdx);
+        int qIdx = remainder.indexOf('?');
+        String path = qIdx < 0 ? remainder : remainder.substring(0, qIdx);
+        String query = qIdx < 0 ? "" : remainder.substring(qIdx);
+        if (!PHONE_COPY_PATH.matcher(path).matches() || !PHONE_COPY_QUERY.matcher(query).matches()) {
+            throw new PolicyException("Cloud file URL must be a signed phone copy link.");
+        }
+        return normalized;
     }
 
     private static void validatePath(String path) {

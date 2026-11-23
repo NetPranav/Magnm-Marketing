@@ -15,10 +15,12 @@ import {
   getAccount,
   getAccountAi,
   getMediaStatus,
+  getPhoneFilesStatus,
   getStorageUsage,
   getSyncStatus,
   listInvites,
   logoutAccount,
+  removePhoneFiles,
   revokeInvite,
   startLogin,
   triggerSync,
@@ -27,6 +29,7 @@ import {
   type AccountState,
   type InviteRecord,
   type MediaPreviewStatus,
+  type PhoneFilesStatus,
   type StorageUsage,
   type SyncStatus,
 } from '../../api/account';
@@ -76,6 +79,13 @@ function formatMediaLine(media: MediaPreviewStatus | null): string {
   const failed = Number(media.failed || 0);
   const base = `Previews: ${uploaded} uploaded · ${waiting} waiting`;
   return failed > 0 ? `${base} · ${failed} failed` : base;
+}
+
+function formatPhoneCopiesLine(status: PhoneFilesStatus | null): string | null {
+  if (!status || typeof status.copies !== 'number') return null;
+  if (status.copies === 0) return 'Phone copies: none';
+  const unit = status.copies === 1 ? 'file' : 'files';
+  return `Phone copies: ${status.copies} ${unit} · ${formatStorageBytes(status.bytes)} · kept 14 days`;
 }
 
 function formatAiLine(ai: AccountAiStatus | null): string {
@@ -131,6 +141,8 @@ export function AccountPanel() {
   const [confirmRevokeEmail, setConfirmRevokeEmail] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [mediaStatus, setMediaStatus] = useState<MediaPreviewStatus | null>(null);
+  const [phoneFiles, setPhoneFiles] = useState<PhoneFilesStatus | null>(null);
+  const [confirmRemoveCopies, setConfirmRemoveCopies] = useState(false);
   const [aiStatus, setAiStatus] = useState<AccountAiStatus | null>(null);
   const [storageUsage, setStorageUsage] = useState<StorageUsage | null>(null);
 
@@ -255,6 +267,8 @@ export function AccountPanel() {
       setInvites([]);
       setSyncStatus(null);
       setMediaStatus(null);
+      setPhoneFiles(null);
+      setConfirmRemoveCopies(false);
       setAiStatus(null);
       setStorageUsage(null);
       await loadAccount();
@@ -268,13 +282,17 @@ export function AccountPanel() {
 
   const loadSyncStatus = useCallback(async (includeAdminStorage: boolean) => {
     try {
-      const [nextSync, nextMedia, nextAi] = await Promise.all([
+      const [nextSync, nextMedia, nextAi, nextCopies] = await Promise.all([
         getSyncStatus(),
         getMediaStatus(),
         getAccountAi().catch(() => null),
+        getPhoneFilesStatus().catch(() => null),
       ]);
       setSyncStatus(nextSync);
       setMediaStatus(nextMedia);
+      if (nextCopies) {
+        setPhoneFiles(nextCopies);
+      }
       if (nextAi) {
         setAiStatus(nextAi);
       }
@@ -290,6 +308,19 @@ export function AccountPanel() {
       }
     }
   }, []);
+
+  const handleRemoveCopies = async () => {
+    setBusy('remove-copies');
+    try {
+      await removePhoneFiles();
+      setConfirmRemoveCopies(false);
+      void loadSyncStatus(isAdmin);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not remove the phone copies.');
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const handleSyncNow = async () => {
     setBusy('sync');
@@ -493,6 +524,40 @@ export function AccountPanel() {
                 </PillButton>
               </div>
               <div className="studio-mono">{formatMediaLine(mediaStatus)}</div>
+              {formatPhoneCopiesLine(phoneFiles) ? (
+                <div className="studio-stack-sm">
+                  <div className="studio-section-bar">
+                    <span className="studio-mono">{formatPhoneCopiesLine(phoneFiles)}</span>
+                    {!confirmRemoveCopies && (phoneFiles?.copies ?? 0) > 0 ? (
+                      <PillButton variant="outline" size="sm" onClick={() => setConfirmRemoveCopies(true)}>
+                        Remove phone copies
+                      </PillButton>
+                    ) : null}
+                  </div>
+                  {phoneFiles?.message ? (
+                    <div className="mg-notice" role="status">
+                      {phoneFiles.message}
+                    </div>
+                  ) : null}
+                  {confirmRemoveCopies ? (
+                    <div className="mg-notice" role="group" aria-label="Remove phone copies">
+                      <div>Remove every cloud copy of your draft files? Files on this laptop stay.</div>
+                      <div className="studio-actions">
+                        <PillButton
+                          size="sm"
+                          disabled={busy === 'remove-copies'}
+                          onClick={() => void handleRemoveCopies()}
+                        >
+                          Remove all
+                        </PillButton>
+                        <PillButton variant="outline" size="sm" onClick={() => setConfirmRemoveCopies(false)}>
+                          Cancel
+                        </PillButton>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="studio-mono">{formatAiLine(aiStatus)}</div>
               {isAdmin && storageUsage && typeof storageUsage.limit_bytes === 'number' ? (
                 <div className="studio-account-storage">
