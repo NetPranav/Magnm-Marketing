@@ -62,6 +62,7 @@ import { PitchTab } from './components/PitchTab';
 import { ShareInModal } from './components/ShareInModal';
 import { SocialLiveView } from './components/SocialLiveView';
 import { TodayTab } from './components/TodayTab';
+import { WelcomeGate } from './components/WelcomeGate';
 import { getNativeBridge, type NativeBridge, type SharedItem } from './native';
 import { draftsFromCache, mirrorIsNewer, remindersFromCache } from './mirrorView';
 import { HttpStatusError, NetworkPolicyError } from './net';
@@ -116,6 +117,9 @@ export interface AppProps {
   bridge?: NativeBridge;
   initialTab?: MobileTabId;
 }
+
+const SCAN_CANCELLED_MESSAGE =
+  'The scan was cancelled. You can also paste the pairing code from Settings > Phone on your laptop into the box below and tap Continue.';
 
 function isLaptopNetworkError(err: unknown): boolean {
   if (err instanceof LaptopAuthError) return false;
@@ -1506,9 +1510,12 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
       const scanned = await bridge.scanQrCode();
       if (scanned) {
         handleParsePairCode(scanned);
+      } else {
+        setPairingError(SCAN_CANCELLED_MESSAGE);
       }
     } catch (err) {
-      setPairingError(err instanceof Error ? err.message : 'QR scan failed.');
+      const msg = err instanceof Error ? err.message : '';
+      setPairingError(/cancel/i.test(msg) ? SCAN_CANCELLED_MESSAGE : msg || 'QR scan failed.');
     }
   }
 
@@ -1905,6 +1912,32 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
     },
   };
 
+  async function handleGoogleSignIn() {
+    setAuthError(null);
+    setBusyAction('signin');
+    try {
+      await startGoogleSignIn(bridge);
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : 'Could not open Google sign-in.');
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  // Signing in is required before the app is used. Pairing and everything else follow after sign-in.
+  if (accountInitialized && !session) {
+    return (
+      <div className="mg-root mob-shell">
+        {bridge.isPreview && bridge.previewLabel ? (
+          <div className="mob-preview-banner" role="status">
+            {bridge.previewLabel}
+          </div>
+        ) : null}
+        <WelcomeGate error={authError} busy={busyAction === 'signin'} onSignIn={() => void handleGoogleSignIn()} />
+      </div>
+    );
+  }
+
   const isPresentingPitch = Boolean(presentingPitch);
 
   return (
@@ -2160,17 +2193,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
             onConfirmPairing={handleConfirmPairing}
             onCancelPairing={handleCancelPairing}
             onUnpair={requestUnpair}
-            onGoogleSignIn={async () => {
-              setAuthError(null);
-              setBusyAction('signin');
-              try {
-                await startGoogleSignIn(bridge);
-              } catch (err) {
-                setAuthError(err instanceof Error ? err.message : 'Could not open Google sign-in.');
-              } finally {
-                setBusyAction(null);
-              }
-            }}
+            onGoogleSignIn={handleGoogleSignIn}
             onSignOut={requestSignOut}
             onSavePersonalKey={async (key) => {
               setMoreError(null);

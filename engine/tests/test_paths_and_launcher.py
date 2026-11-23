@@ -54,8 +54,8 @@ def _http_request(url, method="GET", headers=None, json_body=None, follow_redire
 class PathsAndLauncherTests(unittest.TestCase):
     """Verify path separation, data seeding, READY handshake, token auth, and watchdog."""
 
-    def _spawn_engine(self, data_dir, extra_env=None):
-        """Start engine/main.py on port 0 and return (proc, ready_info)."""
+    def _spawn_engine(self, data_dir, extra_env=None, port=0):
+        """Start engine/main.py on the given port (default 0 = any) and return (proc, ready_info)."""
         env = os.environ.copy()
         env.pop("MAGNM_ENGINE_TOKEN", None)
         env.pop("MAGNM_PARENT_PID", None)
@@ -64,7 +64,7 @@ class PathsAndLauncherTests(unittest.TestCase):
             env.update(extra_env)
 
         proc = subprocess.Popen(
-            [sys.executable, os.path.join(ENGINE_DIR, "main.py"), "--port", "0", "--data-dir", data_dir],
+            [sys.executable, os.path.join(ENGINE_DIR, "main.py"), "--port", str(port), "--data-dir", data_dir],
             cwd=REPO_ROOT,
             env=env,
             stdout=subprocess.PIPE,
@@ -236,6 +236,32 @@ class PathsAndLauncherTests(unittest.TestCase):
             parent_proc.wait(timeout=5)
             rc = proc.wait(timeout=8)
             self.assertEqual(rc, 0)
+
+    def test_04c_restart_reuses_the_same_port_and_token(self):
+        """The desktop app restarts the engine after a key change on the SAME port and token,
+        so the page never has to navigate. A fresh engine must be able to bind the port just freed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = {"MAGNM_ENGINE_TOKEN": "restart-token"}
+            proc, info = self._spawn_engine(tmpdir, extra_env=env)
+            port = info["port"]
+            base = f"http://127.0.0.1:{port}"
+            status, _, _ = _http_request(f"{base}/api/shutdown", method="POST",
+                                         headers={"X-Magnm-Token": "restart-token"}, json_body={})
+            self.assertEqual(status, 200)
+            self.assertEqual(proc.wait(timeout=5), 0)
+
+            proc2, info2 = self._spawn_engine(tmpdir, extra_env=env, port=port)
+            self.assertEqual(info2["port"], port)
+            status, _, _ = _http_request(f"{base}/api/health")
+            self.assertEqual(status, 200)
+            status, _, _ = _http_request(f"{base}/api/status", headers={"X-Magnm-Token": "restart-token"})
+            self.assertEqual(status, 200)
+            # The old page's cookie is still accepted: no new login, no navigation.
+            status, _, _ = _http_request(f"{base}/api/status", headers={"Cookie": "magnm_token=restart-token"})
+            self.assertEqual(status, 200)
+            _http_request(f"{base}/api/shutdown", method="POST",
+                          headers={"X-Magnm-Token": "restart-token"}, json_body={})
+            self.assertEqual(proc2.wait(timeout=5), 0)
 
     def test_05_dev_mode_without_token_allows_status(self):
         """Without MAGNM_ENGINE_TOKEN, GET /api/status returns 200."""

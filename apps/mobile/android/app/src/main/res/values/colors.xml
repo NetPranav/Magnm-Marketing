@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The app's dark background, the same colour as the launcher icon background. -->
+    <color name="magnm_splash_background">#14151A</color>
+</resources>

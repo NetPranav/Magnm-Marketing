@@ -25,7 +25,9 @@ import {
   type SectionId,
 } from './router';
 import { PlaceholderScreen } from './screens/PlaceholderScreen';
+import { OnboardingScreen } from './screens/OnboardingScreen';
 import { SessionEndedScreen } from './screens/SessionEndedScreen';
+import { SHOW_ONBOARDING_EVENT, hasSeenOnboarding, markOnboardingSeen } from './onboarding';
 import { AdminSection } from './sections/admin/AdminSection';
 import { CreateSection } from './sections/create/CreateSection';
 import { LibrarySection } from './sections/library/LibrarySection';
@@ -79,6 +81,7 @@ export function App() {
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [account, setAccount] = useState<AccountState | null>(null);
   const [accountLoaded, setAccountLoaded] = useState(false);
+  const [onboardingSeen, setOnboardingSeen] = useState(() => hasSeenOnboarding());
   const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -239,6 +242,21 @@ export function App() {
     });
   }, [navigateToRoute]);
 
+  // Anyone who has signed in has been through the welcome screen: signing out later must not bring it back.
+  const signedIn = Boolean(account?.signed_in);
+  useEffect(() => {
+    if (signedIn) {
+      markOnboardingSeen();
+      setOnboardingSeen(true);
+    }
+  }, [signedIn]);
+
+  useEffect(() => {
+    const onShowOnboarding = () => setOnboardingSeen(false);
+    window.addEventListener(SHOW_ONBOARDING_EVENT, onShowOnboarding);
+    return () => window.removeEventListener(SHOW_ONBOARDING_EVENT, onShowOnboarding);
+  }, []);
+
   useEffect(() => {
     const onAccountChanged = () => {
       if (!sessionEnded) {
@@ -362,6 +380,23 @@ export function App() {
 
   if (sessionEnded) {
     return <SessionEndedScreen />;
+  }
+
+  // First run: welcome the person once, only while team sign-in is set up and nobody is signed in.
+  if (accountLoaded && account?.configured && !account.signed_in && !onboardingSeen) {
+    return (
+      <OnboardingScreen
+        onSignedIn={() => {
+          markOnboardingSeen();
+          setOnboardingSeen(true);
+          void loadAccountState();
+        }}
+        onContinue={() => {
+          markOnboardingSeen();
+          setOnboardingSeen(true);
+        }}
+      />
+    );
   }
 
   const isAdmin = Boolean(

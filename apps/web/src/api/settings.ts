@@ -47,6 +47,25 @@ export function getHealth(): Promise<HealthInfo> {
   return api.get<HealthInfo>('/api/health');
 }
 
+/**
+ * Wait until /api/health answers again after the engine was restarted. Resolves true when it answers,
+ * false if it never does within the timeout.
+ */
+export async function waitForEngine(options: { intervalMs?: number; timeoutMs?: number } = {}): Promise<boolean> {
+  const intervalMs = options.intervalMs ?? 300;
+  const deadline = Date.now() + (options.timeoutMs ?? 60_000);
+  for (;;) {
+    try {
+      const health = await getHealth();
+      if (health?.ok !== false) return true;
+    } catch {
+      // The engine is still starting.
+    }
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
 /** Fetch gateway, role model matrix, and safe provider status. */
 export function getStatus(): Promise<EngineStatusInfo> {
   return api.get<EngineStatusInfo>('/api/status');

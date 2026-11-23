@@ -28,6 +28,43 @@ pub struct EngineReadyInfo {
     pub data_root: String,
 }
 
+/// Where a running engine listens and the token its page uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineEndpoint {
+    pub port: u16,
+    pub token: String,
+}
+
+/// Result of restarting the engine: its endpoint, and whether the window must navigate to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestartOutcome {
+    pub endpoint: EngineEndpoint,
+    pub navigate: bool,
+}
+
+/// The window only has to navigate when the engine is not at the endpoint it already shows.
+pub fn restart_needs_navigation(prev: Option<&EngineEndpoint>, new: &EngineEndpoint) -> bool {
+    prev != Some(new)
+}
+
+/// Restart on the previous port and token so the open page keeps working. Only if that endpoint
+/// cannot be started again (the port is taken) fall back to a new port and token, which needs a
+/// navigation. `start` receives the endpoint to reuse, or `None` for any port and a new token.
+pub fn restart_with<F>(prev: Option<EngineEndpoint>, mut start: F) -> Result<RestartOutcome, String>
+where
+    F: FnMut(Option<&EngineEndpoint>) -> Result<EngineEndpoint, String>,
+{
+    if let Some(old) = prev.as_ref() {
+        if let Ok(endpoint) = start(Some(old)) {
+            let navigate = restart_needs_navigation(prev.as_ref(), &endpoint);
+            return Ok(RestartOutcome { endpoint, navigate });
+        }
+    }
+    let endpoint = start(None)?;
+    let navigate = restart_needs_navigation(prev.as_ref(), &endpoint);
+    Ok(RestartOutcome { endpoint, navigate })
+}
+
 #[derive(Debug, Clone)]
 struct EngineCommandSpec {
     program: String,
@@ -128,6 +165,27 @@ impl EngineSupervisor {
 
     /// Start the engine (stopping any existing instance first) and wait for READY.
     pub fn start(&self) -> Result<(u16, String), String> {
+        self.start_with(None).map(|ep| (ep.port, ep.token))
+    }
+
+    /// The endpoint of the running engine, if it is up and has reported its port.
+    pub fn current_endpoint(&self) -> Option<EngineEndpoint> {
+        let guard = self.running.lock().ok()?;
+        let eng = guard.as_ref()?;
+        (eng.port > 0).then(|| EngineEndpoint {
+            port: eng.port,
+            token: eng.token.clone(),
+        })
+    }
+
+    /// Restart the engine on the same port and token when it can, so the page never has to navigate.
+    pub fn restart_in_place(&self) -> Result<RestartOutcome, String> {
+        let prev = self.current_endpoint();
+        restart_with(prev, |preferred| self.start_with(preferred))
+    }
+
+    /// Start the engine on the preferred endpoint (or any port with a new token) and wait for READY.
+    fn start_with(&self, preferred: Option<&EngineEndpoint>) -> Result<EngineEndpoint, String> {
         let _op_guard = self
             .op_lock
             .lock()
@@ -151,14 +209,18 @@ impl EngineSupervisor {
         let _ = writeln!(log_file, "--- Magnm engine starting ---");
 
         let spec = resolve_engine_command()?;
-        let token = generate_token()?;
+        let token = match preferred {
+            Some(ep) => ep.token.clone(),
+            None => generate_token()?,
+        };
+        let port_arg = preferred.map_or(0, |ep| ep.port);
         let parent_pid = std::process::id().to_string();
         let secrets_env = secrets::load_secrets_for_env();
 
         let mut cmd = Command::new(&spec.program);
         cmd.args(&spec.args)
             .arg("--port")
-            .arg("0")
+            .arg(port_arg.to_string())
             .arg("--data-dir")
             .arg(&self.data_dir)
             .env("MAGNM_ENGINE_TOKEN", &token)
@@ -273,7 +335,10 @@ impl EngineSupervisor {
             if let Some(ref mut eng) = *guard {
                 if eng.token == token {
                     eng.port = ready_info.port;
-                    return Ok((ready_info.port, token));
+                    return Ok(EngineEndpoint {
+                        port: ready_info.port,
+                        token,
+                    });
                 }
             }
         }
@@ -464,6 +529,71 @@ fn send_shutdown_request(port: u16, token: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn endpoint(port: u16, token: &str) -> EngineEndpoint {
+        EngineEndpoint {
+            port,
+            token: token.to_string(),
+        }
+    }
+
+    #[test]
+    fn restart_keeps_the_same_port_and_token_without_navigating() {
+        let old = endpoint(43123, "tok-old");
+        let mut asked = Vec::new();
+        let out = restart_with(Some(old.clone()), |pref| {
+            asked.push(pref.cloned());
+            Ok(pref.cloned().expect("must ask for the old endpoint first"))
+        })
+        .unwrap();
+        assert_eq!(out.endpoint, old);
+        assert!(!out.navigate);
+        assert_eq!(asked, vec![Some(old)]);
+    }
+
+    #[test]
+    fn restart_falls_back_to_a_new_port_only_when_the_old_one_cannot_be_bound() {
+        let old = endpoint(43123, "tok-old");
+        let fresh = endpoint(50001, "tok-new");
+        let mut asked = Vec::new();
+        let out = restart_with(Some(old.clone()), |pref| {
+            asked.push(pref.cloned());
+            match pref {
+                Some(_) => Err("address already in use".to_string()),
+                None => Ok(fresh.clone()),
+            }
+        })
+        .unwrap();
+        assert_eq!(out.endpoint, fresh);
+        assert!(out.navigate, "a new port and token needs a navigation");
+        assert_eq!(asked, vec![Some(old), None]);
+    }
+
+    #[test]
+    fn restart_after_the_engine_was_down_navigates_to_it() {
+        let fresh = endpoint(50002, "tok-new");
+        let out = restart_with(None, |pref| {
+            assert!(pref.is_none());
+            Ok(fresh.clone())
+        })
+        .unwrap();
+        assert!(out.navigate, "the window shows the error page, not the engine");
+    }
+
+    #[test]
+    fn restart_reports_the_error_when_nothing_can_start() {
+        let err = restart_with(Some(endpoint(43123, "t")), |_| Err("no engine".to_string())).unwrap_err();
+        assert_eq!(err, "no engine");
+    }
+
+    #[test]
+    fn navigation_is_needed_only_when_the_endpoint_changed() {
+        let a = endpoint(1000, "a");
+        assert!(!restart_needs_navigation(Some(&a), &endpoint(1000, "a")));
+        assert!(restart_needs_navigation(Some(&a), &endpoint(1001, "a")));
+        assert!(restart_needs_navigation(Some(&a), &endpoint(1000, "b")));
+        assert!(restart_needs_navigation(None, &a));
+    }
 
     #[test]
     fn parse_ready_line_ignores_noise_lines() {

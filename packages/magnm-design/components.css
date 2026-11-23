@@ -691,6 +691,12 @@ a.mg-row {
 .mg-theme-toggle {
   display: inline-flex;
   align-items: center;
+  /* Size to the three labels, never stretch in a grid or column, never spill out of the container. */
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: 100%;
+  align-self: flex-start;
+  justify-self: start;
   padding: 2px;
   border: 1px solid var(--line-2);
   border-radius: var(--radius-pill);
@@ -703,11 +709,14 @@ a.mg-row {
   color: var(--body);
   border: 0;
   border-radius: var(--radius-pill);
-  padding: 5px 12px;
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 5px 10px;
   font-family: var(--f-mono);
   font-size: 11px;
   letter-spacing: .06em;
   text-transform: uppercase;
+  white-space: nowrap;
   cursor: pointer;
   transition: background .15s, color .15s;
 }

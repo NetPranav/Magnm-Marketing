@@ -8,6 +8,7 @@ import { ensureCacheOwner, loadCache, saveLaptopSnapshot } from './cache';
 import { PitchTab, MAX_PITCH_PDF_BYTES } from './components/PitchTab';
 import { extractShareableDraftFiles } from './components/DraftsTab';
 import phoneContract from './fixtures/phone_contract.json';
+import { ensureSession } from './test-session';
 import { createPreviewNativeBridge } from './native';
 import { netShareLaptopFile } from './net';
 import { LAPTOP_TOKEN_SECRET_KEY, PAIRING_META_KEY } from './pairing';
@@ -287,6 +288,7 @@ describe('Bundled Pitch, Present Mode, Today Routing, and Share-Out', () => {
       }),
     );
 
+    await ensureSession(bridge);
     const { container } = render(<App bridge={bridge} initialTab="today" />);
 
     // Today notification sent_to_phone opens Pitch present mode on tap and hides chrome
@@ -333,6 +335,7 @@ describe('Bundled Pitch, Present Mode, Today Routing, and Share-Out', () => {
     // Offline reload from saved copy still presents offline with "Prices as of"
     cleanup();
     laptopOnline = false;
+    await ensureSession(bridge);
     render(<App bridge={bridge} initialTab="pitch" />);
     await waitFor(() => expect(screen.getByTestId('pitch-prices-as-of').textContent).toContain('Prices as of '));
     expect(screen.getByText(/Offline present mode ready/)).toBeTruthy();
@@ -363,8 +366,10 @@ describe('Bundled Pitch, Present Mode, Today Routing, and Share-Out', () => {
     const confirmDlg = await screen.findByRole('dialog');
     fireEvent.click(within(confirmDlg).getByRole('button', { name: 'Sign out' }));
     await waitFor(() => expect(loadCache().laptop).toBeNull());
-    fireEvent.click(screen.getByRole('tab', { name: /Pitch/i }));
-    expect(screen.getByText(/No proposals synced yet/)).toBeTruthy();
+    // Signing in is required, so signing out goes back to the welcome screen with nothing of the old copy left.
+    expect(await screen.findByRole('heading', { name: /welcome to magnm studio/i })).toBeTruthy();
+    expect(screen.queryByRole('tab', { name: /Pitch/i })).toBeNull();
+    expect(loadCache().laptop?.pitchProposals ?? []).toHaveLength(0);
 
     // Unpair wipe check on cache & app state
     cleanup();
@@ -382,6 +387,7 @@ describe('Bundled Pitch, Present Mode, Today Routing, and Share-Out', () => {
       pairedAt: '2026-11-22T09:00:00Z',
     });
     await bridge.secureStore.set(LAPTOP_TOKEN_SECRET_KEY, 'tok-alpha');
+    await ensureSession(bridge);
     render(<App bridge={bridge} initialTab="more" />);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Unpair laptop' })).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Unpair laptop' }));

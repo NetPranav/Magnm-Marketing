@@ -18,6 +18,7 @@ import {
 } from './net';
 import { getLaptopToken } from './pairing';
 import { findConfidentialMention, formatProductRulesPrompt, unwrapSharedProductRules } from './productRules';
+import { rulesForQueue } from './queueRules';
 import { getStateGeneration } from './storage';
 import type {
   DraftComment,
@@ -71,7 +72,7 @@ export class ConfidentialRefusalError extends Error {
 export class ProductRulesUnavailableError extends Error {
   constructor() {
     super(
-      'Product rules are not cached and could not be fetched from Supabase. Phone Lite is paused to protect product rules.',
+      'The bundled product rules could not be read and no shared rules are cached. Phone Lite is paused to protect product rules.',
     );
     this.name = 'ProductRulesUnavailableError';
   }
@@ -727,25 +728,30 @@ export async function fetchSharedProductRules(
   return saveCachedProductRules(cleanUid, rules, rows[0].updated_at ?? null);
 }
 
-/** Ensure product_rules are available from cache or Supabase; fail closed if unavailable. */
+/**
+ * The rules Phone Lite uses, the same as the phone queue: the bundled baseline plus the shared or cached rules, which
+ * can only add confidential products. Nothing published by the team is never a reason to pause. It only fails
+ * closed if the bundled file itself is unusable and there are no shared or cached rules either.
+ */
 export async function resolveProductRulesForPhoneLite(
   bridge: NativeBridge = getNativeBridge(),
 ): Promise<ProductRulesConfig> {
+  let shared: ProductRulesConfig | null = null;
   // Fresh rules first: a product may have become confidential since they were cached.
   const session = await getStoredSession(bridge);
   if (session?.user_id) {
     try {
-      return await fetchSharedProductRules(session.user_id, bridge);
+      shared = await fetchSharedProductRules(session.user_id, bridge);
     } catch {
-      // Offline: fall back to the saved copy for this signed-in account.
+      // Offline or nothing published: fall back to the saved copy, then to the bundled baseline.
+      shared = getCachedProductRules(session.user_id);
     }
-    const cachedForUser = getCachedProductRules(session.user_id);
-    if (cachedForUser) return cachedForUser;
-    throw new ProductRulesUnavailableError();
+  } else {
+    shared = getCachedProductRules();
   }
-  const cached = getCachedProductRules();
-  if (cached) return cached;
-  throw new ProductRulesUnavailableError();
+  const rules = rulesForQueue(shared);
+  if (!rules) throw new ProductRulesUnavailableError();
+  return rules;
 }
 
 function selectPhoneLiteModel(agentId: string): string {

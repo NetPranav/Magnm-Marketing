@@ -52,7 +52,7 @@ export async function listSecrets(): Promise<SecretStatus[]> {
   return Array.isArray(result) ? (result as SecretStatus[]) : [];
 }
 
-/** Store or update an allow-listed key in the desktop OS keychain (restarts the engine). */
+/** Store or update an allow-listed key in the desktop OS keychain (restarts the engine in place). */
 export async function setSecret(name: string, value: string): Promise<void> {
   const invoke = getInvoke();
   if (!invoke) {
@@ -61,13 +61,22 @@ export async function setSecret(name: string, value: string): Promise<void> {
   await invoke('set_secret', { name, value });
 }
 
-/** Remove an allow-listed key from the desktop OS keychain (restarts the engine). */
+/** Remove an allow-listed key from the desktop OS keychain (restarts the engine in place). */
 export async function deleteSecret(name: string): Promise<void> {
   const invoke = getInvoke();
   if (!invoke) {
     throw new Error('Desktop keychain is unavailable outside Magnm Studio.');
   }
   await invoke('delete_secret', { name });
+}
+
+/** Restart the local engine on the same port and token; the page stays where it is. */
+export async function restartEngine(): Promise<void> {
+  const invoke = getInvoke();
+  if (!invoke) {
+    throw new Error('Restarting the engine is only possible inside Magnm Studio.');
+  }
+  await invoke('restart_engine');
 }
 
 export type DesktopNotificationPermission = 'granted' | 'denied' | 'default';

@@ -4,6 +4,7 @@ import { App } from './App';
 import { SESSION_SECRET_KEY } from './auth';
 import { saveCachedProductRules, saveLaptopSnapshot } from './cache';
 import phoneContract from './fixtures/phone_contract.json';
+import { ensureSession } from './test-session';
 import { createPreviewNativeBridge, PREVIEW_BANNER_LABEL } from './native';
 import { PAIRING_META_KEY, LAPTOP_TOKEN_SECRET_KEY } from './pairing';
 import { writeNonSecretJson } from './storage';
@@ -91,6 +92,7 @@ describe('Magnm Mobile App UI', () => {
     });
     await bridge.secureStore.set(LAPTOP_TOKEN_SECRET_KEY, 'tok-valid');
 
+    await ensureSession(bridge);
     render(<App bridge={bridge} />);
 
     // Preview label visible
@@ -214,6 +216,7 @@ describe('Magnm Mobile App UI', () => {
       }),
     );
 
+    await ensureSession(bridge);
     render(<App bridge={bridge} />);
 
     // Share-in modal opens with preview & choices; NOTHING sent before tap
@@ -300,6 +303,7 @@ describe('Magnm Mobile App UI', () => {
     });
     await bridge.secureStore.set(LAPTOP_TOKEN_SECRET_KEY, 'tok-valid');
 
+    await ensureSession(bridge);
     render(<App bridge={bridge} />);
 
     await waitFor(() =>

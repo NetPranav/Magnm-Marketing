@@ -33,6 +33,7 @@ import {
   type StorageUsage,
   type SyncStatus,
 } from '../../api/account';
+import { requestOnboarding } from '../../onboarding';
 
 const POLL_INTERVAL_MS = 2000;
 const SYNC_POLL_INTERVAL_MS = 10000;
@@ -455,13 +456,18 @@ export function AccountPanel() {
                   Sign in with an invited Google account to sync with your team.
                 </div>
               </div>
-              <PillButton
-                size="sm"
-                disabled={busy === 'login'}
-                onClick={() => void handleStartLogin()}
-              >
-                {busy === 'login' ? 'Starting...' : 'Sign in with Google'}
-              </PillButton>
+              <div className="studio-row-actions">
+                <PillButton
+                  size="sm"
+                  disabled={busy === 'login'}
+                  onClick={() => void handleStartLogin()}
+                >
+                  {busy === 'login' ? 'Starting...' : 'Sign in with Google'}
+                </PillButton>
+                <PillButton variant="quiet" size="sm" onClick={requestOnboarding}>
+                  Show the welcome screen
+                </PillButton>
+              </div>
             </div>
           )
         ) : isDeactivated ? (

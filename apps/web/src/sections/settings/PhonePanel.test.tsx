@@ -270,6 +270,39 @@ describe('PhonePanel', () => {
     });
   });
 
+  it('shows the full pairing code under the QR with a Copy button and its expiry', async () => {
+    const code = 'magnm-pair:eyJ2IjoxLCJob3N0IjoiMTAwLjY0LjAuMTAiLCJwb3J0Ijo4Nzg4LCJjb2RlIjoieHl6In0';
+    const expiresAt = new Date(Date.now() + 240_000).toISOString();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/phone') {
+        return jsonResponse(
+          baseStatus({
+            enabled: true,
+            running: true,
+            host: '100.64.0.10',
+            pairing: { active: true, qr_payload: code, expires_at: expiresAt, expires_in: 240, pending_requests: [] },
+          }),
+        );
+      }
+      return jsonResponse({});
+    });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+
+    render(<PhonePanel />);
+
+    const field = (await screen.findByLabelText('Pairing code')) as HTMLTextAreaElement | HTMLInputElement;
+    expect(field.value).toBe(code);
+    expect(field.readOnly).toBe(true);
+    expect(screen.getByText(/Or type or paste this code/i)).toBeTruthy();
+    expect(screen.getByTestId('phone-pair-countdown').textContent).toMatch(/Expires in \d:\d\d/);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy code' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(code));
+    expect(await screen.findByRole('button', { name: 'Copied' })).toBeTruthy();
+  });
+
   it('cancels an active pairing QR session', async () => {
     let active = true;
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
