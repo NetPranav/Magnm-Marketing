@@ -198,6 +198,10 @@ Updated 2026-11-18. Magnm is a non-commercial student group; the plan is sized f
   with a backup, takes the two formerly seeded entries out of existing installs). An admin can add global GitHub repos
   that reach every member automatically. Create and Plan have a Repository picker.
 
+- **2026-11-23 step 3 built: phone works without the laptop.** With internet and the laptop away, the phone can
+  comment on a draft, mark it posted and finish a reminder. Each action waits in a cloud queue and the laptop applies it
+  once when it reconnects. Drafts, comments and reminders show from the cloud copy.
+
 **What changed from v9:**
 - **The admin sees everything again:** activity plus the actual content (text, chats, briefs, thumbnails and previews). Full-quality files still stay on the laptop.
 - **Storage:** Supabase Storage (1 GB) first, with **Backblaze B2 (10 GB free, no card)** as the overflow for video previews. Details in 3.7.

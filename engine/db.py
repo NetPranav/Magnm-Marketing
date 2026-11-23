@@ -22,7 +22,7 @@ if _ENGINE_DIR not in sys.path:
 import events
 import paths
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 _local = threading.local()
 _state_lock = threading.RLock()
@@ -1052,6 +1052,24 @@ def _apply_migration_v24(conn):
     )
 
 
+def _apply_migration_v25(conn):
+    """Add phone_action_receipts: one row per phone action this laptop has applied or refused (exactly-once)."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS phone_action_receipts (
+            user_id TEXT NOT NULL,
+            action_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            outcome TEXT NOT NULL CHECK (outcome IN ('applied', 'rejected')),
+            result TEXT,
+            applied_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, action_id)
+        );
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, _apply_migration_v1),
     (2, _apply_migration_v2),
@@ -1077,6 +1095,7 @@ _MIGRATIONS = (
     (22, _apply_migration_v22),
     (23, _apply_migration_v23),
     (24, _apply_migration_v24),
+    (25, _apply_migration_v25),
 )
 
 
@@ -5057,6 +5076,43 @@ def upsert_cloud_sync_state(user_id, entries):
             params,
         )
     return len(params)
+
+
+def get_phone_action_receipt(user_id, action_id):
+    """Return the receipt dict for a phone action this laptop already handled for user_id, or None."""
+    if not user_id or not action_id:
+        return None
+    ensure_init()
+    row = connect().execute(
+        """
+        SELECT user_id, action_id, kind, target_id, outcome, result, applied_at
+        FROM phone_action_receipts WHERE user_id = ? AND action_id = ?
+        """,
+        (str(user_id), str(action_id)),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def record_phone_action_receipt(user_id, action_id, kind, target_id, outcome, result=None):
+    """Record that a phone action was applied or refused. The first receipt wins; a repeat changes nothing."""
+    if outcome not in ("applied", "rejected"):
+        raise ValueError("outcome must be 'applied' or 'rejected'")
+    ensure_init()
+    conn = connect()
+    with conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO phone_action_receipts
+                (user_id, action_id, kind, target_id, outcome, result, applied_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(user_id), str(action_id), str(kind), str(target_id), outcome,
+                None if result is None else str(result)[:300],
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+    return get_phone_action_receipt(user_id, action_id)
 
 
 def get_media_upload_queue(user_id):

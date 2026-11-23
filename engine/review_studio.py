@@ -633,8 +633,12 @@ def create_comment(
     body="",
     author="user",
     parent_id=None,
+    comment_id=None,
 ):
-    """Create a validated review comment (or reply) and trigger @agent jobs if mentioned."""
+    """Create a validated review comment (or reply) and trigger @agent jobs if mentioned.
+
+    A caller-chosen comment_id makes the call repeatable: the same id is never inserted twice.
+    """
     item = _require_item(content_id, include_versions=True)
 
     clean_body = body.strip() if isinstance(body, str) else ""
@@ -670,6 +674,10 @@ def create_comment(
     clean_author = str(author or "user").strip() or "user"
     mentions = _extract_agent_mentions(clean_body)
 
+    if comment_id:
+        existing = db.get_review_comment(comment_id)
+        if existing is not None and existing.get("content_id") == item["id"]:
+            return existing
     created = db.create_review_comment(
         content_id=item["id"],
         version=target_ver,
@@ -680,6 +688,7 @@ def create_comment(
         parent_id=parent["id"] if parent else None,
         status="open",
         mentions=mentions,
+        comment_id=comment_id,
     )
     _publish(item["id"], "comment")
 

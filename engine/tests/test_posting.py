@@ -204,8 +204,9 @@ class PostingTests(unittest.TestCase):
         """Schema v24 creates posting_accounts and posting_attempts; neither nor vault tokens ever sync."""
         conn = db.connect()
         versions = [r["version"] for r in conn.execute("SELECT version FROM schema_version ORDER BY version").fetchall()]
-        self.assertEqual(versions, list(range(1, 25)))
-        self.assertEqual(db.SCHEMA_VERSION, 24)
+        # Later schema versions (v25 phone_action_receipts) may exist; v24 and everything before it must be there.
+        self.assertEqual(versions, list(range(1, db.SCHEMA_VERSION + 1)))
+        self.assertGreaterEqual(db.SCHEMA_VERSION, 24)
 
         cols_acct = {r["name"] for r in conn.execute("PRAGMA table_info(posting_accounts)").fetchall()}
         self.assertFalse(any("token" in c or "secret" in c for c in cols_acct))

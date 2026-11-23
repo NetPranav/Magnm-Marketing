@@ -53,6 +53,10 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
   - WebView keeps `allowMixedContent: false`, `webContentsDebuggingEnabled: false`, `loggingBehavior: 'none'`, and the strict `index.html` Content-Security-Policy (`connect-src 'self'`).
   - Both JS (`src/net.ts`) and native Java (`NativeUrlPolicy.java`) enforce an independent allowlist: `http://` is permitted only to strict dotted-quad IPv4 addresses inside `100.64.0.0/10` with an explicit port and `/phone/v1/` path; `https://` is permitted only to the build-time Supabase origin from `config/supabase.json` (on `/auth/v1/`, `/rest/v1/`, `/functions/v1/ai-proxy`) and `https://integrate.api.nvidia.com/v1/`.
 
+## Phone actions without the laptop
+
+When signed in, Drafts (Add comment, Mark as posted) and Today (Done on a reminder) work with the laptop away: the action is saved on the phone as `Waiting for laptop` (`src/actions.ts`, bound to the account, validated again before sending), sent by itself to the `phone_actions` table (`src/cloudActions.ts`, idempotent by its uuid) and applied by the laptop on its next sync; the phone then shows `Applied` or `Not applied` with the reason, and More lists them all. Text naming a confidential product is refused before it is queued, and confidential items have no actions. No new network destination or Supabase path is used: the table sits under the existing `/rest/v1/` allowlist, so neither allowlist changed. Drafts, comments and open reminders also come from the cloud mirror (`src/mirrorView.ts`), refreshed on open, on foreground and when the connection returns.
+
 ## Debug builds
 
 The debug APK is debuggable and signed with a throwaway key: anyone with USB debugging access to the phone can read its app data. Use it for testing only, and use a signed release build for daily use. Never disable Android Play Protect or device security checks as the normal path for team builds.

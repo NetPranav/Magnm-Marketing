@@ -10,7 +10,8 @@ import {
   TextArea,
   TextInput,
 } from '@magnm/design/react';
-import type { DraftComment, DraftFileEntry, DraftItem, QueueItemKind } from '../types';
+import { stateLabel } from '../actions';
+import type { DraftComment, DraftFileEntry, DraftItem, PhoneAction, QueueItemKind } from '../types';
 
 const SHAREABLE_EXTENSIONS = ['.mp4', '.webm', '.png', '.jpg', '.jpeg', '.webp', '.pdf'];
 
@@ -46,6 +47,10 @@ export interface DraftsTabProps {
   laptopReachable: boolean;
   savedCopyLabel: string | null;
   canQueueOffline: boolean;
+  /** Actions queued on this phone for the laptop (this account's only). */
+  phoneActions?: PhoneAction[];
+  /** Signed in: comment and mark-posted can be queued through the cloud while the laptop is away. */
+  canQueue?: boolean;
   busyAction: string | null;
   errorMessage: string | null;
   onSelectDraft: (id: string) => void;
@@ -99,6 +104,10 @@ function countComments(comments: DraftComment[]): number {
   return total;
 }
 
+function flattenComments(comments: DraftComment[]): DraftComment[] {
+  return comments.flatMap((c) => [c, ...flattenComments(c.replies ?? [])]);
+}
+
 function CommentThread({ comment }: { comment: DraftComment }) {
   const replies = Array.isArray(comment.replies) ? comment.replies : [];
   return (
@@ -124,6 +133,8 @@ export function DraftsTab({
   laptopReachable,
   savedCopyLabel,
   canQueueOffline,
+  phoneActions = [],
+  canQueue = false,
   busyAction,
   errorMessage,
   onSelectDraft,
@@ -190,6 +201,17 @@ export function DraftsTab({
     const comments = selectedDraft.comments ?? [];
     const totalCommentCount = countComments(comments);
     const shareableFiles = extractShareableDraftFiles(selectedDraft.files);
+    const canAct = laptopReachable || canQueue;
+    // Actions made on this phone for this draft. A comment the laptop applied is hidden once its own copy arrives.
+    const phoneComments = flattenComments(comments)
+      .filter((c) => (c.author ?? '').startsWith('phone:'))
+      .map((c) => (c.body ?? '').trim());
+    const draftActions = phoneActions.filter(
+      (a) =>
+        a.target_id === selectedDraft.id &&
+        (a.kind === 'draft_comment' || a.kind === 'draft_posted') &&
+        !(a.kind === 'draft_comment' && a.state === 'applied' && phoneComments.includes((a.payload.body ?? '').trim())),
+    );
 
     return (
       <section aria-label="Draft detail" className="mob-stack">
@@ -293,6 +315,27 @@ export function DraftsTab({
             {comments.map((cmt) => (
               <CommentThread key={cmt.id} comment={cmt} />
             ))}
+            {draftActions.map((action) => (
+              <div key={action.id} className="mob-msg">
+                <div className="mob-row-between">
+                  <span className="mob-mono">
+                    {action.kind === 'draft_comment' ? 'From this phone' : 'Mark as posted from this phone'}
+                  </span>
+                  <span className="mg-chip">{stateLabel(action)}</span>
+                </div>
+                {action.kind === 'draft_comment' ? (
+                  <p className="mob-body-text">{action.payload.body}</p>
+                ) : action.payload.url ? (
+                  <p className="mob-mono">{action.payload.url}</p>
+                ) : null}
+                {action.state === 'rejected' && action.result ? (
+                  <p className="mob-mono">{action.result}</p>
+                ) : null}
+              </div>
+            ))}
+            {!canAct ? (
+              <div className="mg-notice">Connect to your laptop or sign in to comment or mark this as posted.</div>
+            ) : null}
             <Field label="Add comment" htmlFor="draft-comment-input">
               <TextArea
                 id="draft-comment-input"
@@ -304,7 +347,7 @@ export function DraftsTab({
             <div className="mob-actions">
               <PillButton
                 size="sm"
-                disabled={!laptopReachable || !commentText.trim() || busyAction === 'comment'}
+                disabled={!canAct || !commentText.trim() || busyAction === 'comment'}
                 onClick={() => {
                   void (async () => {
                     const ok = await onAddComment(
@@ -341,7 +384,7 @@ export function DraftsTab({
             <div className="mob-actions">
               <PillButton
                 size="sm"
-                disabled={!laptopReachable || busyAction === 'posted'}
+                disabled={!canAct || busyAction === 'posted'}
                 onClick={() => {
                   void (async () => {
                     const ok = await onMarkPosted(selectedDraft.id, postedUrl.trim() || undefined);
