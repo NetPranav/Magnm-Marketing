@@ -36,6 +36,7 @@ import {
   restartEngine,
   type SecretStatus,
 } from '../../desktop';
+import { forgetPersonalKey } from '../../api/keys';
 import { useFallbackPoll, useStudioEvents } from '../../events';
 import { AccountPanel } from './AccountPanel';
 import { CodingAgentsPanel } from './CodingAgentsPanel';
@@ -478,6 +479,7 @@ export function SettingsSection() {
     setBusyId(`remove-key-${target}`);
     try {
       await deleteSecret(target);
+      await forgetPersonalKey(target);
       await finishEngineRestart('Removed. The engine restarted.');
     } catch (err) {
       setKeyNotice(null);

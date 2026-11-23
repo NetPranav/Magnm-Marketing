@@ -14,6 +14,7 @@
     "allow-list-secrets",
     "allow-set-secret",
     "allow-delete-secret",
+    "allow-store-secrets",
     "allow-restart-engine",
     "allow-get-engine-logs"
   ]

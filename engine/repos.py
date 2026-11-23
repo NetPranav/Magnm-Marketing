@@ -588,7 +588,297 @@ def remove_repo(repo_id):
         strict=True,
     )
     _write_repos_config(kept)
+    try:
+        import personal_repo_sync
+        personal_repo_sync.note_removed(target)
+    except Exception:
+        pass
     return True
+
+
+EDITABLE_FIELDS = ("name", "id", "branch", "status", "marketing_angle", "confidential", "local_path")
+STATUSES = ("released", "in_development", "secret")
+_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+_ANGLE_BAD_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+MAX_PATH_CHARS = 500
+# Folders inside the user's home that hold keys, tokens or app data: never a repository.
+_PRIVATE_HOME_DIRS = (".ssh", ".gnupg", ".aws", ".kube", ".config", ".local", ".password-store", ".docker", ".mozilla")
+
+
+def _inside(path, parent):
+    return path == parent or path.startswith(parent.rstrip(os.sep) + os.sep)
+
+
+def validate_local_path(raw, exclude_id=None):
+    """Check a folder path for a local repository and return its resolved form. Raises ValueError with a short reason.
+
+    Used for every path, whether it was typed on the laptop or came from the phone through the cloud. The reasons
+    never repeat the text that was given.
+    """
+    if not isinstance(raw, str):
+        raise ValueError("The folder path must be text.")
+    text = raw.strip()
+    if not text:
+        raise ValueError("A folder path is required.")
+    if len(text) > MAX_PATH_CHARS:
+        raise ValueError("The folder path is too long.")
+    if _CONTROL_RE.search(text):
+        raise ValueError("The folder path has characters that are not allowed.")
+    if "://" in text or text.startswith("\\\\"):
+        raise ValueError("Use a folder on this computer.")
+    expanded = os.path.expanduser(text)
+    if not os.path.isabs(expanded):
+        raise ValueError("Use a full folder path.")
+    if ".." in re.split(r"[\\/]+", expanded):
+        raise ValueError("The folder path cannot contain '..'.")
+    real = os.path.realpath(expanded)
+    if not os.path.isdir(real):
+        raise ValueError("That folder does not exist on this computer.")
+    home = os.path.realpath(os.path.expanduser("~"))
+    if real == os.path.dirname(real) or _inside(home, real):
+        raise ValueError("That folder is too broad. Pick the repository folder itself.")
+    if any(_inside(real, os.path.join(home, sub)) for sub in _PRIVATE_HOME_DIRS):
+        raise ValueError("That folder holds private settings and cannot be a repository.")
+    if _inside(real, os.path.realpath(paths.data("state"))) or _inside(real, os.path.realpath(paths.data("config"))):
+        raise ValueError("That folder is part of Magnm's own data.")
+    try:
+        proc = subprocess.run(
+            ["git", "-C", real, "rev-parse", "--git-dir"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+        is_git = proc.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        is_git = False
+    if not is_git:
+        raise ValueError("That folder is not a git repository.")
+    wanted = str(exclude_id or "").lower()
+    for other in _personal_entries():
+        if (other.get("id") or "").lower() == wanted or not other.get("local_path"):
+            continue
+        if os.path.realpath(other["local_path"]) == real:
+            raise ValueError("Another repository already uses that folder.")
+    return real
+
+
+def _names_confidential_product(*texts):
+    """True if text names a confidential product from the rules or a removed confidential repo. Fails closed."""
+    joined = "\n".join(t for t in texts if t)
+    if not joined:
+        return False
+    try:
+        path = _rules_path()
+        pats = []
+        if os.path.exists(path):
+            for prod in product_rules.load_rules(path).get("products", []):
+                if prod.get("confidential"):
+                    pats += [product_rules._word_pattern(str(t)) for t in (prod.get("name"), prod.get("id")) if t]
+        pats += [product_rules._word_pattern(str(t)) for t in retired_repos.terms() if str(t).strip()]
+        return product_rules.any_match(pats, joined)
+    except Exception:
+        return True
+
+
+def _clean_text(value, label, max_len, allow_empty=False, multiline=False):
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be text.")
+    text = value.strip()
+    if not text and not allow_empty:
+        raise ValueError(f"{label} is required.")
+    if len(text) > max_len:
+        raise ValueError(f"{label} is too long.")
+    if (_ANGLE_BAD_RE if multiline else _CONTROL_RE).search(text):
+        raise ValueError(f"{label} has characters that are not allowed.")
+    return text
+
+
+def check_repo_fields(changes):
+    """Validate the editable fields of a repository (without the folder path). Returns the cleaned dict."""
+    if not isinstance(changes, dict) or not changes:
+        raise ValueError("Nothing to change.")
+    unknown = [k for k in changes if k not in EDITABLE_FIELDS]
+    if unknown:
+        raise ValueError("That field cannot be edited.")
+    out = {}
+    if "name" in changes:
+        out["name"] = _clean_text(changes["name"], "The name", 80)
+    if "id" in changes:
+        value = changes["id"]
+        if not isinstance(value, str) or not _ID_RE.fullmatch(value):
+            raise ValueError("The id may use lowercase letters, digits and dashes, up to 63 characters.")
+        out["id"] = value
+    if "branch" in changes:
+        value = _clean_text(changes["branch"], "The branch", 100, allow_empty=True)
+        if value and not team_repos.valid_branch(value):
+            raise ValueError("That is not a valid branch name.")
+        out["branch"] = value or None
+    if "status" in changes:
+        value = changes["status"]
+        if value not in STATUSES:
+            raise ValueError("The status must be released, in_development or secret.")
+        out["status"] = value
+    if "marketing_angle" in changes:
+        value = _clean_text(changes["marketing_angle"], "The marketing angle", 500, allow_empty=True, multiline=True)
+        out["marketing_angle"] = value or None
+    if "confidential" in changes:
+        if not isinstance(changes["confidential"], bool):
+            raise ValueError("Confidential must be true or false.")
+        out["confidential"] = changes["confidential"]
+    if "local_path" in changes:
+        out["local_path"] = changes["local_path"]
+    return out
+
+
+def _move_references(old_id, new_id, old_product=None, new_product=None, entry_kind=None):
+    """Move everything stored under a repository id to its new id, in one database transaction.
+
+    Snapshots follow the id. Coding runs and workflow runs that name it follow too; a coding run keeps its approval
+    only when the approval matched the old repo list (it is recomputed for the new one), never the other way round.
+    When the product id follows the id, product facts and content items follow it.
+    """
+    import coding_agents
+
+    conn = db.connect()
+    with conn:
+        conn.execute("UPDATE repo_snapshots SET repo_id = ? WHERE repo_id = ?", (new_id, old_id))
+        for row in conn.execute("SELECT id, engine, mode, prompt, repo_ids_json, approval_hash FROM coding_runs").fetchall():
+            try:
+                ids = json.loads(row["repo_ids_json"] or "[]")
+            except ValueError:
+                continue
+            if not isinstance(ids, list) or old_id not in ids:
+                continue
+            fresh = [new_id if x == old_id else x for x in ids]
+            hash_now = row["approval_hash"]
+            if hash_now and hash_now == coding_agents.compute_approval_hash(row["engine"], row["mode"], ids, row["prompt"]):
+                hash_now = coding_agents.compute_approval_hash(row["engine"], row["mode"], fresh, row["prompt"])
+            conn.execute(
+                "UPDATE coding_runs SET repo_ids_json = ?, approval_hash = ? WHERE id = ?",
+                (json.dumps(fresh, ensure_ascii=False), hash_now, row["id"]),
+            )
+        for row in conn.execute("SELECT id, inputs_json FROM workflow_runs").fetchall():
+            try:
+                inputs = json.loads(row["inputs_json"] or "{}")
+            except ValueError:
+                continue
+            if isinstance(inputs, dict) and inputs.get("repo_id") == old_id:
+                inputs["repo_id"] = new_id
+                conn.execute("UPDATE workflow_runs SET inputs_json = ? WHERE id = ?", (json.dumps(inputs, ensure_ascii=False), row["id"]))
+        if old_product and new_product and old_product != new_product:
+            conn.execute("UPDATE product_facts SET product_id = ? WHERE product_id = ?", (new_product, old_product))
+            conn.execute("UPDATE content_items SET product_id = ? WHERE product_id = ?", (new_product, old_product))
+
+
+def update_repo(repo_id, changes, source="local"):
+    """Edit one of the user's own repositories: name, id, branch, status, marketing angle, confidential, folder path.
+
+    Everything is checked before anything is written. A new id moves the repository's snapshots, its coding and
+    workflow references and (when the product id was the id) its facts and content. A confidential repo cannot be
+    turned public while it belongs to a confidential product or its text names one, and a repo whose name or angle
+    names a confidential product becomes confidential. Team repos are managed by an admin and are refused.
+    Returns the stored entry. `source` is "local" for the laptop UI or "sync" for a change read from the cloud.
+    """
+    target = str(repo_id or "").strip().lower()
+    repo = get_repo(target)
+    if repo is None or (repo.get("id") or "").lower() != target:
+        raise ValueError("Repository not found")
+    if repo.get("scope") == "global":
+        raise ValueError("Managed by your admin")
+    existing = _personal_entries()
+    idx = next((i for i, r in enumerate(existing) if (r.get("id") or "").lower() == target), None)
+    if idx is None:
+        raise ValueError("Repository not found")
+    current = existing[idx]
+    fields = check_repo_fields(changes)
+
+    new_id = fields.get("id", current["id"])
+    old_id = current["id"]
+    if new_id != old_id:
+        taken = {(r.get("id") or "").lower() for i, r in enumerate(existing) if i != idx}
+        taken |= {(g.get("id") or "").lower() for g in team_repos.cached()}
+        if new_id.lower() in taken:
+            raise ValueError("That id is already used by another repository.")
+
+    updated = dict(current)
+    if "local_path" in fields:
+        if current.get("kind") != "local":
+            raise ValueError("Only a local repository has a folder to edit.")
+        updated["local_path"] = validate_local_path(fields["local_path"], exclude_id=old_id)
+    for key in ("name", "id", "status"):
+        if key in fields:
+            updated[key] = fields[key]
+    for key in ("branch", "marketing_angle"):
+        if key in fields:
+            if fields[key]:
+                updated[key] = fields[key]
+            else:
+                updated.pop(key, None)
+
+    product_follows = False
+    old_product = current.get("product_id") or old_id
+    if new_id != old_id and old_product == old_id and old_id.lower() not in {
+        str(c).lower() for c in _confidential_product_ids()
+    }:
+        product_follows = not any(
+            i != idx and (r.get("product_id") or r.get("id")) == old_id for i, r in enumerate(existing)
+        )
+    if product_follows:
+        updated["product_id"] = new_id
+
+    wants_public = fields.get("confidential") is False
+    if "confidential" in fields:
+        updated["confidential"] = fields["confidential"]
+    named = _names_confidential_product(updated.get("name"), updated.get("marketing_angle"), updated.get("github"), updated["id"])
+    flagged_product = (updated.get("product_id") or updated["id"]).lower() in {str(c).lower() for c in _confidential_product_ids()}
+    if wants_public and (named or flagged_product):
+        raise ValueError("This belongs to a confidential product, so it stays confidential.")
+    if (named or flagged_product) and not updated.get("confidential"):
+        updated["confidential"] = True
+
+    if updated == current:
+        return {**current, "scope": "personal"}
+
+    previous = list(existing)
+    existing[idx] = updated
+    if new_id != old_id and current.get("confidential"):
+        retired_repos.remember([current], strict=True)
+    _write_repos_config(existing)
+    if new_id != old_id:
+        try:
+            _move_references(old_id, new_id, old_product if product_follows else None, new_id if product_follows else None)
+        except Exception:
+            _write_repos_config(previous)
+            raise
+    try:
+        import personal_repo_sync
+        personal_repo_sync.note_edit(old_id, new_id, [k for k in updated if updated.get(k) != current.get(k)] + [
+            k for k in current if k not in updated
+        ], source)
+    except Exception:
+        pass
+    return {**updated, "scope": "personal"}
+
+
+def import_personal(entry):
+    """Add a repository that came from the cloud (added on the phone). No network call: it is checked by shape only.
+
+    The entry must already be whitelisted by the caller. An id that is taken gets a numbered suffix. Returns the entry.
+    """
+    existing = _personal_entries()
+    taken = {(r.get("id") or "").lower() for r in existing} | {(g.get("id") or "").lower() for g in team_repos.cached()}
+    wanted = entry["id"]
+    rid, n = wanted, 1
+    while rid.lower() in taken:
+        n += 1
+        suffix = f"-{n}"
+        rid = f"{wanted[:63 - len(suffix)]}{suffix}"
+    stored = {k: v for k, v in entry.items() if v not in (None, "")}
+    stored["id"] = rid
+    stored.setdefault("product_id", rid)
+    existing.append(stored)
+    _write_repos_config(existing)
+    return stored
 
 
 def _run_git(args, cwd):

@@ -4,6 +4,7 @@ fn main() {
             "list_secrets",
             "set_secret",
             "delete_secret",
+            "store_secrets",
             "restart_engine",
             "get_engine_logs",
         ]),

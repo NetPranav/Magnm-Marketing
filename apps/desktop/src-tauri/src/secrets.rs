@@ -149,6 +149,34 @@ pub fn delete_secret_value(name: &str) -> Result<(), String> {
     }
 }
 
+/// Write and remove several keychain entries in one go (used when the cloud sync brings keys added or removed on the
+/// phone). Every name and value is checked before anything is written, so a bad entry changes nothing. Error text
+/// never repeats a value.
+pub fn store_secret_values(sets: &[(String, String)], deletes: &[String]) -> Result<(), String> {
+    if sets.len() + deletes.len() > KNOWN_SECRET_KEYS.len() {
+        return Err("Too many keys in one request".to_string());
+    }
+    for (name, value) in sets {
+        validate_secret_name(name)?;
+        if value.trim().is_empty() {
+            return Err("Secret value cannot be empty".to_string());
+        }
+    }
+    for name in deletes {
+        validate_secret_name(name)?;
+        if sets.iter().any(|(set_name, _)| set_name == name) {
+            return Err(format!("Key {name} is both set and deleted"));
+        }
+    }
+    for (name, value) in sets {
+        set_secret_value(name, value)?;
+    }
+    for name in deletes {
+        delete_secret_value(name)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,5 +215,38 @@ mod tests {
 
         let del_err = delete_secret_value("UNSAFE_ENV_VAR").unwrap_err();
         assert!(del_err.contains("Unknown secret key"));
+    }
+
+    #[test]
+    fn store_rejects_bad_requests_before_touching_the_keychain() {
+        let fake = "nvapi-FAKEKEYRUSTTEST000000000000001".to_string();
+        let err = store_secret_values(&[("PATH".to_string(), fake.clone())], &[]).unwrap_err();
+        assert!(err.contains("Unknown secret key"));
+        assert!(!err.contains("FAKEKEY"));
+
+        let err = store_secret_values(&[("NVIDIA_NIM_API_KEY".to_string(), "  ".to_string())], &[]).unwrap_err();
+        assert!(err.contains("cannot be empty"));
+
+        let err = store_secret_values(&[], &["MAGNM_ENGINE_TOKEN".to_string()]).unwrap_err();
+        assert!(err.contains("Unknown secret key"));
+
+        let err = store_secret_values(
+            &[("NVIDIA_NIM_API_KEY".to_string(), fake.clone())],
+            &["NVIDIA_NIM_API_KEY".to_string()],
+        )
+        .unwrap_err();
+        assert!(err.contains("both set and deleted"));
+        assert!(!err.contains("FAKEKEY"));
+
+        // A good entry followed by a bad one writes nothing: the checks run first.
+        let err = store_secret_values(
+            &[
+                ("NVIDIA_NIM_API_KEY".to_string(), fake),
+                ("UNSAFE_ENV_VAR".to_string(), "x".to_string()),
+            ],
+            &[],
+        )
+        .unwrap_err();
+        assert!(err.contains("Unknown secret key"));
     }
 }

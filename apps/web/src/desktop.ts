@@ -70,6 +70,21 @@ export async function deleteSecret(name: string): Promise<void> {
   await invoke('delete_secret', { name });
 }
 
+/**
+ * Write several allow-listed keys to (and remove several from) the OS keychain without restarting the engine. Used when
+ * the cloud sync brings keys added or removed on the phone; the engine updates itself once this succeeds.
+ */
+export async function storeSecrets(
+  sets: Array<{ name: string; value: string }>,
+  deletes: string[],
+): Promise<void> {
+  const invoke = getInvoke();
+  if (!invoke) {
+    throw new Error('Desktop keychain is unavailable outside Magnm Studio.');
+  }
+  await invoke('store_secrets', { sets, deletes });
+}
+
 /** Restart the local engine on the same port and token; the page stays where it is. */
 export async function restartEngine(): Promise<void> {
   const invoke = getInvoke();
