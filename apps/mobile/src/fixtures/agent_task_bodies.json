@@ -1,0 +1,23 @@
+{
+  "note": "The exact request bodies the phone sends to phone_actions for agent_task, shared by the phone tests (src/agent_tasks.test.ts) and the laptop tests (engine/tests/test_phone_agent_tasks.py).",
+  "actions": [
+    {
+      "name": "research",
+      "body": {
+        "id": "7b2e0d2f-0000-4000-8000-000000000001",
+        "kind": "agent_task",
+        "target_id": "researcher",
+        "payload": { "message": "Search the web for what developers say about offline-first notes apps this week." }
+      }
+    },
+    {
+      "name": "image",
+      "body": {
+        "id": "7b2e0d2f-0000-4000-8000-000000000002",
+        "kind": "agent_task",
+        "target_id": "designer",
+        "payload": { "message": "Make a quote card image for tomorrow's post." }
+      }
+    }
+  ]
+}

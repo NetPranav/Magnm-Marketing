@@ -50,6 +50,20 @@ export interface MediaPreviewStatus {
   last_error: string | null;
 }
 
+/** What the last cycle did with full-quality copies of finished draft files kept for the phone. */
+export interface PhoneFilesStatus {
+  copies: number;
+  bytes: number;
+  uploaded: number;
+  removed: number;
+  skipped_budget: number;
+  errors: number;
+  paused: boolean;
+  unavailable: boolean;
+  last_error: string | null;
+  message: string;
+}
+
 export interface StorageUsage {
   bytes: number;
   files: number;
@@ -137,6 +151,16 @@ export function getMediaStatus(): Promise<MediaPreviewStatus> {
 /** Fetch team preview storage usage summary from Supabase. */
 export function getStorageUsage(): Promise<StorageUsage> {
   return api.get<StorageUsage>('/api/account/storage');
+}
+
+/** Status of the 14-day phone copies of draft files. */
+export function getPhoneFilesStatus(): Promise<PhoneFilesStatus> {
+  return api.get<PhoneFilesStatus>('/api/account/phone-files');
+}
+
+/** Remove every cloud copy of draft files (local files stay). */
+export function removePhoneFiles(): Promise<{ removed: number; errors: number }> {
+  return api.post<{ removed: number; errors: number }>('/api/account/phone-files/remove', { all: true });
 }
 
 /** Request a short-lived signed URL for a preview object in private storage. */

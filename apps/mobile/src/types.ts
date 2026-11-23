@@ -220,7 +220,7 @@ export interface QueuedInboxItem {
 }
 
 /** Things the phone can do for the laptop while the laptop is away. Enabled kinds only; more are added later. */
-export type PhoneActionKind = 'draft_comment' | 'draft_posted' | 'reminder_done';
+export type PhoneActionKind = 'draft_comment' | 'draft_posted' | 'reminder_done' | 'agent_task';
 
 export type PhoneActionState = 'waiting' | 'applied' | 'rejected';
 
@@ -228,6 +228,8 @@ export interface PhoneActionPayload {
   body?: string;
   version?: number;
   url?: string;
+  /** agent_task only: what the owner asked the agent (the agent id is the action's target). */
+  message?: string;
 }
 
 /** One action queued on this phone. It is bound to the account that made it and sent to the cloud by itself. */
@@ -246,6 +248,10 @@ export interface PhoneAction {
   state: PhoneActionState;
   /** The laptop's short reason or confirmation, or why the cloud refused it. */
   result: string | null;
+  /** agent_task only: the agent's reply, copied from the cloud mirror once it is there. Never confidential text. */
+  reply?: string | null;
+  /** agent_task only: the reply is confidential and stays on the laptop. */
+  laptop_only?: boolean;
 }
 
 export interface InboxAckItem {

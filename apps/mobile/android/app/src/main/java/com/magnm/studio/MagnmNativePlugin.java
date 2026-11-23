@@ -39,6 +39,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Collections;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -321,6 +322,26 @@ public class MagnmNativePlugin extends Plugin {
         }
 
         executor.execute(() -> executeShareLaptopFile(call, validatedUrl, validatedHeaders, cleanTitle));
+    }
+
+    @PluginMethod
+    public void shareCloudFile(PluginCall call) {
+        final String validatedUrl;
+        final String cleanTitle;
+        try {
+            validatedUrl = urlPolicy.validateCloudFileUrl(call.getString("url"));
+            String title = call.getString("title");
+            cleanTitle = (title != null && !title.trim().isEmpty()) ? title.trim() : null;
+        } catch (NativeUrlPolicy.PolicyException ex) {
+            call.reject(ex.getMessage());
+            return;
+        } catch (Exception ex) {
+            call.reject("Invalid file share request.");
+            return;
+        }
+
+        // A signed link carries its own permission: no credentials are sent.
+        executor.execute(() -> executeShareLaptopFile(call, validatedUrl, Collections.emptyMap(), cleanTitle));
     }
 
     @PluginMethod

@@ -490,10 +490,10 @@ describe('T6.2b mobile review fixes', () => {
       }),
     );
 
-    // sendPhoneLiteMessage directly rejects non-writer/cmo agents
+    // sendPhoneLiteMessage talks to configured agents only
     await expect(
-      sendPhoneLiteMessage({ agentId: 'designer', text: 'Write about Cero', bridge }),
-    ).rejects.toThrow(/writer or cmo/i);
+      sendPhoneLiteMessage({ agentId: 'nobody', text: 'Write about Cero', bridge }),
+    ).rejects.toThrow(/configured agent/i);
 
     render(<App bridge={bridge} initialTab="chat" />);
     await waitFor(() => expect(screen.getByText('Laptop connected')).toBeTruthy());
@@ -506,14 +506,14 @@ describe('T6.2b mobile review fixes', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await waitFor(() => expect(screen.getByText('Laptop designer secret reply')).toBeTruthy());
 
-    // Laptop goes offline -> action network error switches UI to Phone Lite displaying Writer (not Designer)
+    // Laptop goes offline -> action network error switches UI to Phone Lite, where every agent (Designer too) stays available
     laptopAlive = false;
     fireEvent.change(screen.getByLabelText('Message or voice brief'), {
       target: { value: 'Tell me about ProjectNightfall' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await waitFor(() => expect(screen.getByText('Phone Lite (offline)')).toBeTruthy());
-    expect((screen.getByLabelText('Agent') as HTMLSelectElement).value).toBe('writer');
+    expect((screen.getByLabelText('Agent') as HTMLSelectElement).value).toBe('designer');
 
     // Now send a refused message in Phone Lite (keeps typed text, does not block next turn)
     fireEvent.change(screen.getByLabelText('Message or voice brief'), {

@@ -323,9 +323,9 @@ describe('Bundled Pitch, Present Mode, Today Routing, and Share-Out', () => {
     expect(screen.getByText('cero-card.png')).toBeTruthy();
     expect(screen.queryByText('script.md')).toBeNull();
 
-    const shareButtons = screen.getAllByRole('button', { name: 'Share' });
-    expect(shareButtons).toHaveLength(3);
-    fireEvent.click(shareButtons[1]);
+    const shareButtons = screen.getAllByRole('button', { name: 'Get on phone' });
+    expect(shareButtons).toHaveLength(2);
+    fireEvent.click(shareButtons[0]);
     await waitFor(() => expect(fileShares).toHaveLength(1));
     expect(fileShares[0].url).toBe('http://100.64.5.10:8788/phone/v1/files?content_id=cnt_pub&path=outputs%2Freels%2Fcero-launch.mp4');
     expect(fileShares[0].headers).toEqual({ Authorization: 'Bearer tok-alpha' });

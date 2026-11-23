@@ -338,7 +338,7 @@ export function MoreTab({
             </div>
             {phoneActions.length === 0 ? (
               <p className="mob-mono">
-                Comments, posted marks and finished reminders made while your laptop is away show here.
+                Comments, posted marks, finished reminders and agent requests made while your laptop is away show here.
               </p>
             ) : (
               <RowList>

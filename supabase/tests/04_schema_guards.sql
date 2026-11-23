@@ -90,6 +90,18 @@ begin
   end if;
   raise notice 'PASS: phone_actions has no anon access, no client update or delete, and guarded functions';
 
+  -- 3a3. phone_files: anon has nothing, clients cannot truncate, the guard function is not callable, the bucket is private.
+  if has_table_privilege('anon', 'public.phone_files', 'SELECT') or has_table_privilege('anon', 'public.phone_files', 'INSERT')
+     or has_table_privilege('authenticated', 'public.phone_files', 'TRUNCATE')
+     or has_function_privilege('authenticated', 'public.guard_phone_file()', 'EXECUTE')
+     or has_function_privilege('anon', 'public.guard_phone_file()', 'EXECUTE') then
+    raise exception 'FAIL: phone_files grants are too wide';
+  end if;
+  if exists (select 1 from storage.buckets where id = 'phone-files' and public) then
+    raise exception 'FAIL: the phone-files bucket is public';
+  end if;
+  raise notice 'PASS: phone_files has no anon access, a guarded trigger function and a private bucket';
+
   -- 3b. Confirm shared AI service-role functions are NOT executable by public, anon, or authenticated.
   select string_agg(p.proname, ', ')
   into v_bad

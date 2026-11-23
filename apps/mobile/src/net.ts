@@ -250,11 +250,58 @@ export function validateSupabaseUrl(rawUrl: string, overrideSupabaseUrl?: string
   if (
     !parts.path.startsWith('/auth/v1/') &&
     !parts.path.startsWith('/rest/v1/') &&
-    parts.path !== '/functions/v1/ai-proxy'
+    parts.path !== '/functions/v1/ai-proxy' &&
+    !PHONE_COPY_PATH_RE.test(parts.path)
   ) {
     throw new NetworkPolicyError('Disallowed Supabase endpoint path.', 'forbidden_destination');
   }
+  if (PHONE_COPY_PATH_RE.test(parts.path) && parts.query !== '' && !PHONE_COPY_QUERY_RE.test(parts.query)) {
+    throw new NetworkPolicyError('A phone copy link takes only its token.', 'forbidden_destination');
+  }
   return `${origin}${parts.path}${parts.query}`;
+}
+
+/**
+ * The one storage path the phone may use: the signing request (POST, no query) and the signed download (GET, with a
+ * token) of a draft file copy, always <owner id>/<64 hex>.<extension> in the private phone-files bucket.
+ */
+const PHONE_COPY_PATH_RE =
+  /^\/storage\/v1\/object\/sign\/phone-files\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[0-9a-f]{64}\.(?:png|jpg|jpeg|webp|mp4|webm|pdf)$/;
+const PHONE_COPY_QUERY_RE = /^\?token=[A-Za-z0-9._-]{8,4000}$/;
+
+function phoneCopyUrlParts(rawUrl: string, ownerUid: string): { origin: string; path: string; query: string } {
+  const uid = String(ownerUid ?? '').trim().toLowerCase();
+  if (!uid) {
+    throw new NetworkPolicyError('A signed-in account is required for phone copies.', 'missing_credential');
+  }
+  const normalized = validateSupabaseUrl(rawUrl);
+  const parts = splitRawUrl(normalized);
+  if (!PHONE_COPY_PATH_RE.test(parts.path)) {
+    throw new NetworkPolicyError('Not a phone copy path.', 'forbidden_destination');
+  }
+  const folder = parts.path.split('/')[6];
+  if (folder !== uid) {
+    throw new NetworkPolicyError('That copy belongs to another account.', 'forbidden_destination');
+  }
+  return { origin: getConfiguredSupabaseOrigin(), path: parts.path, query: parts.query };
+}
+
+/** The signing request for one of this account's copies: no query, one exact path. */
+export function validatePhoneCopySignUrl(rawUrl: string, ownerUid: string): string {
+  const { origin, path, query } = phoneCopyUrlParts(rawUrl, ownerUid);
+  if (query !== '') {
+    throw new NetworkPolicyError('A signing request takes no query.', 'forbidden_destination');
+  }
+  return `${origin}${path}`;
+}
+
+/** The signed download link of one of this account's copies: the same path with exactly one token query. */
+export function validateCloudFileUrl(rawUrl: string, ownerUid: string): string {
+  const { origin, path, query } = phoneCopyUrlParts(rawUrl, ownerUid);
+  if (!PHONE_COPY_QUERY_RE.test(query)) {
+    throw new NetworkPolicyError('A signed link must carry exactly one token.', 'forbidden_destination');
+  }
+  return `${origin}${path}${query}`;
 }
 
 /** Validate a URL targeting NVIDIA NIM (https://integrate.api.nvidia.com/v1/...), requiring a personal key. */
@@ -442,6 +489,20 @@ export async function netShareLaptopFile(
     headers: { Authorization: `Bearer ${token}` },
     title,
   });
+}
+
+/** Download and share a signed cloud copy through the native share sheet (no credentials travel with it). */
+export async function netShareCloudFile(
+  rawUrl: string,
+  title: string | undefined,
+  ownerUid: string,
+  bridge: NativeBridge = getNativeBridge(),
+): Promise<void> {
+  const validatedUrl = validateCloudFileUrl(rawUrl, ownerUid);
+  if (typeof bridge.shareCloudFile !== 'function') {
+    throw new Error('File sharing is unavailable on this platform.');
+  }
+  await bridge.shareCloudFile({ url: validatedUrl, title });
 }
 
 export function getPublicSupabaseConfig(): {

@@ -11,21 +11,32 @@ definition of confidential (confidential_guard plus the phone guard) before anyt
 stored as data: it never becomes an agent instruction and never starts an @agent run.
 
 A local receipt table makes every action apply exactly once, even across a crash or a repeated claim.
+
+agent_task is the one kind that runs an agent: the phone asks an agent that needs a laptop tool (web research,
+images, saving numbers, delegation, repo reading) and the laptop answers when it is back. The text is handled exactly
+like a chat message typed by the owner (agent_chat.chat_with_agent: the same confidentiality decision, tools and
+approvals), but only after the same checks as every other kind, one run at a time, at most 20 an hour, and never
+twice. The run happens on a background thread so a long answer never blocks the sync cycle.
 """
 
+import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
+import threading
+from datetime import datetime, timedelta, timezone
 import urllib.parse
 
 _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
 
+import agent_chat
+import agents
 import cloud_sync
 import confidential_guard
 import db
+import notifications
 import phone_server
 import review_studio
 import team_auth
@@ -42,8 +53,19 @@ MAX_ATTEMPTS = 3
 MAX_TOUCHES = MAX_ATTEMPTS + 3
 ATTEMPTS_KIND = "_phone_action_attempts"
 FAILED_REASON = "Not applied: this laptop could not apply it."
-KINDS = ("draft_comment", "draft_posted", "reminder_done")
+KINDS = ("draft_comment", "draft_posted", "reminder_done", "agent_task")
 COMMENT_AUTHOR = "phone:cloud"
+AGENT_TASK = "agent_task"
+MAX_AGENT_MESSAGE_CHARS = 4000
+MAX_AGENT_TASKS_PER_HOUR = 20
+AGENT_STARTED_KIND = "_phone_agent_started"
+AGENT_ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,100}")
+RESTARTED_REASON = "Not applied: this laptop restarted before the agent finished. Send it again."
+NO_AGENT_REASON = "Not applied: this laptop has no agent with that id."
+AGENT_FAILED_REASON = "Not applied: the agent could not answer. Check AI access on the laptop and send it again."
+LAPTOP_ONLY_RESULT = "Replied on the laptop only."
+_Thread = threading.Thread
 
 _UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
@@ -186,6 +208,16 @@ def validate_payload(kind, payload):
         if payload != {}:
             raise _Reject("Not applied: the reminder details were malformed.")
         return {}
+    if kind == AGENT_TASK:
+        if not isinstance(payload, dict) or set(payload) != {"message"}:
+            raise _Reject("Not applied: the request was malformed.")
+        message = payload["message"]
+        if (
+            not isinstance(message, str) or _BODY_BAD_RE.search(message) or not message.strip()
+            or len(message.strip()) > MAX_AGENT_MESSAGE_CHARS
+        ):
+            raise _Reject("Not applied: the request text was empty, too long or malformed.")
+        return {"message": message.strip()}
     raise _Reject("Not applied: this laptop does not support that kind of action.")
 
 
@@ -195,6 +227,7 @@ def target_exists(kind, target_id):
         return db.get_content_item(target_id) is not None
     if kind == "reminder_done":
         return db.get_reminder(target_id) is not None
+    # An agent task is claimed and then checked, so a bad or unknown agent id is rejected with a reason.
     return True
 
 
@@ -252,6 +285,131 @@ def _apply(user_id, row, guard):
         return "rejected", "Not applied: the laptop could not accept it."
     except (review_studio.NotFoundError, review_studio.ValidationError):
         return "rejected", "Not applied: it was not found or not valid on this laptop."
+
+
+_agent_lock = threading.Lock()
+_agent_running = {}
+_agent_threads = []
+
+
+def _reset_agent_state():
+    """Forget running tasks (tests and sign-out only)."""
+    with _agent_lock:
+        _agent_running.clear()
+        del _agent_threads[:]
+
+
+def wait_for_agent_tasks(timeout=30.0):
+    """Wait for background agent runs to end. Returns True if none is still running."""
+    with _agent_lock:
+        threads = list(_agent_threads)
+    for thread in threads:
+        join = getattr(thread, "join", None)
+        if join is not None:
+            join(timeout)
+    with _agent_lock:
+        return not _agent_running
+
+
+def _recent_agent_starts(user_id):
+    """How many agent tasks this laptop started for the user in the last hour."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+    count = 0
+    for (kind, _local_id), info in db.get_cloud_sync_state(user_id).items():
+        if kind != AGENT_STARTED_KIND:
+            continue
+        stamp = _parse_time(info.get("synced_at"))
+        if stamp is not None and stamp >= cutoff:
+            count += 1
+    return count
+
+
+def _agent_slot_free(user_id):
+    """One run at a time, and a cap per hour, so a flooded queue cannot burn the AI quota."""
+    with _agent_lock:
+        if _agent_running:
+            return False
+    return _recent_agent_starts(user_id) < MAX_AGENT_TASKS_PER_HOUR
+
+
+def _agent_outcome(res):
+    """Turn what the chat function returned into (outcome, short result). Never carries reply text or error text."""
+    if not isinstance(res, dict) or not res.get("success"):
+        return "rejected", AGENT_FAILED_REASON
+    session_id = str(res.get("session_id") or "")
+    try:
+        conf_sids, _, _, checker, repo_patterns = phone_server._build_confidential_guard()
+    except phone_server.PhoneApiError:
+        return "applied", LAPTOP_ONLY_RESULT  # rules unreadable: say nothing that points at the reply
+    session = db.get_agent_session(session_id) if session_id else None
+    extras = json.dumps([res.get("question"), res.get("options")], ensure_ascii=False, default=str)
+    confidential = (
+        session_id in conf_sids
+        or bool(session and session.get("confidential"))
+        or phone_server._chat_read_confidential(session, checker, repo_patterns)
+        or _names_confidential((conf_sids, None, None, checker, repo_patterns), str(res.get("response") or ""), extras)
+    )
+    if confidential or not SESSION_ID_RE.fullmatch(session_id):
+        return "applied", LAPTOP_ONLY_RESULT
+    return "applied", ("Needs your answer. " if res.get("waiting_user") else "Replied. ") + f"session:{session_id}"
+
+
+def _run_agent_task(user_id, row, agent, message, device_id):
+    """Run one claimed agent task as an ordinary chat message and record the outcome. Runs on its own thread."""
+    outcome, result = "rejected", AGENT_FAILED_REASON
+    receipt = None
+    try:
+        try:
+            outcome, result = _agent_outcome(agent_chat.chat_with_agent(agent["id"], message))
+        except Exception:
+            outcome, result = "rejected", AGENT_FAILED_REASON
+        receipt = _record_receipt(user_id, dict(row, kind=AGENT_TASK), outcome, result)
+    finally:
+        # Only after the receipt is written, so no cycle can mistake a finished run for a crashed one.
+        with _agent_lock:
+            _agent_running.pop(row["id"], None)
+    try:
+        if receipt is not None and receipt["outcome"] == "applied":
+            notifications.notify("agent_reply", f"{agent.get('name') or agent['id']} replied", route="#/team")
+    except Exception:
+        pass
+    try:
+        _check(user_id, None)
+        _finish(row, device_id, receipt["outcome"], receipt["result"])
+    except Exception:
+        pass  # the next cycle finishes it from the receipt
+    try:
+        cloud_sync.request_sync()
+    except Exception:
+        pass
+
+
+def _begin_agent_task(user_id, row, guard, device_id):
+    """Check a claimed agent task and start it. Returns (outcome, reason) to refuse it, or None once it is running."""
+    try:
+        # Started before and not running now: the laptop stopped mid-run. Never run it a second time.
+        if db.get_cloud_sync_value(user_id, AGENT_STARTED_KIND, row["id"]) is not None:
+            raise _Reject(RESTARTED_REASON)
+        params = validate_payload(AGENT_TASK, row["payload"])
+        agent_id = row["target_id"]
+        agent = agents.get_agent(agent_id) if AGENT_ID_RE.fullmatch(agent_id) else None
+        if agent is None or agent.get("id") != agent_id:
+            raise _Reject(NO_AGENT_REASON)
+        if _names_confidential(guard, params["message"]):
+            raise _Reject(CONFIDENTIAL_TEXT_REASON)
+    except _Reject as exc:
+        return "rejected", exc.reason
+    db.upsert_cloud_sync_state(
+        user_id, [(AGENT_STARTED_KIND, row["id"], "1", datetime.now(timezone.utc).isoformat(), None)]
+    )
+    with _agent_lock:
+        _agent_running[row["id"]] = True
+    thread = _Thread(target=_run_agent_task, args=(user_id, row, agent, params["message"], device_id), daemon=True)
+    with _agent_lock:
+        _agent_threads[:] = [th for th in _agent_threads if getattr(th, "is_alive", lambda: False)()]
+        _agent_threads.append(thread)
+    thread.start()
+    return None
 
 
 def _record_receipt(user_id, row, outcome, result):
@@ -340,7 +498,7 @@ def sync(user_id, is_signed_out=None):
     the next, and an action that keeps failing is rejected after MAX_ATTEMPTS with a fixed reason.
     """
     user_id = str(user_id or "").strip()
-    summary = {"applied": 0, "rejected": 0, "skipped": 0, "errors": 0, "paused": False}
+    summary = {"applied": 0, "rejected": 0, "skipped": 0, "errors": 0, "started": 0, "paused": False}
     if not user_id:
         return summary
     _check(user_id, is_signed_out)
@@ -367,6 +525,13 @@ def sync(user_id, is_signed_out=None):
             if row["status"] == "applying" and row["device"] != device_id:
                 summary["skipped"] += 1
                 continue
+            if row["kind"] == AGENT_TASK and receipt is None:
+                with _agent_lock:
+                    running = row["id"] in _agent_running
+                # Running now, or no free slot: leave it (a queued one stays unclaimed so another laptop could take it).
+                if running or (row["status"] == "queued" and not _agent_slot_free(user_id)):
+                    summary["skipped"] += 1
+                    continue
             if row["status"] == "queued":
                 if row["expires_at"] <= now:
                     summary["skipped"] += 1
@@ -388,7 +553,15 @@ def sync(user_id, is_signed_out=None):
                     continue
                 _check(user_id, is_signed_out)
             if receipt is None:
-                outcome, result = _apply(user_id, row, guard)
+                if row["kind"] == AGENT_TASK:
+                    refused = _begin_agent_task(user_id, row, guard, device_id)
+                    if refused is None:
+                        summary["started"] += 1
+                        _check(user_id, is_signed_out)
+                        continue
+                    outcome, result = refused
+                else:
+                    outcome, result = _apply(user_id, row, guard)
                 receipt = _record_receipt(user_id, row, outcome, result)
             _check(user_id, is_signed_out)
             _finish(row, device_id, receipt["outcome"], receipt["result"])
