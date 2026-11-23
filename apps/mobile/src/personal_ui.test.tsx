@@ -117,7 +117,7 @@ describe('ReposPanel', () => {
     render(<ReposPanel bridge={bridge} userId="user-a" />);
     await screen.findByText(/No repos yet/);
     fireEvent.click(screen.getByRole('button', { name: 'Add GitHub repo' }));
-    fireEvent.change(screen.getByLabelText(/GitHub repository/), { target: { value: '/home/me/code' } });
+    fireEvent.change(screen.getByLabelText(/GitHub repository/), { target: { value: '/srv/me/code' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add repo' }));
     expect((await screen.findByRole('alert')).textContent).toMatch(/Folders are added on your laptop/);
     fireEvent.change(screen.getByLabelText(/GitHub repository/), { target: { value: 'acme/ok' } });

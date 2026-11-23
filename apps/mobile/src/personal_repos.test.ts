@@ -100,7 +100,7 @@ describe('personal repos on the phone', () => {
 
   it('refuses local repos, bad input and a duplicate', async () => {
     const { bridge } = await setup();
-    await expect(addGithubRepo(bridge, { github: '/home/me/code' }, RULES, [])).rejects.toThrow(/GitHub/);
+    await expect(addGithubRepo(bridge, { github: '/srv/me/code' }, RULES, [])).rejects.toThrow(/GitHub/);
     await expect(addGithubRepo(bridge, { github: 'acme/x', name: 'x'.repeat(81) }, RULES, [])).rejects.toThrow();
     await addGithubRepo(bridge, { github: 'acme/dup' }, RULES, []);
     await expect(addGithubRepo(bridge, { github: 'ACME/dup', name: 'Other' }, RULES, ['dup'])).rejects.toThrow(/already/);
