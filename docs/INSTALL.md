@@ -4,9 +4,21 @@ This guide is for teammates setting up Magnm Studio on Linux, macOS, Windows, an
 
 ## Desktop installers
 
-**No desktop installer is published yet.** Automated release builds wait on the Tauri updater signing key and repository secrets to be configured (see [apps/desktop/RELEASING.md](../apps/desktop/RELEASING.md)). Until installers are published, run Magnm Studio from source on your laptop.
+Installers for every platform are built by GitHub Actions: open the repository's **Actions** tab, choose
+**Desktop installers**, open the latest successful run and download the artifact for your system:
 
----
+| System | File |
+|---|---|
+| Windows | `magnm-studio-windows-x86_64`: `.msi` or setup `.exe` |
+| macOS (M1 to M4) | `magnm-studio-macos-apple-silicon`: `.dmg` |
+| macOS (Intel) | `magnm-studio-macos-intel`: `.dmg` |
+| Ubuntu, Debian | `magnm-studio-linux-x86_64`: `.deb` |
+| Fedora, openSUSE | `magnm-studio-linux-x86_64`: `.rpm` |
+| Other Linux | `magnm-studio-linux-x86_64`: `.AppImage` |
+
+These builds are not signed yet, so Windows and macOS warn the first time you open them, and they do not update
+themselves. Signed builds with automatic updates come from a release once the signing keys are set up
+(see [apps/desktop/RELEASING.md](../apps/desktop/RELEASING.md)).
 
 ## Running from source (Linux, macOS, Windows)
 
