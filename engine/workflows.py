@@ -206,6 +206,10 @@ def _persist_state(run_id, state):
     db.update_workflow_run(run_id, state=state)
 
 
+# Session errors after which a draft the agent already saved is still usable.
+OUT_OF_STEPS_ERRORS = ("too many steps", "session timed out (15 min limit)")
+
+
 def _run_agent_for_step(run, state, step_key, agent_id, instruction, title=None):
     """Run or resume an agent session for a workflow step, safely avoiding duplicate work."""
     step_sessions = state.setdefault("step_sessions", {})
@@ -1764,13 +1768,15 @@ class VideoScriptWorkflow(BaseWorkflow):
         sess = _run_agent_for_step(run, state, "write_script", "video-producer", instruction, title="Video script")
         if sess["status"] == "waiting_user":
             return _session_wait_result(sess, state)
-        if sess["status"] in ("failed", "cancelled"):
-            return StepResult.fail(sess.get("error") or f"Video producer {sess['status']}")
-
         created = [
             cid for cid in db.list_content_ids_for_session(sess["id"])
             if (db.get_content_item(cid) or {}).get("type") != "review"
         ]
+        if sess["status"] == "cancelled":
+            return StepResult.fail("Video producer cancelled")
+        if sess["status"] == "failed" and not (created and sess.get("error") in OUT_OF_STEPS_ERRORS):
+            return StepResult.fail(sess.get("error") or "Video producer failed")
+        # A script saved before the agent ran out of steps or time is kept; the review step checks it next.
         if not created:
             return StepResult.fail("Video producer completed without calling write_draft")
         state["script_content_id"] = created[0]
