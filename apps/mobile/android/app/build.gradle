@@ -31,8 +31,8 @@ android {
         applicationId "com.magnm.studio"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 100
-        versionName "0.1.0"
+        versionCode 200
+        versionName "0.2.0"
         buildConfigField "String", "SUPABASE_ORIGIN", "\"${supabaseOrigin}\""
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {

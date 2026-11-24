@@ -4,7 +4,7 @@
 # The only source is a local file, so its checksum is SKIP.
 
 pkgname=magnm-studio
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Magnm Studio: the desktop app for the Magnm marketing team'
 arch=('x86_64')

@@ -1,6 +1,6 @@
 [package]
 name = "magnm-studio"
-version = "0.1.0"
+version = "0.2.0"
 description = "Magnm Studio desktop application"
 authors = ["Magnm"]
 edition = "2021"
