@@ -227,6 +227,41 @@ class AgentsSystemTests(unittest.TestCase):
         updated_item = db.get_content_item(cid)
         self.assertTrue(any(f.get("kind") == "review" and f.get("verdict") == "warn" for f in updated_item["files"]))
 
+    def test_02b_review_notes_never_make_a_plain_draft_confidential(self):
+        """A reviewer writing "no ProjectNightfall claims" must not turn a non-confidential draft confidential."""
+        import confidential_guard
+        import product_rules as pr
+
+        fake = [pr._word_pattern("ProjectNightfall")]
+        with patch.object(confidential_guard, "patterns", return_value=fake):
+            ctx = ToolContext(session_id="sess_w_2b", agent_id="writer")
+            draft = tools.run_tool("write_draft", ctx, {"type": "post", "platform": "linkedin", "title": "Cero tip",
+                                                        "body": "Cero asks before it runs a command."}, ["write_draft"])
+            cid = draft["content_id"]
+            rev_ctx = ToolContext(session_id="sess_rev_2b", agent_id="reviewer")
+            res = tools.run_tool("write_review", rev_ctx, {"content_id": cid, "verdict": "ok",
+                                 "notes": "No ProjectNightfall features are mentioned. projectnightfall is fine."},
+                                 ["write_review"])
+            self.assertNotIn("error", res)
+            review = db.get_content_item(res["review_id"])
+            self.assertNotIn("nightfall", (review.get("body") or "").lower())
+            self.assertIn("the confidential product", review.get("body") or "")
+            self.assertFalse(confidential_guard.scope().item(db.get_content_item(cid)))
+
+    def test_02c_review_notes_of_a_confidential_draft_are_kept_as_written(self):
+        import confidential_guard
+        import product_rules as pr
+
+        fake = [pr._word_pattern("ProjectNightfall")]
+        with patch.object(confidential_guard, "patterns", return_value=fake):
+            ctx = ToolContext(session_id="sess_w_2c", agent_id="writer", confidential=True)
+            draft = tools.run_tool("write_draft", ctx, {"type": "post", "platform": "linkedin", "title": "Teaser",
+                                                        "body": "ProjectNightfall is coming."}, ["write_draft"])
+            rev_ctx = ToolContext(session_id="sess_rev_2c", agent_id="reviewer", confidential=True)
+            res = tools.run_tool("write_review", rev_ctx, {"content_id": draft["content_id"], "verdict": "warn",
+                                 "notes": "Keep ProjectNightfall to a teaser."}, ["write_review"])
+            self.assertIn("ProjectNightfall", db.get_content_item(res["review_id"]).get("body") or "")
+
     def test_03_generate_image_uses_key_pool_no_seed_and_attaches_file(self):
         """generate_image posts to FLUX without 'seed', acquires/reports key pool, decodes JPEG, and attaches it."""
         seen = {}

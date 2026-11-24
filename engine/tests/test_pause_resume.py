@@ -82,6 +82,10 @@ class _Base(unittest.TestCase):
         patcher = patch.dict(workflows.WORKFLOWS, {"post": _FakeWorkflow})
         patcher.start()
         self.addCleanup(patcher.stop)
+        # The tests run each job themselves; a real worker started by resume() or retry() would race them.
+        worker = patch.object(jobs, "start_worker", lambda *a, **k: None)
+        worker.start()
+        self.addCleanup(worker.stop)
 
     def tearDown(self):
         jobs.stop_worker(timeout=2.0)

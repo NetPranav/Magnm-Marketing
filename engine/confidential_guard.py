@@ -111,6 +111,19 @@ def mentions(text):
     return matcher()(text)
 
 
+def redact_names(text, replacement="the confidential product"):
+    """Text with every confidential product or repo name replaced. Unchanged if the names can't be built."""
+    if not text:
+        return text
+    try:
+        pats = patterns()
+    except Exception:
+        return text
+    for pat in pats:
+        text = pat.sub(replacement, text)
+    return text
+
+
 def drop_confidential_sections(text):
     """Remove every '## ' section that names a confidential product or repo. Returns '' if that can't be checked."""
     if not text:

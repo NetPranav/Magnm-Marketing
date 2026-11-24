@@ -27,14 +27,47 @@ class OllamaTimeoutTests(unittest.TestCase):
         return seen
 
     def test_the_default_wait_is_long_enough_for_a_cpu_laptop(self):
-        self.assertEqual(self._timeouts({"local": {"ollama_model": "llama3.2"}}), [300, 300])
+        self.assertEqual(self._timeouts({"local": {"ollama_model": "llama3.2"}}), [600, 600])
 
     def test_the_wait_can_be_set_in_models_json(self):
         self.assertEqual(self._timeouts({"local": {"ollama_model": "llama3.2", "timeout_s": 600}}), [600, 600])
 
     def test_a_bad_setting_falls_back_to_the_default(self):
         for bad in ("soon", -5, 0, True, 100000):
-            self.assertEqual(self._timeouts({"local": {"timeout_s": bad}}), [300, 300], bad)
+            self.assertEqual(self._timeouts({"local": {"timeout_s": bad}}), [600, 600], bad)
+
+
+class OllamaToolCallFormatTests(unittest.TestCase):
+    """Ollama wants tool-call arguments as an object; the engine keeps them as a JSON string (OpenAI style)."""
+
+    def _sent_messages(self, messages):
+        sent = []
+
+        def fake_post(url, payload, headers, timeout=None):
+            sent.append(payload)
+            return {"message": {"content": "ok"}}
+
+        with patch.object(ai_gateway, "_http_post_json", side_effect=fake_post):
+            ai_gateway._single_ollama_chat_meta("http://localhost:11434", messages, "llama3.2", tools=None, timeout=5)
+        return sent[0]["messages"]
+
+    def test_string_arguments_are_sent_as_an_object(self):
+        messages = [
+            {"role": "user", "content": "review it"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "read_content", "arguments": '{"content_id": "cnt_1"}'}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": '{"ok": true}'},
+        ]
+        out = self._sent_messages(messages)
+        self.assertEqual(out[1]["tool_calls"][0]["function"]["arguments"], {"content_id": "cnt_1"})
+        # The stored session messages are not changed.
+        self.assertIsInstance(messages[1]["tool_calls"][0]["function"]["arguments"], str)
+
+    def test_unreadable_or_empty_arguments_become_an_empty_object(self):
+        for raw in ("", "not json", "[1, 2]", None):
+            msgs = [{"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "t", "arguments": raw}}]}]
+            self.assertEqual(self._sent_messages(msgs)[0]["tool_calls"][0]["function"]["arguments"], {}, raw)
 
 
 if __name__ == "__main__":
