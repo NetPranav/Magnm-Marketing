@@ -5,7 +5,7 @@ import {
   CapacitorBarcodeScannerTypeHint,
 } from '@capacitor/barcode-scanner';
 import { Browser } from '@capacitor/browser';
-import { Capacitor, registerPlugin } from '@capacitor/core';
+import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 
 export interface NativeHttpRequest {
   method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
@@ -74,6 +74,29 @@ export interface SharePdfOptions {
   title?: string;
 }
 
+/** The installed app version, and whether Android lets this app open the system installer yet. */
+export interface AppVersionInfo {
+  versionName: string;
+  versionCode: number;
+  canInstall: boolean;
+}
+
+/** What the phone needs to download and install one update. The URL, size and checksum come from android.json. */
+export interface UpdateInstallRequest {
+  url: string;
+  sha256: string;
+  bytes: number;
+  versionCode: number;
+}
+
+/** installer_opened: Android's installer is on screen. needs_permission: the settings page for installs was opened. */
+export type UpdateInstallState = 'installer_opened' | 'needs_permission';
+
+export interface UpdateProgressEvent {
+  downloaded: number;
+  total: number;
+}
+
 export interface SecureStore {
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
@@ -94,6 +117,11 @@ export interface NativeBridge {
   stageUploadChunk?(options: StageUploadChunkOptions): Promise<void>;
   finishCloudUpload?(options: FinishCloudUploadOptions): Promise<UploadResult>;
   abortUpload?(options: { uploadId: string }): Promise<void>;
+  getAppVersion?(): Promise<AppVersionInfo>;
+  /** The text of the latest release's android.json (fetched natively from its one fixed address). */
+  fetchUpdateManifest?(): Promise<string>;
+  downloadAndInstallUpdate?(request: UpdateInstallRequest): Promise<UpdateInstallState>;
+  onUpdateProgress?(handler: (event: UpdateProgressEvent) => void): () => void;
   openBrowser(url: string): Promise<void>;
   closeBrowser(): Promise<void>;
   scanQrCode(): Promise<string | null>;
@@ -120,6 +148,13 @@ interface MagnmNativePlugin {
   stageUploadChunk(options: StageUploadChunkOptions): Promise<void>;
   finishCloudUpload(options: FinishCloudUploadOptions): Promise<UploadResult>;
   abortUpload(options: { uploadId: string }): Promise<void>;
+  getAppVersion(): Promise<AppVersionInfo>;
+  fetchUpdateManifest(): Promise<{ body: string }>;
+  downloadAndInstallUpdate(request: UpdateInstallRequest): Promise<{ state: UpdateInstallState }>;
+  addListener(
+    eventName: 'updateProgress',
+    listener: (event: UpdateProgressEvent) => void,
+  ): Promise<PluginListenerHandle>;
 }
 
 const MagnmNative = registerPlugin<MagnmNativePlugin>('MagnmNative');
@@ -144,6 +179,12 @@ export interface PreviewBridgeOptions {
     data: Uint8Array;
   }) => UploadResult | Promise<UploadResult>;
   onMinimize?: () => void;
+  /** The installed version the preview pretends to be. */
+  appVersion?: AppVersionInfo;
+  /** The android.json text the preview returns (or a function that throws to simulate a failure). */
+  updateManifest?: string | (() => string | Promise<string>);
+  /** Called when the preview is asked to download and install; returns the installer state. */
+  onDownloadAndInstallUpdate?: (request: UpdateInstallRequest) => UpdateInstallState | Promise<UpdateInstallState>;
 }
 
 /** In-memory native fake for tests and browser preview; never persists secrets. */
@@ -154,6 +195,7 @@ export function createPreviewNativeBridge(
   emitResume: () => void;
   emitBackground: () => void;
   emitBackButton: () => void;
+  emitUpdateProgress: (event: UpdateProgressEvent) => void;
   getMinimizeCount: () => number;
   pushSharedItem: (item: SharedItem) => void;
   setDictateResult: (text: string | null) => void;
@@ -170,6 +212,7 @@ export function createPreviewNativeBridge(
   let scanQrValue = options.scanQrResult ?? null;
   let minimizeCount = 0;
   const staged = new Map<string, Uint8Array[]>();
+  const updateProgressListeners = new Set<(event: UpdateProgressEvent) => void>();
 
   return {
     isPreview: true,
@@ -249,6 +292,33 @@ export function createPreviewNativeBridge(
     },
     async abortUpload(opts: { uploadId: string }): Promise<void> {
       staged.delete(opts.uploadId);
+    },
+    async getAppVersion(): Promise<AppVersionInfo> {
+      return options.appVersion ?? { versionName: '0.0.0', versionCode: 0, canInstall: false };
+    },
+    async fetchUpdateManifest(): Promise<string> {
+      const source = options.updateManifest;
+      if (source === undefined) {
+        throw new Error(`${PREVIEW_BANNER_LABEL}: updates are available in the Android app.`);
+      }
+      return typeof source === 'function' ? source() : source;
+    },
+    async downloadAndInstallUpdate(request: UpdateInstallRequest): Promise<UpdateInstallState> {
+      if (!options.onDownloadAndInstallUpdate) {
+        throw new Error(`${PREVIEW_BANNER_LABEL}: updates are available in the Android app.`);
+      }
+      return options.onDownloadAndInstallUpdate(request);
+    },
+    onUpdateProgress(handler: (event: UpdateProgressEvent) => void): () => void {
+      updateProgressListeners.add(handler);
+      return () => {
+        updateProgressListeners.delete(handler);
+      };
+    },
+    emitUpdateProgress(event: UpdateProgressEvent): void {
+      for (const listener of updateProgressListeners) {
+        listener(event);
+      }
     },
     async openBrowser(url: string): Promise<void> {
       options.onOpenBrowser?.(url);
@@ -405,6 +475,29 @@ export function createCapacitorNativeBridge(): NativeBridge {
     },
     async abortUpload(options: { uploadId: string }): Promise<void> {
       await MagnmNative.abortUpload(options);
+    },
+    async getAppVersion(): Promise<AppVersionInfo> {
+      return MagnmNative.getAppVersion();
+    },
+    async fetchUpdateManifest(): Promise<string> {
+      const res = await MagnmNative.fetchUpdateManifest();
+      return typeof res?.body === 'string' ? res.body : '';
+    },
+    async downloadAndInstallUpdate(request: UpdateInstallRequest): Promise<UpdateInstallState> {
+      const res = await MagnmNative.downloadAndInstallUpdate(request);
+      return res?.state === 'needs_permission' ? 'needs_permission' : 'installer_opened';
+    },
+    onUpdateProgress(handler: (event: UpdateProgressEvent) => void): () => void {
+      let removed = false;
+      const handlePromise = MagnmNative.addListener('updateProgress', (event) => {
+        if (!removed) {
+          handler(event);
+        }
+      });
+      return () => {
+        removed = true;
+        void handlePromise.then((handle) => handle.remove()).catch(() => {});
+      };
     },
     async openBrowser(url: string): Promise<void> {
       await Browser.open({ url });

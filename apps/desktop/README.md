@@ -45,3 +45,21 @@ Runtime state, SQLite data, and engine logs (`logs/engine.log`) live inside Taur
 ## Release Builds
 
 Release builds (`pnpm build`) expect a standalone engine binary named `magnm-engine` (`magnm-engine.exe` on Windows) placed next to the desktop executable (built with PyInstaller in a later step). If the sidecar binary is missing at launch, the app navigates to `error.html` with a clear message.
+
+## Updates
+
+**Settings > Updates** (in the web UI the app loads) shows the installed version, checks the latest GitHub release, shows
+the notes, downloads with progress and then asks to restart. The Rust side is `src-tauri/src/updates.rs`; the commands
+are `update_status`, `check_update`, `install_update` and `restart_app`, and the events are `magnm:update-available`,
+`magnm:update-progress` and `magnm:update-ready`. A quiet check runs at most once a day (remembered in
+`update-check.json` in the app data folder) and only shows an "Update available" badge. Nothing is installed without a click.
+
+- The updater is on only when `plugins.updater.pubkey` in `tauri.conf.json` is a real key (not the placeholder).
+- Downloads are only allowed from `github.com/NetPranav/Magnm-Marketing/releases/download/vX.Y.Z/<file>`; redirects may only
+  go to those addresses or GitHub's release-asset hosts (at most 5 hops). Every file is checked against the public key.
+- An install from our Arch package (the file `/usr/share/magnm-studio/install-kind` says `pacman`) cannot be installed by
+  the plugin: the app downloads the `.pkg.tar.zst` named in `latest.json`'s `extra.pacman`, verifies its signature
+  (`minisign-verify`, bound to the release version), then runs `pkexec pacman -U --noconfirm <file>`.
+- The engine keeps running during the download; "Restart to finish" stops it and starts the new version.
+
+See [docs/RELEASING.md](../../docs/RELEASING.md) for how releases are made.
