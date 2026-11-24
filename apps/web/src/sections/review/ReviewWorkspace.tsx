@@ -752,6 +752,7 @@ export function ReviewWorkspace({ contentId, onBackToList }: ReviewWorkspaceProp
       onFocusComment={handleFocusComment}
       videoSeekRequest={videoSeekRequest}
       busyAction={busyAction}
+      onVideoChanged={() => void reloadReviewOnly()}
     />
   );
 

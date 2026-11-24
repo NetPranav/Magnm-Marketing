@@ -47,6 +47,8 @@ ALLOWED_JOBS = {
     "install_browser": "Install Playwright Chromium Browser",
     "weekly_summary": "Generate Weekly Analyst Summary & Learnings",
     "auto_pipeline": "Automatic Content Pipeline (pick a repo, research it, start content for approval)",
+    "render_video": "Render a Video (voice-over, captions, 9:16 and 16:9)",
+    "download_voice": "Download the Local Voice for Video Voice-over",
 }
 
 def log_activity(actor, target_role, task_name, output_file):
@@ -141,6 +143,36 @@ def run_job_body(job_name, job_id=None, actor="UI", log_file=None, params=None):
         import workflows
         res = workflows.execute_workflow_job(params or {}, job_id=job_id, log_file=log_file)
         output += json.dumps(res, indent=2, default=str) + "\n"
+    elif job_name == "render_video":
+        import video_render
+        vparams = params or {}
+        try:
+            res = video_render.render_video(
+                vparams.get("content_id"),
+                aspects=vparams.get("aspects"),
+                voice=bool(vparams.get("voice", True)),
+                progress=lambda pct, msg: jobs_mod.progress(job_id, min(94, pct), msg),
+                cancel=lambda: jobs_mod.is_cancel_requested(job_id),
+            )
+        except video_render.RenderCancelled as exc:
+            raise jobs_mod.JobCancelled(str(exc)) from exc
+        if job_id:
+            db.update_job(job_id, result={"content_id": res["content_id"], "aspects": res["aspects"],
+                                          "total_s": res["total_s"], "render_seconds": res["render_seconds"]})
+        output += f"Rendered {res['content_id']} in {res['render_seconds']} s: {', '.join(res['aspects'])}\n"
+    elif job_name == "download_voice":
+        import voiceover
+        _checkpoint(2, "Downloading the voice...")
+        try:
+            voiceover.download(
+                progress=lambda pct, msg: jobs_mod.progress(job_id, min(94, pct), msg),
+                cancel=lambda: jobs_mod.is_cancel_requested(job_id),
+            )
+        except voiceover.VoiceError as exc:
+            if exc.code == "cancelled":
+                raise jobs_mod.JobCancelled(str(exc)) from exc
+            raise
+        output += "The voice is installed.\n"
     elif job_name == "review_action":
         import review_studio
         res = review_studio.execute_review_job(params or {}, job_id=job_id, log_file=log_file)

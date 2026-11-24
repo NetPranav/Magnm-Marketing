@@ -143,6 +143,7 @@
         "write_draft",
         "read_content",
         "check_text",
+        "render_video",
         "ask_user",
         "recall_memory",
         "set_reminder",
