@@ -20,5 +20,20 @@ class ScriptLimitTests(unittest.TestCase):
         self.assertTrue(any("exceeds" in w["message"] for w in warnings))
 
 
+class ScriptAutoReviewTests(unittest.TestCase):
+    def test_the_automatic_review_does_not_flag_a_long_script(self):
+        import review
+        item = {"id": "cnt_x", "type": "script", "platform": "instagram", "title": "Reel",
+                "body": "Scene 1 (0s-3s)\nVO: line.\n" * 400}
+        codes = [f["code"] for f in review.auto_review(item).get("findings") or []]
+        self.assertNotIn("platform_max_chars", codes)
+
+    def test_the_automatic_review_still_flags_a_long_post(self):
+        import review
+        item = {"id": "cnt_y", "type": "post", "platform": "instagram", "title": "Post", "body": "word " * 600}
+        codes = [f["code"] for f in review.auto_review(item).get("findings") or []]
+        self.assertIn("platform_max_chars", codes)
+
+
 if __name__ == "__main__":
     unittest.main()

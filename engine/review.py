@@ -234,8 +234,8 @@ def auto_review(content_item):
                 "message": f"Contains hype word '{term}'.",
             })
 
-    # 4. Platform limits
-    limits = platforms.limits_for(platform)
+    # 4. Platform limits (never for a video script: it is production notes, not the caption)
+    limits = None if content_type in platforms.NOT_POSTED_AS_TEXT else platforms.limits_for(platform)
     if limits:
         norm_plat = limits["platform"]
         max_chars = limits.get("max_chars")

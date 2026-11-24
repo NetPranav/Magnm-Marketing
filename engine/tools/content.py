@@ -242,8 +242,9 @@ def write_review(ctx, content_id, verdict, notes):
     if target is None:
         return {"error": f"Content item '{content_id}' not found"}
     # The result carries findings drawn from the item's text, so a confidential item switches the session first.
+    target_confidential = confidential_guard.scope().item(target)
     if not confidential_guard.is_local(ctx):
-        refusal = confidential_guard.local_or_refusal(ctx, confidential_guard.scope().item(target))
+        refusal = confidential_guard.local_or_refusal(ctx, target_confidential)
         if refusal:
             return refusal
 
@@ -252,6 +253,9 @@ def write_review(ctx, content_id, verdict, notes):
     final_verdict = "warn" if (norm_verdict == "warn" or auto.get("verdict") == "warn") else "ok"
 
     base_notes = str(notes or "").strip()
+    if not target_confidential:
+        # "No <confidential product> claims" in a review of a plain draft would make the draft itself confidential.
+        base_notes = confidential_guard.redact_names(base_notes)
     if auto_findings:
         auto_lines = "\n".join(
             f"- [{f['severity']}] ({f['code']}) {f['message']}" for f in auto_findings

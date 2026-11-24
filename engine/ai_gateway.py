@@ -1057,6 +1057,22 @@ def complete_gemini(api_key, system_prompt, user_prompt, model="gemini-1.5-flash
     return res["candidates"][0]["content"]["parts"][0]["text"].strip()
 
 
+# Local AI often runs on the CPU, where reading a long system prompt takes minutes; models.json local.timeout_s
+# can change the wait (10 to 3600 seconds).
+OLLAMA_TIMEOUT_S = 600
+
+
+def ollama_timeout_s():
+    """Seconds to wait for one local Ollama answer."""
+    try:
+        value = (model_registry.load_models_config().get("local") or {}).get("timeout_s")
+    except Exception:
+        return OLLAMA_TIMEOUT_S
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 10 <= value <= 3600:
+        return OLLAMA_TIMEOUT_S
+    return int(value)
+
+
 def complete_ollama(base_url, system_prompt, user_prompt, model="llama3.2"):
     url = f"{base_url.rstrip('/')}/api/chat"
     headers = {"Content-Type": "application/json"}
@@ -1065,7 +1081,7 @@ def complete_ollama(base_url, system_prompt, user_prompt, model="llama3.2"):
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": user_prompt})
     payload = {"model": model, "messages": messages, "stream": False}
-    res = _http_post_json(url, payload, headers, timeout=20)
+    res = _http_post_json(url, payload, headers, timeout=ollama_timeout_s())
     if isinstance(res, dict) and res.get("error"):
         raise RuntimeError(str(res["error"]))
     return res.get("message", {}).get("content", "").strip()
@@ -1247,11 +1263,37 @@ def _messages_to_prompts(messages):
     return "\n\n".join(sys_parts), "\n\n".join(user_parts)
 
 
+def _ollama_tool_call_objects(messages):
+    """Copies of the messages with tool-call arguments as objects: Ollama rejects the OpenAI-style JSON string."""
+    out = []
+    for msg in messages or []:
+        calls = msg.get("tool_calls") if isinstance(msg, dict) else None
+        if not calls:
+            out.append(msg)
+            continue
+        fixed = []
+        for call in calls:
+            fn = dict((call or {}).get("function") or {})
+            args = fn.get("arguments")
+            if not isinstance(args, dict):
+                try:
+                    args = json.loads(args) if isinstance(args, str) and args.strip() else {}
+                except ValueError:
+                    args = {}
+                if not isinstance(args, dict):
+                    args = {}
+            fn["arguments"] = args
+            fixed.append(dict(call or {}, function=fn))
+        out.append(dict(msg, tool_calls=fixed))
+    return out
+
+
 def _single_ollama_chat_meta(base_url, messages, model, tools=None, timeout=20):
     """Execute Ollama /api/chat with messages and optional tools, falling back without tools if unsupported."""
     url = f"{base_url.rstrip('/')}/api/chat"
     headers = {"Content-Type": "application/json"}
     prepared_messages, img_warning = _prepare_messages_for_model(messages, model)
+    prepared_messages = _ollama_tool_call_objects(prepared_messages)
     warnings = [img_warning] if img_warning else []
 
     def _post(include_tools):
@@ -1321,6 +1363,7 @@ def _complete_confidential_ollama(base_url, ollama_model, messages, tools=None):
             messages=messages,
             model=ollama_model,
             tools=tools,
+            timeout=ollama_timeout_s(),
         )
     except AINotConnected:
         raise
