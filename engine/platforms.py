@@ -66,6 +66,10 @@ def limits_for(platform):
     return dict(spec) if spec else {}
 
 
+# Content types that are never posted as the platform text itself.
+NOT_POSTED_AS_TEXT = frozenset({"script"})
+
+
 def check_limits(platform, body, title=None, content_type=None):
     """Return over-limit warning dicts for body/title against limits_for(platform)."""
     limits = limits_for(platform)
@@ -75,6 +79,10 @@ def check_limits(platform, body, title=None, content_type=None):
     norm = limits["platform"]
     text = body or ""
     warnings = []
+
+    if (content_type or "").strip().lower() in NOT_POSTED_AS_TEXT:
+        # A video script is production notes for a video, never the caption: caption limits don't apply.
+        return []
 
     max_chars = limits.get("max_chars")
     if max_chars is not None:

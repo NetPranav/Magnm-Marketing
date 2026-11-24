@@ -669,6 +669,42 @@ class WorkflowTests(unittest.TestCase):
             prev_end = end_ms
             self.assertTrue(" ".join(lines[2:]).strip())
 
+    def test_04b_video_script_keeps_a_saved_script_when_the_agent_runs_out_of_steps(self):
+        """A script saved before the step limit is used, so the run is not lost to endless rewrites."""
+        def fake_start_session(agent_id, user_message, **kwargs):
+            sess = _create_fake_session(agent_id, title=kwargs.get("title") or "")
+            ctx = ToolContext(session_id=sess["id"], agent_id=agent_id)
+            if agent_id == "video-producer":
+                tools.run_tool("write_draft", ctx, {
+                    "type": "script", "platform": "instagram", "title": "Cero 15s Reel",
+                    "body": "Scene 1 (0s-5s)\nVisual: Terminal.\nOn-screen: ASKS FIRST.\nVO: Cero asks first.\n\n"
+                            "Scene 2 (5s-15s)\nVisual: End card.\nOn-screen: TRY CERO.\nVO: Stay in control.",
+                    "product_id": "cero",
+                }, ["write_draft"])
+                return db.update_agent_session(sess["id"], status="failed", error="too many steps")
+            if agent_id == "reviewer":
+                m_cid = re.search(r"Review content item (cnt_[a-zA-Z0-9_]+)", user_message)
+                tools.run_tool("write_review", ctx, {"content_id": m_cid.group(1), "verdict": "ok", "notes": "ok"},
+                               ["write_review"])
+            return sess
+
+        with patch.object(agent_runtime, "start_session", side_effect=fake_start_session):
+            run = workflows.start("video_script", {"topic": "Cero command safety", "duration_s": 15, "aspect": "9:16"})
+            self.assertTrue(_wait_until(lambda: (workflows.get(run["id"]) or {}).get("status") in ("done", "failed")))
+        done_run = workflows.get(run["id"])
+        self.assertEqual(done_run["status"], "done", done_run.get("error"))
+        self.assertTrue(done_run["state"].get("script_content_id"))
+
+    def test_04c_video_script_without_a_saved_script_still_fails_on_the_step_limit(self):
+        def fake_start_session(agent_id, user_message, **kwargs):
+            sess = _create_fake_session(agent_id, title=kwargs.get("title") or "")
+            return db.update_agent_session(sess["id"], status="failed", error="too many steps")
+
+        with patch.object(agent_runtime, "start_session", side_effect=fake_start_session):
+            run = workflows.start("video_script", {"topic": "Cero command safety", "duration_s": 15, "aspect": "9:16"})
+            self.assertTrue(_wait_until(lambda: (workflows.get(run["id"]) or {}).get("status") in ("done", "failed")))
+        self.assertEqual(workflows.get(run["id"])["status"], "failed")
+
     def test_05_crash_resume_mid_run_does_not_duplicate_step_one(self):
         """Simulate crash mid-run (status=running, current_step=2) -> recover_stale_runs resumes without redoing step 1."""
         # Pre-create step-1 draft and a workflow run frozen at status='running', current_step=2 (review_drafts)
