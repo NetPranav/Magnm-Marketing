@@ -5,12 +5,14 @@ import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.ContentResolver;
 import android.content.Intent;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ProviderInfo;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Build;
+import android.provider.Settings;
 import android.speech.RecognizerIntent;
 import android.util.Base64;
 import androidx.activity.result.ActivityResult;
@@ -311,6 +313,182 @@ public class MagnmNativePlugin extends Plugin {
             UploadStage.discard(uploadStageDir(), id);
             if (conn != null) {
                 conn.disconnect();
+            }
+        }
+    }
+
+    // ---- app updates (More > Updates) ----
+
+    private File updateDir() {
+        return new File(getContext().getCacheDir(), "updates");
+    }
+
+    private long installedVersionCode() throws PackageManager.NameNotFoundException {
+        PackageInfo info = getContext().getPackageManager().getPackageInfo(getContext().getPackageName(), 0);
+        return Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode;
+    }
+
+    /** The installed version, and whether this app may open the system installer yet. */
+    @PluginMethod
+    public void getAppVersion(PluginCall call) {
+        try {
+            PackageInfo info = getContext().getPackageManager().getPackageInfo(getContext().getPackageName(), 0);
+            JSObject ret = new JSObject();
+            ret.put("versionName", info.versionName == null ? "" : info.versionName);
+            ret.put("versionCode", installedVersionCode());
+            ret.put("canInstall", Build.VERSION.SDK_INT < 26 || getContext().getPackageManager().canRequestPackageInstalls());
+            call.resolve(ret);
+        } catch (Exception ex) {
+            call.reject("Could not read the installed version.");
+        }
+    }
+
+    /** One GET without redirect following, cookies or credentials, for the update downloader. */
+    private static UpdateDownloader.Opener updateOpener() {
+        return url -> {
+            HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection(Proxy.NO_PROXY);
+            conn.setInstanceFollowRedirects(false);
+            conn.setUseCaches(false);
+            conn.setConnectTimeout(30_000);
+            conn.setReadTimeout(60_000);
+            conn.setRequestMethod("GET");
+            final int status = conn.getResponseCode();
+            final String location = conn.getHeaderField("Location");
+            final long length = conn.getContentLengthLong();
+            return new UpdateDownloader.Response() {
+                @Override public int status() { return status; }
+                @Override public String location() { return location; }
+                @Override public long contentLength() { return length; }
+                @Override public InputStream body() throws IOException { return conn.getInputStream(); }
+                @Override public void close() { conn.disconnect(); }
+            };
+        };
+    }
+
+    /** Fetch the latest release's android.json from its one fixed address (redirects only to allowed hosts). */
+    @PluginMethod
+    public void fetchUpdateManifest(PluginCall call) {
+        executor.execute(() -> {
+            try {
+                JSObject ret = new JSObject();
+                ret.put("body", UpdateDownloader.fetchManifest(urlPolicy, updateOpener()));
+                call.resolve(ret);
+            } catch (SocketTimeoutException ex) {
+                call.reject("The update server did not answer in time. Try again.");
+            } catch (IOException ex) {
+                call.reject(ex.getMessage() == null ? "Could not check for updates." : ex.getMessage());
+            } catch (Exception ex) {
+                call.reject("Could not check for updates.");
+            }
+        });
+    }
+
+    /**
+     * Download the APK (only from our GitHub release), keep it only if its size and SHA-256 match, then open the system
+     * installer through the FileProvider. If this app may not install apps yet, open that settings page instead and
+     * download nothing. Android itself refuses an APK signed with another key.
+     */
+    @PluginMethod
+    public void downloadAndInstallUpdate(PluginCall call) {
+        final String url;
+        final String sha256 = call.getString("sha256");
+        final Long bytes = call.getLong("bytes");
+        final Long wantedCode = call.getLong("versionCode");
+        try {
+            url = urlPolicy.validateUpdateApkUrl(call.getString("url"));
+            if (bytes == null || wantedCode == null || !UpdateDownloader.isSha256Hex(sha256)) {
+                throw new NativeUrlPolicy.PolicyException("The update information is incomplete.");
+            }
+        } catch (NativeUrlPolicy.PolicyException ex) {
+            call.reject(ex.getMessage());
+            return;
+        } catch (Exception ex) {
+            call.reject("Invalid update request.");
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT >= 26 && !getContext().getPackageManager().canRequestPackageInstalls()) {
+            Activity activity = getActivity();
+            if (activity != null) {
+                Intent settings = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getContext().getPackageName()));
+                activity.runOnUiThread(() -> {
+                    try {
+                        activity.startActivity(settings);
+                    } catch (ActivityNotFoundException ignored) {
+                        // Nothing more to do: the message below tells the person where to go.
+                    }
+                });
+            }
+            JSObject ret = new JSObject();
+            ret.put("state", "needs_permission");
+            call.resolve(ret);
+            return;
+        }
+
+        executor.execute(() -> executeUpdateDownload(call, url, sha256, bytes, wantedCode));
+    }
+
+    private void executeUpdateDownload(PluginCall call, String url, String sha256, long bytes, long wantedCode) {
+        File dir = updateDir();
+        File target = null;
+        boolean launched = false;
+        try {
+            if (!dir.isDirectory() && !dir.mkdirs()) {
+                throw new IOException("Could not make room for the update.");
+            }
+            // Only the update being installed is kept.
+            File[] old = dir.listFiles();
+            if (old != null) {
+                for (File f : old) {
+                    f.delete();
+                }
+            }
+            target = new File(dir, "magnm-studio-update.apk");
+            UpdateDownloader.download(urlPolicy, updateOpener(), url, target, bytes, sha256, (done, total) -> {
+                JSObject p = new JSObject();
+                p.put("downloaded", done);
+                p.put("total", total);
+                notifyListeners("updateProgress", p);
+            });
+
+            PackageInfo archive = getContext().getPackageManager().getPackageArchiveInfo(target.getAbsolutePath(), 0);
+            if (archive == null || !getContext().getPackageName().equals(archive.packageName)) {
+                throw new IOException("The downloaded file is not an update for Magnm Studio, so it was not installed.");
+            }
+            long archiveCode = Build.VERSION.SDK_INT >= 28 ? archive.getLongVersionCode() : archive.versionCode;
+            if (archiveCode != wantedCode || archiveCode <= installedVersionCode()) {
+                throw new IOException("The downloaded file is not a newer version, so it was not installed.");
+            }
+
+            Activity activity = getActivity();
+            if (activity == null) {
+                throw new IOException("The app is not on screen, so the installer could not open. Try again.");
+            }
+            Uri contentUri = FileProvider.getUriForFile(getContext(), getContext().getPackageName() + ".fileprovider", target);
+            Intent install = new Intent(Intent.ACTION_VIEW);
+            install.setDataAndType(contentUri, "application/vnd.android.package-archive");
+            install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            final PluginCall pending = call;
+            activity.runOnUiThread(() -> {
+                try {
+                    activity.startActivity(install);
+                    JSObject ret = new JSObject();
+                    ret.put("state", "installer_opened");
+                    pending.resolve(ret);
+                } catch (ActivityNotFoundException ex) {
+                    pending.reject("This phone has no installer for the update.");
+                }
+            });
+            launched = true;
+        } catch (SocketTimeoutException ex) {
+            call.reject("The download timed out. Try again.");
+        } catch (IOException ex) {
+            call.reject(ex.getMessage() == null ? "Could not download the update." : ex.getMessage());
+        } catch (Exception ex) {
+            call.reject("Could not download or install the update.");
+        } finally {
+            if (!launched && target != null && target.exists()) {
+                target.delete();
             }
         }
     }

@@ -9,6 +9,7 @@ import {
 } from './api/notifications';
 import { getSocialRun, getSocialStatus } from './api/social';
 import { NotificationBell } from './components/NotificationBell';
+import { UpdateBadge } from './components/UpdateBadge';
 import { SocialChallengeBanner } from './components/SocialChallengeBanner';
 import { SocialLiveModal } from './components/SocialLiveModal';
 import { StudioShell } from './components/StudioShell';
@@ -526,12 +527,15 @@ export function App() {
         engineState={engineState}
         engineLabel={engineLabel}
         notificationBell={
-          <NotificationBell
-            notifications={notifications}
-            unreadCount={unreadCount}
-            onSelectNotification={handleSelectNotification}
-            onMarkAllRead={handleMarkAllRead}
-          />
+          <>
+            <UpdateBadge />
+            <NotificationBell
+              notifications={notifications}
+              unreadCount={unreadCount}
+              onSelectNotification={handleSelectNotification}
+              onMarkAllRead={handleMarkAllRead}
+            />
+          </>
         }
       >
         {waitingSocialRun && waitingSocialRun.status === 'waiting_user' ? (

@@ -1,0 +1,37 @@
+# Magnm Studio for Arch Linux. Built from the deb that `tauri build` makes, by scripts/release.py; the version in
+# pkgver is written by scripts/set_version.py. Local build, no network:
+#   cp "Magnm Studio_X.Y.Z_amd64.deb" magnm-studio_X.Y.Z_amd64.deb   (next to this file) && makepkg -f
+# The only source is a local file, so its checksum is SKIP.
+
+pkgname=magnm-studio
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Magnm Studio: the desktop app for the Magnm marketing team'
+arch=('x86_64')
+url='https://github.com/NetPranav/Magnm-Marketing'
+license=('custom')
+depends=('webkit2gtk-4.1' 'gtk3')
+makedepends=('libarchive')
+# The engine inside the package is a self-contained PyInstaller program: stripping it would break it.
+options=('!strip' '!debug')
+source=("${pkgname}_${pkgver}_amd64.deb"
+        "install-kind")
+noextract=("${pkgname}_${pkgver}_amd64.deb")
+sha256sums=('SKIP'
+            'SKIP')
+
+package() {
+  cd "$srcdir"
+  mkdir -p deb
+  bsdtar -xf "${pkgname}_${pkgver}_amd64.deb" -C deb
+
+  # The deb holds control.tar.* and data.tar.*; only the data (the program, the engine, the desktop entry, the
+  # icons) is installed.
+  local data
+  data=$(find deb -maxdepth 1 -name 'data.tar.*' | head -n 1)
+  [ -n "$data" ] || { echo 'The deb has no data archive.' >&2; return 1; }
+  bsdtar -xf "$data" -C "$pkgdir" --no-same-owner
+
+  # Tell the app it came from pacman, so Settings > Updates installs updates with pacman.
+  install -Dm644 "$srcdir/install-kind" "$pkgdir/usr/share/magnm-studio/install-kind"
+}

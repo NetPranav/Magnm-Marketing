@@ -4,21 +4,45 @@ This guide is for teammates setting up Magnm Studio on Linux, macOS, Windows, an
 
 ## Desktop installers
 
-Installers for every platform are built by GitHub Actions: open the repository's **Actions** tab, choose
-**Desktop installers**, open the latest successful run and download the artifact for your system:
+Signed releases are on the repository's **Releases** page (`github.com/NetPranav/Magnm-Marketing/releases`). Download
+the file for your system. Once installed, the app updates itself from **Settings > Updates** (see below).
 
 | System | File |
 |---|---|
-| Windows | `magnm-studio-windows-x86_64`: `.msi` or setup `.exe` |
-| macOS (M1 to M4) | `magnm-studio-macos-apple-silicon`: `.dmg` |
-| macOS (Intel) | `magnm-studio-macos-intel`: `.dmg` |
-| Ubuntu, Debian | `magnm-studio-linux-x86_64`: `.deb` |
-| Fedora, openSUSE | `magnm-studio-linux-x86_64`: `.rpm` |
-| Other Linux | `magnm-studio-linux-x86_64`: `.AppImage` |
+| Windows | `magnm-studio_X.Y.Z_x64-setup.exe` (or the `.msi`) |
+| macOS (M1 to M4) | `magnm-studio_X.Y.Z_aarch64.dmg` |
+| macOS (Intel) | `magnm-studio_X.Y.Z_x64.dmg` |
+| Ubuntu, Debian | `magnm-studio_X.Y.Z_amd64.deb` |
+| Fedora, openSUSE | `magnm-studio-X.Y.Z-1.x86_64.rpm` |
+| Arch Linux | `magnm-studio-X.Y.Z-1-x86_64.pkg.tar.zst` |
+| Other Linux | `magnm-studio_X.Y.Z_amd64.AppImage` |
 
-These builds are not signed yet, so Windows and macOS warn the first time you open them, and they do not update
-themselves. Signed builds with automatic updates come from a release once the signing keys are set up
-(see [apps/desktop/RELEASING.md](../apps/desktop/RELEASING.md)).
+Windows and macOS do not recognise the publisher, so they warn the first time you open the app. Check that the file
+came from the repository's Releases page, and never turn off system protections for it. (Builds of every change are
+also kept by the **Desktop installers** workflow in the Actions tab; those are unsigned and do not update themselves.)
+
+### Install and uninstall, per system
+
+Your data (chats, drafts, keys) is kept in your data folder (see "Where your data lives" below) and is **not** removed
+when you uninstall the app. Delete that folder yourself only if you want it gone.
+
+* **Windows**: run the setup `.exe` (or the `.msi`). Uninstall in **Settings > Apps > Installed apps > Magnm Studio**.
+* **macOS**: open the `.dmg` and drag **Magnm Studio** to **Applications**. If macOS blocks it, use **System Settings >
+  Privacy & Security > Open Anyway** for that one app. Uninstall by dragging it from Applications to the Bin.
+* **Ubuntu, Debian**: `sudo apt install ./magnm-studio_X.Y.Z_amd64.deb`. Uninstall: `sudo apt remove magnm-studio`.
+* **Fedora, openSUSE**: `sudo dnf install ./magnm-studio-X.Y.Z-1.x86_64.rpm`. Uninstall: `sudo dnf remove magnm-studio`.
+* **Arch Linux**: `sudo pacman -U magnm-studio-X.Y.Z-1-x86_64.pkg.tar.zst`. Uninstall: `sudo pacman -R magnm-studio`.
+  (The package installs `/usr/share/magnm-studio/install-kind`, which tells the app to update through pacman.)
+* **Other Linux (AppImage)**: `chmod +x magnm-studio_X.Y.Z_amd64.AppImage && ./magnm-studio_X.Y.Z_amd64.AppImage`.
+  Uninstall: delete the file.
+
+### Updating the desktop app
+
+Open **Settings > Updates**. It shows the installed version, **Check for updates**, the new version with its notes, and
+**Download and install** with progress, then **Restart to finish**. The app also checks quietly once a day and shows a
+small **Update available** badge; it never installs anything until you click. The file is checked against the app's
+built-in public key before it is installed. On Arch you will be asked for your administrator password (the update is
+installed with `pacman -U`).
 
 ## Running from source (Linux, macOS, Windows)
 
@@ -117,11 +141,20 @@ Once Magnm Studio opens in your browser, go to **Settings** in the navigation ba
 
 ---
 
-## Android debug APK and phone pairing
+## Android app and phone pairing
 
-The Android app is currently distributed as a **debug APK** for testing only (it is debuggable and signed with a throwaway debug key; see [apps/mobile/README.md](../apps/mobile/README.md)).
+Release APKs are on the repository's **Releases** page (`magnm-studio-X.Y.Z.apk`). Open it on the phone and allow
+installs from your browser or files app when Android asks. Updates after that come from **More > Updates** in the app:
+tap **Check for updates**, read the notes, tap **Download and install**, and confirm in Android's installer. The app
+checks the file's size and checksum first. The first time, Android opens a settings page where you turn on **Allow
+from this source** for Magnm Studio; go back and tap again.
 
-### Installing the debug APK
+Android only installs an update that is signed with the same key as the installed app. A test (debug) build is signed
+with a different key, so the update is refused: uninstall the test build first (that deletes its data on the phone).
+
+### Debug APK (testing only)
+
+The debug APK is debuggable and signed with a throwaway key (see [apps/mobile/README.md](../apps/mobile/README.md)).
 
 - Download the `magnm-studio-android-debug` artifact from the **Mobile app** job in GitHub Actions, or build it locally from `apps/mobile` (`pnpm install --frozen-lockfile && pnpm android:debug`, which outputs `apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk`).
 - Debug builds made on different machines have different signing keys. To switch between them you must uninstall
@@ -193,6 +226,9 @@ Note: Encrypted social-research sessions, posting tokens, and desktop keychain k
 ---
 
 ## Updating
+
+The desktop app and the Android app update themselves (see "Updating the desktop app" and "Android app" above). The
+rest of this section is for running from source.
 
 1. Stop the running engine.
 2. Back up, then pull the latest code. If git refuses because of your local edits, don't discard them: ask for help.

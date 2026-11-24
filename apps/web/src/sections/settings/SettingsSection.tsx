@@ -46,6 +46,7 @@ import { PitchBasePricesPanel } from './PitchBasePricesPanel';
 import { SettingsIndex } from './SettingsIndex';
 import { PostingSettingsPanel } from './PostingSettingsPanel';
 import { SocialResearchSettingsPanel } from './SocialResearchSettingsPanel';
+import { UpdatesPanel } from './UpdatesPanel';
 import { TeamKnowledgePanel } from './TeamKnowledgePanel';
 import type {
   BakeoffModelStat,
@@ -1179,6 +1180,8 @@ export function SettingsSection() {
             </div>
           </Card>
         </section>
+
+        <UpdatesPanel />
 
         <PitchBasePricesPanel />
 

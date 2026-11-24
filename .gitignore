@@ -60,3 +60,6 @@ state/knowledge_backups/
 /config/repos.json
 /research/repo-sync.json
 /research/repo-sync.md
+
+# Files made by scripts/release.py (installers, signatures, latest.json); never commit them.
+/dist-release/

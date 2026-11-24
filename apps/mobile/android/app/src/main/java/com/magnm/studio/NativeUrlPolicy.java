@@ -36,6 +36,22 @@ public final class NativeUrlPolicy {
                     + "/[0-9a-f]{64}\\.(?:png|jpg|jpeg|webp|mp4|webm|pdf)$");
     private static final Pattern PHONE_COPY_QUERY = Pattern.compile("^\\?token=[A-Za-z0-9._-]{8,4000}$");
 
+    // The app updates itself from our own GitHub releases: the manifest and the APK on github.com, and the one host
+    // GitHub redirects release downloads to. Nothing else, and only through the three validateUpdate* methods below.
+    private static final String RELEASE_HOST = "github.com";
+    private static final String RELEASE_BASE = "/NetPranav/Magnm-Marketing/releases/";
+    private static final String UPDATE_MANIFEST_PATH = RELEASE_BASE + "latest/download/android.json";
+    /** The address of the update manifest. */
+    public static final String UPDATE_MANIFEST_URL = "https://" + RELEASE_HOST + UPDATE_MANIFEST_PATH;
+    private static final Pattern UPDATE_APK_PATH = Pattern.compile(
+            "^" + RELEASE_BASE + "download/v([0-9]{1,5}\\.[0-9]{1,2}\\.[0-9]{1,2})/magnm-studio-([0-9]{1,5}\\.[0-9]{1,2}\\.[0-9]{1,2})\\.apk$");
+    private static final Pattern UPDATE_TAGGED_MANIFEST_PATH = Pattern.compile(
+            "^" + RELEASE_BASE + "download/v[0-9]{1,5}\\.[0-9]{1,2}\\.[0-9]{1,2}/android\\.json$");
+    private static final Set<String> UPDATE_ASSET_HOSTS;
+    private static final Pattern UPDATE_ASSET_PATH = Pattern.compile(
+            "^/github-production-release-asset[-0-9a-f]{0,16}/[0-9]{1,20}/[A-Za-z0-9._-]{1,128}$");
+    private static final int MAX_UPDATE_QUERY = 4096;
+
     private static final Set<String> ALLOWED_METHODS;
     private static final Set<String> FORBIDDEN_HEADERS;
 
@@ -58,6 +74,11 @@ public final class NativeUrlPolicy {
         headers.add("proxy-connection");
         headers.add("upgrade");
         FORBIDDEN_HEADERS = Collections.unmodifiableSet(headers);
+
+        Set<String> assetHosts = new HashSet<>();
+        assetHosts.add("release-assets.githubusercontent.com");
+        assetHosts.add("objects.githubusercontent.com");
+        UPDATE_ASSET_HOSTS = Collections.unmodifiableSet(assetHosts);
     }
 
     public static final class PolicyException extends IllegalArgumentException {
@@ -306,6 +327,99 @@ public final class NativeUrlPolicy {
             return "https://" + NIM_HOST + path + query;
         }
         throw new PolicyException("Destination host is not allowed.");
+    }
+
+    /** The one URL of the update manifest: the latest release's android.json. No query, no port, nothing else. */
+    public String validateUpdateManifestUrl(String rawUrl) {
+        String[] parts = splitUpdateUrl(rawUrl, Collections.singleton(RELEASE_HOST));
+        if (!UPDATE_MANIFEST_PATH.equals(parts[1]) || !parts[2].isEmpty()) {
+            throw new PolicyException("That is not the update manifest address.");
+        }
+        return "https://" + RELEASE_HOST + parts[1];
+    }
+
+    /**
+     * The URL of one release APK: a release asset of our repository named magnm-studio-X.Y.Z.apk under the tag vX.Y.Z
+     * with the same X.Y.Z, and no query.
+     */
+    public String validateUpdateApkUrl(String rawUrl) {
+        String[] parts = splitUpdateUrl(rawUrl, Collections.singleton(RELEASE_HOST));
+        java.util.regex.Matcher m = UPDATE_APK_PATH.matcher(parts[1]);
+        if (!m.matches() || !m.group(1).equals(m.group(2)) || !parts[2].isEmpty()) {
+            throw new PolicyException("That is not an update download address.");
+        }
+        return "https://" + RELEASE_HOST + parts[1];
+    }
+
+    /**
+     * Where a redirect from the manifest or the APK may lead: one of our release URLs, or GitHub's release-asset host
+     * on a release-asset path (with its signed query).
+     */
+    public String validateUpdateRedirectUrl(String rawUrl) {
+        String[] parts = splitUpdateUrl(rawUrl, null);
+        String host = parts[0];
+        if (RELEASE_HOST.equals(host)) {
+            boolean ours = parts[2].isEmpty()
+                    && (UPDATE_MANIFEST_PATH.equals(parts[1])
+                    || UPDATE_TAGGED_MANIFEST_PATH.matcher(parts[1]).matches()
+                    || isConsistentApkPath(parts[1]));
+            if (!ours) {
+                throw new PolicyException("The update server sent the app somewhere it may not go.");
+            }
+            return "https://" + host + parts[1];
+        }
+        if (UPDATE_ASSET_HOSTS.contains(host) && UPDATE_ASSET_PATH.matcher(parts[1]).matches()) {
+            return "https://" + host + parts[1] + parts[2];
+        }
+        throw new PolicyException("The update server sent the app somewhere it may not go.");
+    }
+
+    private static boolean isConsistentApkPath(String path) {
+        java.util.regex.Matcher m = UPDATE_APK_PATH.matcher(path);
+        return m.matches() && m.group(1).equals(m.group(2));
+    }
+
+    /**
+     * Split a https update URL into {host, path, query-with-question-mark-or-empty}. The authority must be exactly a
+     * host name (lower case): no userinfo, no port, no IPv6, no encoding. Hosts are checked against {@code onlyHosts}
+     * when given. Errors never include the URL.
+     */
+    private String[] splitUpdateUrl(String rawUrl, Set<String> onlyHosts) {
+        if (rawUrl == null || rawUrl.isEmpty()) {
+            throw new PolicyException("An update address is required.");
+        }
+        if (rawUrl.length() > MAX_URL_LENGTH || containsForbiddenUrlChars(rawUrl) || rawUrl.indexOf('#') >= 0) {
+            throw new PolicyException("That update address is not valid.");
+        }
+        if (!rawUrl.startsWith("https://")) {
+            throw new PolicyException("Updates are only downloaded over https.");
+        }
+        String rest = rawUrl.substring("https://".length());
+        int end = rest.length();
+        int slash = rest.indexOf('/');
+        int question = rest.indexOf('?');
+        if (slash >= 0) {
+            end = Math.min(end, slash);
+        }
+        if (question >= 0) {
+            end = Math.min(end, question);
+        }
+        String authority = rest.substring(0, end);
+        if (authority.isEmpty() || !authority.matches("^[a-z0-9][a-z0-9.-]*[a-z0-9]$") || authority.contains("..")) {
+            throw new PolicyException("That update address is not allowed.");
+        }
+        if (onlyHosts != null && !onlyHosts.contains(authority)) {
+            throw new PolicyException("That update address is not allowed.");
+        }
+        String remainder = rest.substring(end);
+        int q = remainder.indexOf('?');
+        String path = q < 0 ? remainder : remainder.substring(0, q);
+        String query = q < 0 ? "" : remainder.substring(q);
+        if (path.isEmpty() || query.length() > MAX_UPDATE_QUERY || query.equals("?")) {
+            throw new PolicyException("That update address is not allowed.");
+        }
+        validatePath(path);
+        return new String[] {authority, path, query};
     }
 
     /**

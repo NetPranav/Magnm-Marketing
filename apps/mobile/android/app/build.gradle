@@ -14,6 +14,13 @@ if (!"https".equalsIgnoreCase(supabaseUri.scheme) || !supabaseUri.host) {
 }
 def supabaseOrigin = "https://${supabaseUri.host.toLowerCase(Locale.ROOT)}"
 
+// Release signing comes only from the environment of the person who releases (see docs/RELEASING.md). The keystore
+// and its passwords never live in the repository. Debug builds do not use any of this.
+def releaseKeystore = System.getenv("MAGNM_ANDROID_KEYSTORE")
+def releaseKeystorePassword = System.getenv("MAGNM_ANDROID_KEYSTORE_PASSWORD")
+def releaseKeyAlias = System.getenv("MAGNM_ANDROID_KEY_ALIAS")
+def releaseSigningReady = releaseKeystore && releaseKeystorePassword && releaseKeyAlias
+
 android {
     namespace = "com.magnm.studio"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -24,8 +31,8 @@ android {
         applicationId "com.magnm.studio"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 100
+        versionName "0.1.0"
         buildConfigField "String", "SUPABASE_ORIGIN", "\"${supabaseOrigin}\""
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
@@ -34,8 +41,21 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            if (releaseSigningReady) {
+                storeFile new File(releaseKeystore)
+                storePassword releaseKeystorePassword
+                keyAlias releaseKeyAlias
+                keyPassword System.getenv("MAGNM_ANDROID_KEY_PASSWORD") ?: releaseKeystorePassword
+            }
+        }
+    }
     buildTypes {
         release {
+            if (releaseSigningReady) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
@@ -61,6 +81,14 @@ dependencies {
 }
 
 apply from: 'capacitor.build.gradle'
+
+// A release APK that is not signed cannot be installed or updated, so refuse to build one by accident.
+gradle.taskGraph.whenReady { graph ->
+    def wantsRelease = graph.allTasks.any { it.path.startsWith(':app:') && it.name in ['assembleRelease', 'packageRelease', 'bundleRelease'] }
+    if (wantsRelease && !releaseSigningReady) {
+        throw new GradleException("A release build needs MAGNM_ANDROID_KEYSTORE, MAGNM_ANDROID_KEYSTORE_PASSWORD and MAGNM_ANDROID_KEY_ALIAS (see docs/RELEASING.md).")
+    }
+}
 
 try {
     def servicesJSON = file('google-services.json')
