@@ -108,9 +108,11 @@ class SetVersionTests(unittest.TestCase):
     def test_only_the_version_line_changes(self):
         path = os.path.join(self.tmp, "apps/desktop/src-tauri/Cargo.toml")
         before = open(path, encoding="utf-8").read()
+        current = open(os.path.join(self.tmp, "VERSION"), encoding="utf-8").read().strip()
         self.sv.set_version(self.tmp, "3.0.1")
         after = open(path, encoding="utf-8").read()
-        self.assertEqual(before.replace('version = "0.1.0"', 'version = "3.0.1"', 1), after)
+        self.assertIn(f'version = "{current}"', before)
+        self.assertEqual(before.replace(f'version = "{current}"', 'version = "3.0.1"', 1), after)
 
 
 if __name__ == "__main__":
