@@ -74,8 +74,12 @@ class VideoPackagingTests(unittest.TestCase):
     def test_engine_requirements_pin_kokoro_exactly(self):
         with open(os.path.join(REPO_ROOT, "engine", "requirements.txt"), encoding="utf-8") as fh:
             lines = [ln.strip() for ln in fh if ln.strip() and not ln.startswith("#")]
+        pins = [ln.split(";")[0].strip() for ln in lines]
         for pin in ("kokoro-onnx==0.4.7", "onnxruntime==1.32.0", "numpy==2.5.5", "espeakng-loader==0.2.4", "phonemizer-fork==3.3.1"):
-            self.assertIn(pin, lines)
+            self.assertIn(pin, pins)
+        # Intel Macs get the last onnxruntime with wheels for them; everything else the newer one.
+        self.assertIn('onnxruntime==1.23.2; sys_platform == "darwin" and platform_machine == "x86_64"', lines)
+        self.assertIn('onnxruntime==1.32.0; sys_platform != "darwin" or platform_machine != "x86_64"', lines)
         self.assertTrue(all("==" in ln for ln in lines), "every requirement must be pinned")
         self.assertNotIn("soundfile", " ".join(lines))
 
