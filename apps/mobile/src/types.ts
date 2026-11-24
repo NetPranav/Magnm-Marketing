@@ -283,7 +283,9 @@ export type PhoneActionKind =
   | 'library_upload'
   | 'schedule_update'
   | 'draft_create'
-  | 'workflow_request';
+  | 'workflow_request'
+  | 'run_control'
+  | 'automation_control';
 
 export type PhoneActionState = 'waiting' | 'applied' | 'rejected';
 
@@ -297,7 +299,7 @@ export interface PhoneActionPayload {
   base_version?: string;
   fields?: PitchFields;
   /** pitch_link only. */
-  action?: 'publish' | 'withdraw';
+  action?: 'publish' | 'withdraw' | 'pause' | 'resume';
   /** pitch_create only: the fields of the new proposal sit beside these. */
   kind?: 'proposal' | 'quote_form';
   from_preset?: string;

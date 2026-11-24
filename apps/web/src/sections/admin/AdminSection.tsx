@@ -71,8 +71,8 @@ export function AdminSection({ onOpenSettings }: AdminSectionProps) {
   return (
     <div className="studio-stack">
       <SheetHeader
-        page={11}
-        total={11}
+        page={12}
+        total={12}
         subtitle="Team oversight"
         title="Admin"
         lead="Live member status, team activity, read-only workspaces, Pitch links, storage usage, and audit log."

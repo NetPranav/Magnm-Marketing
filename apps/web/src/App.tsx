@@ -30,6 +30,7 @@ import { OnboardingScreen } from './screens/OnboardingScreen';
 import { SessionEndedScreen } from './screens/SessionEndedScreen';
 import { SHOW_ONBOARDING_EVENT, hasSeenOnboarding, markOnboardingSeen } from './onboarding';
 import { AdminSection } from './sections/admin/AdminSection';
+import { BoardSection } from './sections/board/BoardSection';
 import { CreateSection } from './sections/create/CreateSection';
 import { LibrarySection } from './sections/library/LibrarySection';
 import { PitchPresent } from './sections/pitch/PitchPresent';
@@ -452,6 +453,8 @@ export function App() {
         return <ResearchSection />;
       case 'plan':
         return <PlanSection />;
+      case 'board':
+        return <BoardSection onNavigate={(route) => navigateToRoute(route)} />;
       case 'create':
         return <CreateSection />;
       case 'review':

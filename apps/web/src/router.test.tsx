@@ -31,6 +31,7 @@ describe('router', () => {
       'library',
       'repos',
       'settings',
+      'board',
     ]);
 
     expect(parseHash('')).toEqual({ section: 'today', param: null });
