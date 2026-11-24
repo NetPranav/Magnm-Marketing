@@ -153,11 +153,15 @@ class CloudSyncTests(unittest.TestCase):
 
         return requests, fake_urlopen
 
+    # The task board and the automation state travel as their own kinds (tested in test_phone_control.py); these tests
+    # are about the records of the workspace itself, so the two derived kinds are left out of the counts.
+    DERIVED_KINDS = ("board_item", "automation")
+
     def _mirror_uploads(self, requests):
         out = []
         for r in requests:
             if "/rest/v1/mirror_records" in r["url"] and r["method"] == "POST":
-                out.extend(r["body"] or [])
+                out.extend(x for x in (r["body"] or []) if x.get("kind") not in self.DERIVED_KINDS)
         return out
 
     def test_01_mapping_for_every_kind_and_never_mirrored_excluded(self):
@@ -569,6 +573,8 @@ class CloudSyncTests(unittest.TestCase):
             for rec in req["body"]:
                 data_bytes = len(json.dumps(rec["data"], ensure_ascii=False).encode("utf-8"))
                 self.assertLessEqual(data_bytes, cloud_sync.MAX_RECORD_DATA_BYTES)
+                if rec["kind"] in self.DERIVED_KINDS:
+                    continue  # the small board copy of the big session is not itself big
                 self.assertTrue(rec["data"].get("truncated"))
 
         # Verify chat_session kept newest messages and dropped oldest

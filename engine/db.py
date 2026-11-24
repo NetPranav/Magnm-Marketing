@@ -1928,20 +1928,39 @@ def get_latest_job():
     return _deserialize_job(row)
 
 
-def get_next_queued_job():
-    """Return the oldest queued job in FIFO order, or None."""
+def get_next_queued_job(skip=None):
+    """Return the oldest queued job in FIFO order, or None.
+
+    `skip` is an optional function: a queued job it returns True for is passed over (it keeps waiting), so the
+    next one can run. Used while automatic work is paused.
+    """
     ensure_init()
     conn = connect()
-    row = conn.execute(
+    if skip is None:
+        row = conn.execute(
+            f"""
+            SELECT {_JOB_SELECT_COLS}
+            FROM jobs
+            WHERE status = 'queued' AND cancel_requested = 0
+            ORDER BY created_at ASC, rowid ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        return _deserialize_job(row)
+    rows = conn.execute(
         f"""
         SELECT {_JOB_SELECT_COLS}
         FROM jobs
         WHERE status = 'queued' AND cancel_requested = 0
         ORDER BY created_at ASC, rowid ASC
-        LIMIT 1
+        LIMIT 500
         """
-    ).fetchone()
-    return _deserialize_job(row)
+    ).fetchall()
+    for row in rows:
+        job = _deserialize_job(row)
+        if not skip(job):
+            return job
+    return None
 
 
 _UPDATABLE_JOB_FIELDS = {
@@ -3166,6 +3185,54 @@ def cancel_workflow_jobs(run_id, finished_at):
             p = {}
         if p.get("run_id") == str(run_id):
             cancel_job_record(r["id"], finished_at)
+
+
+def has_running_workflow_job(run_id):
+    """Return True if a workflow_step job for run_id is running right now."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT params_json FROM jobs WHERE name = 'workflow_step' AND status = 'running'"
+    ).fetchall()
+    for r in rows:
+        try:
+            p = json.loads(r["params_json"]) if r["params_json"] else {}
+        except Exception:
+            continue
+        if p.get("run_id") == str(run_id):
+            return True
+    return False
+
+
+def cancel_queued_workflow_jobs(run_id, finished_at):
+    """Cancel only the queued workflow_step jobs of run_id. A job that is already running is left to finish its step."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT id, params_json FROM jobs WHERE name = 'workflow_step' AND status = 'queued'"
+    ).fetchall()
+    for r in rows:
+        try:
+            p = json.loads(r["params_json"]) if r["params_json"] else {}
+        except Exception:
+            p = {}
+        if p.get("run_id") == str(run_id):
+            cancel_job_record(r["id"], finished_at)
+
+
+def list_pending_gates(limit=200):
+    """Return pending gates of runs that are still open, newest first."""
+    ensure_init()
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT g.* FROM gates g JOIN workflow_runs w ON w.id = g.run_id
+        WHERE g.status = 'pending' AND w.status = 'waiting_user'
+        ORDER BY g.created_at DESC, g.rowid DESC LIMIT ?
+        """,
+        (max(1, min(int(limit), 500)),),
+    ).fetchall()
+    return [_deserialize_gate(r) for r in rows]
 
 
 def has_active_job(job_name):

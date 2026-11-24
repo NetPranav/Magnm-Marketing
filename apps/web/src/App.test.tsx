@@ -152,7 +152,7 @@ describe('Studio shell and Today screen', () => {
     window.location.hash = '';
   });
 
-  it('renders all 10 numbered sections and switches on click and arrow keys', async () => {
+  it('renders all 11 numbered sections and switches on click and arrow keys', async () => {
     mockEngineFetch();
     render(<App />);
 
@@ -167,10 +167,11 @@ describe('Studio shell and Today screen', () => {
       'Library',
       'Repos',
       'Settings',
+      'Board',
     ];
 
     const tabs = screen.getAllByRole('tab');
-    expect(tabs).toHaveLength(10);
+    expect(tabs).toHaveLength(11);
     expectedLabels.forEach((label, idx) => {
       expect(tabs[idx].textContent).toContain(`${idx + 1}`);
       expect(tabs[idx].textContent).toContain(label);

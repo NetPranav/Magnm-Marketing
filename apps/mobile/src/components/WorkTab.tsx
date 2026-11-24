@@ -4,6 +4,7 @@ import { getCachedProductRules, type ContextCacheState } from '../cache';
 import type { NativeBridge } from '../native';
 import { rulesForQueue } from '../queueRules';
 import type { PairingConfig, PhoneAction } from '../types';
+import { BoardTab } from './BoardTab';
 import { CreateTab } from './CreateTab';
 import { LibraryTab } from './LibraryTab';
 import { PlanTab } from './PlanTab';
@@ -25,14 +26,15 @@ export interface WorkTabProps {
   onActionsChanged: () => void;
 }
 
-type Section = 'library' | 'plan' | 'create';
+type Section = 'library' | 'plan' | 'create' | 'board';
 const SECTIONS: ReadonlyArray<{ id: Section; label: string }> = [
   { id: 'library', label: 'Library' },
   { id: 'plan', label: 'Plan' },
   { id: 'create', label: 'Create' },
+  { id: 'board', label: 'Board' },
 ];
 
-/** Library, Plan and Create on the phone. What needs the laptop is queued and says so; the rest works without it. */
+/** Library, Plan, Create and Board on the phone. What needs the laptop is queued and says so; the rest works without it. */
 export function WorkTab(props: WorkTabProps) {
   const [section, setSection] = useState<Section>('library');
   // The bundled baseline plus the team's rules: shared rules can only ADD confidential products to it.
@@ -56,6 +58,7 @@ export function WorkTab(props: WorkTabProps) {
       {section === 'library' ? <LibraryTab {...props} rules={rules} /> : null}
       {section === 'plan' ? <PlanTab {...props} /> : null}
       {section === 'create' ? <CreateTab {...props} rules={rules} /> : null}
+      {section === 'board' ? <BoardTab signedIn={props.signedIn} cache={props.cache} phoneActions={props.phoneActions} onQueueAction={props.onQueueAction} /> : null}
     </section>
   );
 }
