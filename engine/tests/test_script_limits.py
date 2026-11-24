@@ -35,5 +35,32 @@ class ScriptAutoReviewTests(unittest.TestCase):
         self.assertIn("platform_max_chars", codes)
 
 
+class CaptionTimingTests(unittest.TestCase):
+    SCRIPT = (
+        "Format: 30 seconds, 9:16 vertical video\n\n"
+        "## Opening hook (0-3s)\n\n"
+        "### Scene 1 \u2014 0:00-0:03\nVisual/footage notes: Repo page.\nOn-screen text: \"What is verifiable?\"\n"
+        "VO: \"What can we verify today?\"\n\n"
+        "## Main sequence\n\n"
+        "### Scene 2 \u2014 0:03-0:08\nVisual/footage notes: Header.\nVO: \"It is in development.\"\n\n"
+        "### Scene 3 \u2014 0:08-0:30\nVisual/footage notes: End card.\nVO: \"Follow along.\"\n"
+    )
+
+    def test_a_section_heading_with_a_time_range_is_not_a_scene(self):
+        import workflows
+        scenes, srt = workflows._extract_shotlist_and_srt(self.SCRIPT, duration_s=30)
+        self.assertEqual([s["voiceover"] for s in scenes],
+                         ["What can we verify today?", "It is in development.", "Follow along."])
+        blocks = srt.strip().split("\n\n")
+        self.assertEqual(blocks[0].splitlines()[1], "00:00:00,000 --> 00:00:03,000")
+        self.assertEqual(blocks[0].splitlines()[2], "What can we verify today?")
+        self.assertFalse(any(line.startswith("#") for line in srt.splitlines()))
+
+    def test_a_script_without_voice_over_still_gets_captions(self):
+        import workflows
+        scenes, srt = workflows._extract_shotlist_and_srt("Scene 1 (0s-5s)\nOn-screen: HELLO\n", duration_s=10)
+        self.assertIn("HELLO", srt)
+
+
 if __name__ == "__main__":
     unittest.main()

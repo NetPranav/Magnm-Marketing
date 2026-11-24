@@ -1561,6 +1561,17 @@ def _parse_time_token(tok):
     return float(s)
 
 
+def _best_time_range(time_range_re, line):
+    """The time range in a line. "Scene 1 - 0:00-0:03" also reads as "1 - 0:00", so a range whose times carry a
+    colon or an "s" wins over one made of bare numbers."""
+    line = re.sub(r"(?i)\b(scene|shot)\s*\d+\b", " ", line)  # the scene number is not a time
+    matches = builtins.list(time_range_re.finditer(line))
+    if not matches:
+        return None
+    timed = [m for m in matches if all(":" in g or g.lower().endswith("s") for g in m.groups())]
+    return timed[0] if timed else matches[-1]
+
+
 def _extract_shotlist_and_srt(script_body, duration_s=30):
     """Parse scenes and voice-over lines from script_body, returning (shotlist, srt_text)."""
     duration = float(duration_s or 30)
@@ -1600,7 +1611,7 @@ def _extract_shotlist_and_srt(script_body, duration_s=30):
             stripped = line.strip()
             if not stripped:
                 continue
-            tm = time_range_re.search(stripped)
+            tm = _best_time_range(time_range_re, stripped)
             is_scene_hdr = bool(re.match(r"^(?:#{1,4}\s*)?(?:scene|shot|hook)\b", stripped, re.IGNORECASE))
             if (is_scene_hdr or (tm and ("scene" in stripped.lower() or "hook" in stripped.lower() or stripped.startswith("[")))) and tm:
                 if current:
@@ -1665,6 +1676,10 @@ def _extract_shotlist_and_srt(script_body, duration_s=30):
 
         if current:
             scenes.append(current)
+        # A section heading with a time range ("## Opening hook (0-3s)") is not a scene of its own: when the script
+        # has spoken or on-screen lines, scenes without either are dropped.
+        if any(sc["voiceover"] or sc["on_screen"] for sc in scenes):
+            scenes = [sc for sc in scenes if sc["voiceover"] or sc["on_screen"]]
 
     # Fallback if no scenes or VO lines were structured
     if not scenes:
@@ -1706,6 +1721,7 @@ def _extract_shotlist_and_srt(script_body, duration_s=30):
     cap_idx = 1
     for sc in scenes:
         caption_text = (sc.get("voiceover") or sc.get("on_screen") or sc.get("visual") or "").strip()
+        caption_text = re.sub(r"^#{1,6}\s*", "", caption_text)  # never a markdown heading mark in a caption
         if not caption_text:
             continue
         start_ts = _format_srt_timestamp(sc["start_s"])
