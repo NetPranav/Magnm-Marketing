@@ -46,6 +46,7 @@ ALLOWED_JOBS = {
     "review_action": "Execute Review Studio Background Action",
     "install_browser": "Install Playwright Chromium Browser",
     "weekly_summary": "Generate Weekly Analyst Summary & Learnings",
+    "auto_pipeline": "Automatic Content Pipeline (pick a repo, research it, start content for approval)",
 }
 
 def log_activity(actor, target_role, task_name, output_file):
@@ -146,6 +147,15 @@ def run_job_body(job_name, job_id=None, actor="UI", log_file=None, params=None):
         if isinstance(res, dict) and job_id:
             db.update_job(job_id, result=res)
         output += json.dumps(res, indent=2, default=str) + "\n"
+    elif job_name == "auto_pipeline":
+        import automation
+        entry = automation.run_pipeline(
+            job_id=job_id, trigger="schedule" if actor in automation.AUTOMATIC_ACTORS else "manual"
+        )
+        if isinstance(entry, dict) and job_id:
+            db.update_job(job_id, result={"run_id": entry.get("id"), "status": entry.get("status"), "why": entry.get("why")})
+        output += "=== AUTOMATIC CONTENT PIPELINE ===\n"
+        output += json.dumps(entry, indent=2, default=str) + "\n"
     elif job_name == "weekly_summary":
         _checkpoint(20, "Building weekly performance summary...")
         import weekly_summary

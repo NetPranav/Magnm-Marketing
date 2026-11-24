@@ -190,6 +190,14 @@ NOTIFICATION_KINDS = (
         "route": "#/settings",
     },
     {
+        "kind": "auto_pipeline",
+        "label": "Automatic content",
+        "description": "When the automatic pipeline has new content ready to review, or a run stops",
+        "default": True,
+        "admin_only": False,
+        "route": "#/review",
+    },
+    {
         "kind": "models_changed",
         "label": "NIM model catalog changes",
         "description": "When a configured NIM model leaves or returns to the catalog",

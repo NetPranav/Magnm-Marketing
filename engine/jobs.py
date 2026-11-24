@@ -20,6 +20,8 @@ import keepawake
 import paths
 
 RETRY_DELAYS = (5, 15)
+# A failed automatic pipeline run reports plainly and is never retried by itself.
+NO_RETRY_JOBS = ("auto_pipeline",)
 
 _sleep = time.sleep
 _worker_lock = threading.Lock()
@@ -47,7 +49,7 @@ def enqueue(name, actor="UI", max_attempts=2, params=None):
     """Validate and enqueue a job in FIFO order, returning the job dictionary."""
     if name not in cmo_runtime.ALLOWED_JOBS:
         raise ValueError(f"Unknown job '{name}'. Allowed jobs: {list(cmo_runtime.ALLOWED_JOBS.keys())}")
-    attempts_limit = max(1, int(max_attempts))
+    attempts_limit = 1 if name in NO_RETRY_JOBS else max(1, int(max_attempts))
     job_id = f"{name}_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
     output_path = paths.data("logs", "jobs", f"{job_id}.log")
     job = db.create_job(
@@ -110,6 +112,35 @@ def cancel(job_id):
         return None
     job = db.cancel_job_record(job_id, _now_iso())
     return _publish_job(job)
+
+
+def wake():
+    """Tell the worker to look for jobs now (used when automatic work is resumed)."""
+    _wake_event.set()
+
+
+def next_runnable_job():
+    """The next queued job the worker may run. While automatic work is paused, background jobs keep waiting."""
+    try:
+        import automation
+        if automation.is_paused():
+            return db.get_next_queued_job(skip=automation.is_automatic_job)
+    except Exception:
+        pass
+    return db.get_next_queued_job()
+
+
+def retry(job_id):
+    """Queue a fresh copy of a failed job. Only a failed job of an allowed kind can be retried; workflow steps are not."""
+    job = db.get_job(job_id)
+    if job is None:
+        return None
+    if job["status"] != "failed":
+        raise ValueError("Only a failed job can be retried.")
+    if job["name"] == "workflow_step":
+        raise ValueError("Retry the workflow run instead of its step.")
+    # A retry is a manual action, whoever started the first one.
+    return enqueue(job["name"], actor="UI", max_attempts=job.get("max_attempts") or 2, params=job.get("params") or None)
 
 
 def recover_stale_jobs():
@@ -303,7 +334,7 @@ def _execute_one(job):
 def _worker_loop():
     while not _stop_event.is_set():
         try:
-            job = db.get_next_queued_job()
+            job = next_runnable_job()
         except Exception:
             job = None
 

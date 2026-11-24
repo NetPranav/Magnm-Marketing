@@ -40,6 +40,8 @@ import agents
 import ai_gateway
 import assets_manager
 import bakeoff
+import automation
+import board
 import cloud_sync
 import cmo_runtime
 import coding_agents
@@ -963,6 +965,80 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "Not found"}, status=404)
         except learnings.LearningError as exc:
             self.send_json({"error": exc.message}, status=exc.status)
+
+    def _handle_automation_get(self, url):
+        self.send_json(automation.state_for_ui())
+
+    def _handle_automation_post(self, url, params):
+        """Settings, the pause switch, Run now and the missed list for automatic work."""
+        path = url.path.rstrip("/")
+        try:
+            if path == "/api/automation/settings":
+                settings = automation.update_settings(params)
+                self.send_json({"settings": settings})
+            elif path == "/api/automation/pause":
+                paused = params.get("paused")
+                if not isinstance(paused, bool):
+                    self.send_json({"error": "paused must be true or false"}, status=400)
+                    return
+                automation.set_paused(paused, by="laptop")
+                cloud_sync.request_sync()
+                self.send_json(automation.state_for_ui())
+            elif path == "/api/automation/run":
+                job = automation.request_run(actor="UI")
+                self.send_json({"success": True, "job": job})
+            elif path == "/api/automation/missed":
+                action, sched_id = params.get("action"), params.get("id")
+                if action not in ("run", "dismiss") or (sched_id is not None and not isinstance(sched_id, str)):
+                    self.send_json({"error": "action must be run or dismiss, with the id of a missed run"}, status=400)
+                    return
+                if action == "run":
+                    if not sched_id:
+                        self.send_json({"error": "id is required"}, status=400)
+                        return
+                    automation.run_missed(sched_id)
+                    self.send_json({"success": True, "missed": automation.missed_runs()})
+                else:
+                    self.send_json({"success": True, "missed": automation.dismiss_missed(sched_id or None)})
+                cloud_sync.request_sync()
+            else:
+                self.send_json({"error": "Not found"}, status=404)
+        except automation.AlreadyRunning as exc:
+            self.send_json({"error": str(exc)}, status=409)
+        except LookupError as exc:
+            self.send_json({"error": str(exc)}, status=404)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+
+    def _handle_board_get(self, url):
+        qs = urllib.parse.parse_qs(url.query)
+
+        def one(name):
+            values = qs.get(name)
+            return values[0] if values else None
+
+        self.send_json(board.build(agent=one("agent"), repo=one("repo"), kind=one("kind")))
+
+    def _handle_board_post(self, url, params):
+        if url.path.rstrip("/") != "/api/board/act":
+            self.send_json({"error": "Not found"}, status=404)
+            return
+        try:
+            result = board.act(params.get("id"), params.get("action"))
+        except board.BadRequest as exc:
+            self.send_json({"error": str(exc)}, status=400)
+            return
+        except LookupError as exc:
+            self.send_json({"error": str(exc)}, status=404)
+            return
+        except PermissionError as exc:
+            self.send_json({"error": str(exc)}, status=403)
+            return
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=409)
+            return
+        cloud_sync.request_sync()
+        self.send_json(result)
 
     def _handle_phone_get(self, url):
         path = url.path.rstrip("/") or "/"
@@ -2153,6 +2229,12 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         elif url.path == "/api/learnings" or url.path.startswith("/api/learnings/"):
             self._handle_learnings_get(url)
 
+        elif url.path == "/api/automation":
+            self._handle_automation_get(url)
+
+        elif url.path == "/api/board":
+            self._handle_board_get(url)
+
         elif url.path.startswith("/api/coding/"):
             self._handle_coding_get(url)
 
@@ -2261,6 +2343,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             or url.path.startswith("/api/posting/")
             or url.path == "/api/phone"
             or url.path.startswith("/api/phone/")
+            or url.path.startswith("/api/automation/")
+            or url.path.startswith("/api/board/")
         )
         max_len = MAX_REVIEW_BODY_BYTES if url.path.startswith("/api/review/") else MAX_POST_BYTES
         if content_len > max_len:
@@ -2333,6 +2417,14 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         if url.path == "/api/phone" or url.path.startswith("/api/phone/"):
             self._handle_phone_post(url, params)
+            return
+
+        if url.path.startswith("/api/automation/"):
+            self._handle_automation_post(url, params)
+            return
+
+        if url.path.startswith("/api/board/"):
+            self._handle_board_post(url, params)
             return
 
         if url.path == "/api/shutdown":
@@ -2872,6 +2964,31 @@ Hard Rules:
                 self.send_json({"error": "Workflow run not found"}, status=404)
                 return
             self.send_json(run)
+
+        elif re.match(r"^/api/workflows/[^/]+/(pause|resume|retry)$", url.path):
+            run_id, verb = url.path.split("/")[3], url.path.split("/")[4]
+            try:
+                run = {"pause": workflows.pause, "resume": workflows.resume, "retry": workflows.retry}[verb](run_id)
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=409)
+                return
+            if run is None:
+                self.send_json({"error": "Workflow run not found"}, status=404)
+                return
+            cloud_sync.request_sync()
+            self.send_json(run)
+
+        elif url.path == "/api/jobs/retry":
+            try:
+                job = jobs.retry(params.get("id")) if isinstance(params.get("id"), str) else None
+            except ValueError as exc:
+                self.send_json({"error": str(exc)}, status=409)
+                return
+            if job is None:
+                self.send_json({"error": "Job not found"}, status=404)
+                return
+            jobs.start_worker()
+            self.send_json({"success": True, "job": job})
 
         elif re.match(r"^/api/gates/[^/]+/answer$", url.path):
             gate_id = url.path.split("/")[3]

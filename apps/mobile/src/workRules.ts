@@ -4,7 +4,15 @@
 
 import type { PhoneActionKind, PhoneActionPayload } from './types';
 
-export const WORK_ACTION_KINDS: readonly PhoneActionKind[] = ['library_upload', 'schedule_update', 'draft_create', 'workflow_request'];
+export const CONTROL_ACTION_KINDS: readonly PhoneActionKind[] = ['run_control', 'automation_control'];
+export const WORK_ACTION_KINDS: readonly PhoneActionKind[] = [
+  'library_upload',
+  'schedule_update',
+  'draft_create',
+  'workflow_request',
+  ...CONTROL_ACTION_KINDS,
+];
+export const AUTOMATION_TARGET = 'all';
 export const LIBRARY_CATEGORIES = ['cero', 'brand', 'screenshot', 'recording', 'document'] as const;
 export const WORKFLOW_KINDS = ['post', 'blog', 'video_script', 'repurpose', 'weekly_plan'] as const;
 export const DRAFT_PLATFORMS = ['x', 'linkedin', 'instagram', 'youtube'] as const;
@@ -18,6 +26,7 @@ export const MAX_TOPIC_CHARS = 1000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SCHEDULE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const REPO_ID_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const RUN_ID_RE = /^wf_[a-z_]{1,32}_[0-9]{1,16}_[0-9a-f]{6}$/;
 const TARGET_RE = /^[a-z][a-z0-9_]{0,31}$/;
 const TIME_RE = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
 // eslint-disable-next-line no-control-regex
@@ -180,11 +189,22 @@ function validateWorkflow(target: string, payload: Record<string, unknown>): Cle
   return { kind: 'workflow_request', target_id: target, payload: clean };
 }
 
-/** Check one Library, Plan or Create action and return the cleaned fields. Throws WorkRuleError. */
+function validateControl(kind: PhoneActionKind, target: string, payload: Record<string, unknown>): CleanWorkInput {
+  onlyKeys(payload, ['action'], 'request');
+  if (Object.keys(payload).length !== 1 || (payload.action !== 'pause' && payload.action !== 'resume')) {
+    throw new WorkRuleError('Choose pause or resume.');
+  }
+  if (kind === 'run_control' && !RUN_ID_RE.test(target)) throw new WorkRuleError('The run is not valid.');
+  if (kind === 'automation_control' && target !== AUTOMATION_TARGET) throw new WorkRuleError('The target is not valid.');
+  return { kind, target_id: target, payload: { action: payload.action } };
+}
+
+/** Check one Library, Plan, Create or pause/resume action and return the cleaned fields. Throws WorkRuleError. */
 export function validateWorkInput(kind: PhoneActionKind, target: string, payload: unknown): CleanWorkInput {
   if (!isPlainObject(payload)) throw new WorkRuleError('The action details are not valid.');
   if (kind === 'library_upload') return validateLibrary(target, payload);
   if (kind === 'schedule_update') return validateSchedule(target, payload);
   if (kind === 'draft_create') return validateDraft(target, payload);
+  if (CONTROL_ACTION_KINDS.includes(kind)) return validateControl(kind, target, payload);
   return validateWorkflow(target, payload);
 }

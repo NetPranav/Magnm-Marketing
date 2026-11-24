@@ -654,6 +654,7 @@ def build_mirror_records(now_iso=None):
     for kinds, build in (
         (("asset",), lambda: __import__("phone_library").mirror_records(_make_record, fallback_ts, guard)),
         (("schedule", "editorial_plan"), lambda: __import__("phone_plan").mirror_records(_make_record, fallback_ts, guard)),
+        (("board_item", "automation"), lambda: __import__("phone_control").mirror_records(_make_record, fallback_ts, guard)),
     ):
         try:
             records.extend(build())
