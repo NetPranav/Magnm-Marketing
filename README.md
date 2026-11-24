@@ -5,7 +5,7 @@ Local-first AI marketing studio for the Magnm team (desktop, web UI, Python engi
 ## Quick start
 
 - **Teammate install & setup guide:** [docs/INSTALL.md](docs/INSTALL.md) (running from source on Linux/macOS/Windows, Android debug APK, phone pairing, backups, and troubleshooting)
-- **Desktop releasing & updater key backup:** [apps/desktop/RELEASING.md](apps/desktop/RELEASING.md)
+- **Releasing, signing keys and updates:** [docs/RELEASING.md](docs/RELEASING.md)
 - **Android app & keystore backup:** [apps/mobile/README.md](apps/mobile/README.md)
 
 ## Repository layout

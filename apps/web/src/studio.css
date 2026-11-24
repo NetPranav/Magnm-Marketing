@@ -2578,6 +2578,28 @@
   letter-spacing: -.01em;
 }
 
+/* "Update available" badge in the desktop app (a link to Settings > Updates) */
+
+.studio-update-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--s-2);
+  border: 1px solid var(--fg);
+  border-radius: var(--radius-pill);
+  color: var(--fg);
+  font-size: 11px;
+  line-height: 1.4;
+  letter-spacing: 0.04em;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.studio-update-badge:hover,
+.studio-update-badge:focus-visible {
+  background: var(--fg);
+  color: var(--bg);
+}
+
 /* Task board */
 .board-bar {
   display: flex;

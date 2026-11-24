@@ -2,14 +2,13 @@
 
 mod engine;
 mod secrets;
+mod updates;
 
 use std::fmt::Write as _;
 use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, Url};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_notification::NotificationExt;
-use tauri_plugin_updater::UpdaterExt;
 
 use engine::EngineSupervisor;
 use secrets::SecretStatus;
@@ -143,7 +142,7 @@ fn get_engine_logs(supervisor: State<'_, Arc<EngineSupervisor>>) -> Vec<String> 
 }
 
 /// Return true when a real updater public key (not the placeholder) is configured.
-fn is_updater_configured(app: &AppHandle) -> bool {
+pub(crate) fn is_updater_configured(app: &AppHandle) -> bool {
     const PLACEHOLDER: &str = "REPLACE_WITH_TAURI_UPDATER_PUBKEY";
     let Some(updater_cfg) = app.config().plugins.0.get("updater") else {
         return false;
@@ -153,51 +152,6 @@ fn is_updater_configured(app: &AppHandle) -> bool {
     };
     let trimmed = pubkey.trim();
     !trimmed.is_empty() && trimmed != PLACEHOLDER
-}
-
-/// Check for updates in the background, install if available, and prompt to restart.
-async fn check_for_updates(app: AppHandle) {
-    let updater = match app.updater() {
-        Ok(u) => u,
-        Err(err) => {
-            eprintln!("[magnm-updater] Updater unavailable: {err}");
-            return;
-        }
-    };
-    let update = match updater.check().await {
-        Ok(Some(u)) => u,
-        Ok(None) => return,
-        Err(err) => {
-            eprintln!("[magnm-updater] Update check failed: {err}");
-            return;
-        }
-    };
-
-    let version = update.version.clone();
-    if let Err(err) = update.download_and_install(|_, _| {}, || {}).await {
-        eprintln!("[magnm-updater] Update download/install failed: {err}");
-        return;
-    }
-
-    let restart_now = app
-        .dialog()
-        .message(format!(
-            "Magnm Studio {version} has been downloaded and installed. Restart now to apply the update?"
-        ))
-        .title("Update Ready")
-        .kind(MessageDialogKind::Info)
-        .buttons(MessageDialogButtons::OkCancelCustom(
-            "Restart Now".to_string(),
-            "Later".to_string(),
-        ))
-        .blocking_show();
-
-    if restart_now {
-        if let Some(supervisor) = app.try_state::<Arc<EngineSupervisor>>() {
-            supervisor.stop();
-        }
-        app.restart();
-    }
 }
 
 /// Build and run the Tauri desktop application.
@@ -219,6 +173,10 @@ pub fn run() {
             store_secrets,
             restart_engine,
             get_engine_logs,
+            updates::update_status,
+            updates::check_update,
+            updates::install_update,
+            updates::restart_app,
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -232,6 +190,7 @@ pub fn run() {
                 }
             }
             app.manage(Arc::clone(&supervisor));
+            app.manage(updates::UpdateState::default());
 
             let handle = app.handle().clone();
             let click_handle = handle.clone();
@@ -251,10 +210,8 @@ pub fn run() {
             });
             if is_updater_configured(&handle) {
                 handle.plugin(tauri_plugin_updater::Builder::new().build())?;
-                let update_handle = handle.clone();
-                tauri::async_runtime::spawn(async move {
-                    check_for_updates(update_handle).await;
-                });
+                // A quiet check once a day. It only tells the Settings screen; it never installs anything.
+                updates::start_background_checks(handle.clone());
             }
 
             std::thread::spawn(move || match supervisor.start() {

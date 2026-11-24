@@ -13,6 +13,7 @@ import { kindLabel, stateLabel } from '../actions';
 import type { NativeBridge } from '../native';
 import { PersonalKeysPanel } from './PersonalKeysPanel';
 import { ReposPanel } from './ReposPanel';
+import { UpdatesPanel } from './UpdatesPanel';
 import type {
   AccountProfile,
   AuthSession,
@@ -238,6 +239,8 @@ export function MoreTab({
       <PersonalKeysPanel bridge={bridge} signedIn={Boolean(session)} onChanged={onPersonalKeysChanged} />
 
       <ReposPanel bridge={bridge} userId={session?.user_id ?? null} />
+
+      <UpdatesPanel bridge={bridge} />
 
       <Card>
         <div className="mob-stack-sm">

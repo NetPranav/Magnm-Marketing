@@ -67,6 +67,16 @@ The Work tab has three sections. Everything that needs the laptop is queued thro
 
 Text naming a confidential product is refused before anything is uploaded or queued, and again by the cloud checks and the laptop.
 
+## App updates (More > Updates)
+
+The app updates itself from our own GitHub releases, through native code only (`MagnmNativePlugin`: `getAppVersion`, `fetchUpdateManifest`, `downloadAndInstallUpdate`; `UpdateDownloader.java`):
+
+- `NativeUrlPolicy` has three extra checks, used only by these calls and never by the general `http` call (which still refuses github.com): `validateUpdateManifestUrl` (exactly `https://github.com/NetPranav/Magnm-Marketing/releases/latest/download/android.json`), `validateUpdateApkUrl` (`.../releases/download/vX.Y.Z/magnm-studio-X.Y.Z.apk`, same version in the tag and the file name, no query) and `validateUpdateRedirectUrl` (one of those release addresses, or `release-assets.githubusercontent.com` / `objects.githubusercontent.com` on a `/github-production-release-asset...` path, which is where GitHub sends release downloads).
+- Redirects are followed by hand, at most 5, and every hop is checked; a redirect anywhere else stops the download.
+- `android.json` is `{version, versionCode, url, sha256, bytes, notes}`; `src/updates.ts` checks every field again (the URL must be exactly our asset for that version, `versionCode` must equal `major * 10000 + minor * 100 + patch`).
+- The APK is kept only if its size is exactly `bytes` and its SHA-256 equals `sha256`; then the package name and versionCode are read from the file and the system installer is opened through the FileProvider (`REQUEST_INSTALL_PACKAGES`; if installs from Magnm are not allowed yet, nothing is downloaded and the settings page for that is opened). Android itself refuses an APK signed with another key.
+- Release signing is read from the environment (`MAGNM_ANDROID_KEYSTORE`, `MAGNM_ANDROID_KEYSTORE_PASSWORD`, `MAGNM_ANDROID_KEY_ALIAS`, optional `MAGNM_ANDROID_KEY_PASSWORD`); `./gradlew assembleRelease` refuses to run without them. Debug builds are unchanged. `versionCode` and `versionName` are written from the repository's `VERSION` file by `scripts/set_version.py`. See [docs/RELEASING.md](../../docs/RELEASING.md).
+
 ## Debug builds
 
 The debug APK is debuggable and signed with a throwaway key: anyone with USB debugging access to the phone can read its app data. Use it for testing only, and use a signed release build for daily use. Never disable Android Play Protect or device security checks as the normal path for team builds.

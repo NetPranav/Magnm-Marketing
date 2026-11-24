@@ -1,9 +1,9 @@
 name: Desktop installers
 
 # Builds installable packages for every desktop platform and keeps them as workflow artifacts:
-# Linux .deb, .rpm and .AppImage; macOS .dmg (Apple Silicon and Intel); Windows .msi and .exe.
-# They are unsigned until the owner adds signing keys (see apps/desktop/RELEASING.md); the signed release with
-# auto-update still comes from desktop-release.yml.
+# Linux .deb, .rpm and .AppImage; macOS .dmg and .app.tar.gz (Apple Silicon and Intel); Windows .msi and .exe.
+# They are unsigned: CI has no secrets. scripts/release.py downloads the macOS and Windows files from the run for the
+# release commit and signs them on the owner's laptop (see docs/RELEASING.md).
 
 on:
   workflow_dispatch:
@@ -12,6 +12,14 @@ on:
       - ".github/workflows/desktop-installers.yml"
       - "apps/desktop/**"
       - "scripts/build_engine.py"
+      - "VERSION"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/desktop-installers.yml"
+      - "apps/desktop/**"
+      - "scripts/build_engine.py"
+      - "VERSION"
 
 permissions:
   contents: read
@@ -42,12 +50,16 @@ jobs:
               apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
           - os: macos-15
             label: macos-apple-silicon
-            bundles: dmg
-            files: apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            bundles: app,dmg
+            files: |
+              apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+              apps/desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz
           - os: macos-15-intel
             label: macos-intel
-            bundles: dmg
-            files: apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            bundles: app,dmg
+            files: |
+              apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+              apps/desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -90,6 +102,12 @@ jobs:
         working-directory: apps/desktop
         shell: bash
         run: pnpm tauri build --bundles ${{ matrix.bundles }} --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - name: Pack the macOS app for the updater (scripts/release.py signs it on the owner's laptop)
+        if: runner.os == 'macOS'
+        working-directory: apps/desktop/src-tauri/target/release/bundle/macos
+        run: |
+          APP=$(ls -d *.app | head -n 1)
+          tar -czf "${APP}.tar.gz" "$APP"
       - name: Keep the installers
         uses: actions/upload-artifact@v4
         with:

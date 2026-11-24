@@ -16,6 +16,10 @@
     "allow-delete-secret",
     "allow-store-secrets",
     "allow-restart-engine",
-    "allow-get-engine-logs"
+    "allow-get-engine-logs",
+    "allow-update-status",
+    "allow-check-update",
+    "allow-install-update",
+    "allow-restart-app"
   ]
 }

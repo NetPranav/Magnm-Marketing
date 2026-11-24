@@ -7,6 +7,10 @@ fn main() {
             "store_secrets",
             "restart_engine",
             "get_engine_logs",
+            "update_status",
+            "check_update",
+            "install_update",
+            "restart_app",
         ]),
     );
     tauri_build::try_build(attributes).expect("failed to run tauri-build");
