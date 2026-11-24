@@ -37,6 +37,7 @@ import cloud_sync
 import confidential_guard
 import db
 import notifications
+import phone_control
 import phone_library
 import phone_pitch
 import phone_plan
@@ -57,7 +58,8 @@ MAX_TOUCHES = MAX_ATTEMPTS + 3
 ATTEMPTS_KIND = "_phone_action_attempts"
 FAILED_REASON = "Not applied: this laptop could not apply it."
 KINDS = (
-    ("draft_comment", "draft_posted", "reminder_done", "agent_task") + phone_pitch.KINDS + phone_library.KINDS + phone_plan.KINDS
+    ("draft_comment", "draft_posted", "reminder_done", "agent_task")
+    + phone_pitch.KINDS + phone_library.KINDS + phone_plan.KINDS + phone_control.KINDS
 )
 COMMENT_AUTHOR = "phone:cloud"
 AGENT_TASK = "agent_task"
@@ -184,6 +186,8 @@ def validate_payload(kind, payload, target=None):
         return phone_library.validate_payload(payload)
     if kind in phone_plan.KINDS:
         return phone_plan.validate_payload(kind, payload, target)
+    if kind in phone_control.KINDS:
+        return phone_control.validate_payload(kind, payload, target)
     if kind == "draft_comment":
         if not isinstance(payload, dict) or not set(payload) <= {"body", "version"}:
             raise _Reject("Not applied: the comment was malformed.")
@@ -236,7 +240,7 @@ def target_exists(kind, target_id):
         return db.get_reminder(target_id) is not None
     if kind in phone_pitch.KINDS:
         return phone_pitch.target_exists(kind, target_id)
-    if kind in phone_library.KINDS or kind in phone_plan.KINDS:
+    if kind in phone_library.KINDS or kind in phone_plan.KINDS or kind in phone_control.KINDS:
         return True  # checked after the claim, so a bad or unknown target is rejected with a reason
     # An agent task is claimed and then checked, so a bad or unknown agent id is rejected with a reason.
     return True
@@ -257,6 +261,8 @@ def _apply(user_id, row, guard):
     try:
         if kind in phone_plan.KINDS:
             return phone_plan.apply(kind, user_id, row["id"], target, row["payload"], guard)
+        if kind in phone_control.KINDS:
+            return phone_control.apply(kind, user_id, row["id"], target, row["payload"], guard)
         params = validate_payload(kind, row["payload"])
         if kind in phone_library.KINDS:
             return phone_library.apply(user_id, row["id"], target, params, guard)

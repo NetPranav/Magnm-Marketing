@@ -10,6 +10,7 @@ _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
 if _ENGINE_DIR not in sys.path:
     sys.path.insert(0, _ENGINE_DIR)
 
+import automation
 import cmo_runtime
 import db
 from ist import IST
@@ -66,6 +67,16 @@ DEFAULT_SCHEDULES = [
         "cron": "0 9 * * 1",
         "description": "Generates the previous week's Analyst summary and learnings on Monday at 09:00 IST",
         "enabled": True,
+        "last_run": None,
+        "last_status": "idle",
+    },
+    {
+        "id": "auto_pipeline",
+        "name": "Automatic content pipeline",
+        "command": "auto_pipeline",
+        "cron": "30 10 * * *",
+        "description": "Picks a random repo you added, researches it and starts content that waits for your approval at 10:30 IST",
+        "enabled": False,
         "last_run": None,
         "last_status": "idle",
     },
@@ -217,6 +228,7 @@ def tick(now=None, commands=None):
     if not schedules:
         return []
 
+    paused = automation.is_paused()
     runs = {}
     enqueued = []
     for sched in schedules:
@@ -226,6 +238,10 @@ def tick(now=None, commands=None):
         if commands is not None and cmd not in commands:
             continue
         if not is_due(sched, now_utc):
+            continue
+        if paused:
+            # "Pause automatic work" is on: nothing fires. It is listed as missed, never run by itself.
+            automation.note_missed(sched, now_utc)
             continue
         if db.has_active_job(cmd):
             continue
@@ -254,7 +270,7 @@ def is_disabled():
 
 def check_missed_weekly_summary(now=None):
     """Run missed Monday 09:00 IST weekly_summary once at startup if overdue."""
-    if is_disabled():
+    if is_disabled() or automation.is_paused():
         return []
     now_utc = _as_utc(now)
     schedules = db.load_schedules()

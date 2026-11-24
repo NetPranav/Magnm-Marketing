@@ -5,6 +5,7 @@ export type SectionId =
   | 'team'
   | 'research'
   | 'plan'
+  | 'board'
   | 'create'
   | 'review'
   | 'pitch'
@@ -33,6 +34,7 @@ export const SECTIONS: SectionSpec[] = [
   { id: 'library', label: 'Library', layout: 'read', coming: 'Uploaded brand assets and generated outputs are coming here.' },
   { id: 'repos', label: 'Repos', layout: 'read', coming: 'Connected repositories, recent changes, and product rules are coming here.' },
   { id: 'settings', label: 'Settings', layout: 'read', coming: 'Provider configuration, model defaults, and engine checks are coming here.' },
+  { id: 'board', label: 'Board', layout: 'wide', coming: 'Everything the team is doing, in one board.' },
 ];
 
 export const ADMIN_SECTION: SectionSpec = {

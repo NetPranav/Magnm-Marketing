@@ -33,6 +33,7 @@ import type {
   WorkflowRun,
 } from '../../types';
 import { formatTimestamp } from '../../ui/format';
+import { AutomationCard } from './AutomationCard';
 import { EditorialCalendar } from './EditorialCalendar';
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -524,6 +525,8 @@ export function PlanSection() {
           loading={loading}
         />
       </section>
+
+      <AutomationCard />
 
       <section className="studio-section" aria-labelledby="plan-schedules-heading">
         <h2 id="plan-schedules-heading" className="studio-section-title">

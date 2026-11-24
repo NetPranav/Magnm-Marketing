@@ -11,7 +11,7 @@ import {
   PitchRuleError,
 } from './pitchRules';
 import { findConfidentialMention } from './productRules';
-import { WORK_ACTION_KINDS, WorkRuleError, validateWorkInput } from './workRules';
+import { CONTROL_ACTION_KINDS, WORK_ACTION_KINDS, WorkRuleError, validateWorkInput } from './workRules';
 import {
   readNonSecretJson,
   removeNonSecretKey,
@@ -352,7 +352,9 @@ export function enqueueAction(
     throw new PhoneActionError('Confidential items can only be changed on the laptop.');
   }
   const clean = validateActionInput(input);
-  const structured = PITCH_ACTION_KINDS.includes(clean.kind) || WORK_ACTION_KINDS.includes(clean.kind);
+  // A pause or resume carries no free text, so there is nothing to check against the confidential rules.
+  const structured =
+    PITCH_ACTION_KINDS.includes(clean.kind) || (WORK_ACTION_KINDS.includes(clean.kind) && !CONTROL_ACTION_KINDS.includes(clean.kind));
   const pitchTexts = structured ? collectStrings(clean.payload) : [];
   mentionsConfidential([clean.payload.body, clean.payload.url, clean.payload.message, ...pitchTexts], rules);
 
@@ -407,5 +409,7 @@ export function kindLabel(kind: PhoneActionKind): string {
   if (kind === 'schedule_update') return 'Schedule change';
   if (kind === 'draft_create') return 'Draft from the phone';
   if (kind === 'workflow_request') return 'Work for the laptop';
+  if (kind === 'run_control') return 'Pause or resume a run';
+  if (kind === 'automation_control') return 'Automatic work switch';
   return 'Reminder done';
 }

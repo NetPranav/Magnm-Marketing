@@ -1872,6 +1872,8 @@ def _enrich_run(run):
                     st = "failed"
                 elif status == "cancelled":
                     st = "cancelled"
+                elif status == "paused":
+                    st = "paused"
                 else:
                     st = "current"
             else:
@@ -1887,11 +1889,26 @@ def _enrich_run(run):
     enriched["steps"] = steps_meta
     enriched["gates"] = db.list_gates_for_run(run["id"])
     enriched["content_ids"] = cids
+    enriched["paused_by"] = state.get("paused_by") if run.get("status") == "paused" else None
+    enriched["automatic"] = bool(state.get("automatic"))
     return enriched
 
 
-def start(kind, inputs=None, actor="UI", start_worker=True):
-    """Create a workflow run, enqueue its first workflow_step job, and return the run."""
+def _notify_settled(run_id):
+    """Tell the automatic pipeline that a run it started ended or stopped for you. Never breaks the run."""
+    try:
+        import automation
+        automation.on_run_settled(run_id)
+    except Exception:
+        pass
+
+
+def start(kind, inputs=None, actor="UI", start_worker=True, automatic=False, auto_run_id=None):
+    """Create a workflow run, enqueue its first workflow_step job, and return the run.
+
+    automatic marks a run the automatic pipeline started on its schedule: it waits while "Pause automatic work" is on.
+    auto_run_id ties a run to the pipeline run that started it (also for "Run now", which is a manual action).
+    """
     wf_cls = WORKFLOWS.get(str(kind or "").strip())
     if wf_cls is None:
         raise ValueError(f"Unknown workflow kind '{kind}'. Expected one of: {', '.join(WORKFLOWS.keys())}")
@@ -1907,7 +1924,11 @@ def start(kind, inputs=None, actor="UI", start_worker=True):
             "status": "queued",
             "current_step": 0,
             "inputs": norm_inputs,
-            "state": {"content_ids": [], "session_ids": [], "step_sessions": {}},
+            "state": {
+                "content_ids": [], "session_ids": [], "step_sessions": {},
+                **({"automatic": True} if automatic else {}),
+                **({"auto_run_id": str(auto_run_id)} if auto_run_id else {}),
+            },
             "created_at": now,
             "updated_at": now,
         }
@@ -1986,6 +2007,97 @@ def cancel(run_id):
         if sess and sess["status"] in ("running", "waiting_user"):
             agent_runtime.cancel_session(sid)
 
+    _notify_settled(run_id)
+    return _enrich_run(db.get_workflow_run(run_id))
+
+
+def pause(run_id, by="laptop"):
+    """Pause a queued or running run. A step that is running finishes; nothing new starts. Returns the run, or None.
+
+    A run that waits for your answer, or has ended, cannot be paused (a ValueError says why).
+    """
+    by = by if by in ("laptop", "phone", "global") else "laptop"
+    with _RESUME_LOCK:
+        run = db.get_workflow_run(run_id)
+        if run is None:
+            return None
+        if run["status"] == "paused":
+            return _enrich_run(run)
+        if run["status"] == "waiting_user":
+            raise ValueError("This run is waiting for your answer, so it cannot be paused. Answer it or cancel it.")
+        if run["status"] not in ("queued", "running"):
+            raise ValueError(f"A {run['status']} run cannot be paused.")
+        now = _now_iso()
+        state = dict(run.get("state") or {})
+        state.update(paused_by=by, paused_at=now, parked=not db.has_running_workflow_job(run_id))
+        db.update_workflow_run(run_id, status="paused", state=state)
+        db.cancel_queued_workflow_jobs(run_id, now)
+    events.publish("workflow_paused", {"run_id": run_id, "kind": run["kind"], "status": "paused"})
+    return _enrich_run(db.get_workflow_run(run_id))
+
+
+def resume(run_id, start_worker=True):
+    """Resume a paused run from the step it stopped at. Returns the run, or None. Resuming a run that is not paused
+    changes nothing; a finished run cannot be resumed."""
+    queued = False
+    with _RESUME_LOCK:
+        run = db.get_workflow_run(run_id)
+        if run is None:
+            return None
+        if run["status"] in ("done", "failed", "cancelled"):
+            raise ValueError(f"A {run['status']} run cannot be resumed.")
+        if run["status"] != "paused":
+            return _enrich_run(run)
+        state = dict(run.get("state") or {})
+        parked = bool(state.pop("parked", False))
+        for key in ("paused_by", "paused_at"):
+            state.pop(key, None)
+        db.update_workflow_run(run_id, status="running", state=state)
+        # A job that is still carrying the run (it was resumed before the running step ended) keeps going on its own.
+        if parked or not db.has_active_workflow_job(run_id):
+            jobs.enqueue("workflow_step", actor="resume", max_attempts=1, params={"run_id": run_id})
+            queued = True
+    events.publish("workflow_resumed", {"run_id": run_id, "kind": run["kind"], "status": "running"})
+    if queued and start_worker:
+        jobs.start_worker()
+    return _enrich_run(db.get_workflow_run(run_id))
+
+
+def resume_global_paused():
+    """Resume the runs that the global "Pause automatic work" switch parked. Runs the owner paused stay paused."""
+    resumed = []
+    for run in db.list_workflow_runs(limit=500, status="paused"):
+        if (run.get("state") or {}).get("paused_by") == "global":
+            try:
+                if resume(run["id"]) is not None:
+                    resumed.append(run["id"])
+            except ValueError:
+                continue
+    return resumed
+
+
+def retry(run_id, start_worker=True):
+    """Start a failed run again from the step that failed. Sessions that failed are not reused. Returns the run."""
+    with _RESUME_LOCK:
+        run = db.get_workflow_run(run_id)
+        if run is None:
+            return None
+        if run["status"] != "failed":
+            raise ValueError("Only a failed run can be retried.")
+        state = dict(run.get("state") or {})
+        sessions = dict(state.get("step_sessions") or {})
+        for key, sid in builtins.list(sessions.items()):
+            sess = db.get_agent_session(sid)
+            if sess is None or sess["status"] in ("failed", "cancelled"):
+                sessions.pop(key, None)
+        state["step_sessions"] = sessions
+        for key in ("paused_by", "paused_at", "parked", "waiting_session_id", "waiting_gate_id"):
+            state.pop(key, None)
+        db.update_workflow_run(run_id, status="running", error=None, state=state)
+        if not db.has_active_workflow_job(run_id):
+            jobs.enqueue("workflow_step", actor="retry", max_attempts=1, params={"run_id": run_id})
+    if start_worker:
+        jobs.start_worker()
     return _enrich_run(db.get_workflow_run(run_id))
 
 
@@ -2041,6 +2153,50 @@ def recover_stale_runs(start_worker=True):
     return [_enrich_run(r) for r in requeued]
 
 
+def _stop_at_boundary(run_id):
+    """True if the run is paused (by you, or by the global switch for an automatic run) and the job should end.
+
+    The decision and the note "no job carries this run any more" are made together, so a resume that arrives right
+    after always queues a job for it.
+    """
+    with _RESUME_LOCK:
+        run = db.get_workflow_run(run_id)
+        if run is None:
+            return False
+        if run["status"] in ("queued", "running"):
+            try:
+                import automation
+                hold = automation.is_automatic_run(run) and automation.is_paused()
+            except Exception:
+                hold = False
+            if not hold:
+                return False
+            state = dict(run.get("state") or {})
+            state.update(paused_by="global", paused_at=_now_iso())
+            db.update_workflow_run(run_id, status="paused", state=state)
+            run = db.get_workflow_run(run_id)
+            events.publish("workflow_paused", {"run_id": run_id, "kind": run["kind"], "status": "paused"})
+        if run["status"] != "paused":
+            return False
+        state = dict(run.get("state") or {})
+        state["parked"] = True
+        db.update_workflow_run(run_id, state=state)
+        return True
+
+
+def _carry_pause(run_id, state):
+    """The state to save after a step finished: if the run was paused while the step ran, keep it paused and parked."""
+    latest = db.get_workflow_run(run_id)
+    if latest is None or latest["status"] != "paused":
+        return None
+    kept = dict(state)
+    kept.update(parked=True)
+    for key in ("paused_by", "paused_at"):
+        if key in (latest.get("state") or {}):
+            kept[key] = latest["state"][key]
+    return kept
+
+
 def execute_workflow_job(params, job_id=None, log_file=None):
     """Execute steps for a workflow run until it pauses (waiting_user), finishes, or fails."""
     run_id = (params or {}).get("run_id")
@@ -2062,6 +2218,8 @@ def execute_workflow_job(params, job_id=None, log_file=None):
 
     wf = wf_cls()
     steps = wf.steps
+    if _stop_at_boundary(run_id):
+        return _enrich_run(db.get_workflow_run(run_id))
     db.update_workflow_run(run_id, status="running", error=None)
 
     while True:
@@ -2081,7 +2239,12 @@ def execute_workflow_job(params, job_id=None, log_file=None):
                 "workflow_done",
                 {"run_id": run_id, "kind": run["kind"], "status": "done", "content_ids": enriched["content_ids"]},
             )
+            _notify_settled(run_id)
             return enriched
+
+        # A step boundary: paused runs stop here and nothing new starts.
+        if _stop_at_boundary(run_id):
+            return _enrich_run(db.get_workflow_run(run_id))
 
         step_name, step_fn = steps[step_idx]
         state = dict(run.get("state") or {})
@@ -2105,6 +2268,7 @@ def execute_workflow_job(params, job_id=None, log_file=None):
                     "error": err_msg,
                 },
             )
+            _notify_settled(run_id)
             return _enrich_run(db.get_workflow_run(run_id))
 
         latest = db.get_workflow_run(run_id)
@@ -2116,7 +2280,12 @@ def execute_workflow_job(params, job_id=None, log_file=None):
 
         if result.action == "next":
             next_step = result.jump_to if result.jump_to is not None else step_idx + 1
-            db.update_workflow_run(run_id, status="running", current_step=next_step, state=state)
+            with _RESUME_LOCK:
+                carried = _carry_pause(run_id, state)
+                if carried is not None:
+                    db.update_workflow_run(run_id, status="paused", current_step=next_step, state=carried)
+                else:
+                    db.update_workflow_run(run_id, status="running", current_step=next_step, state=state)
             events.publish(
                 "workflow_step",
                 {
@@ -2131,6 +2300,8 @@ def execute_workflow_job(params, job_id=None, log_file=None):
             if job_id:
                 pct = int(min(95, ((next_step) / max(1, len(steps))) * 100))
                 jobs.progress(job_id, pct, f"Completed step {step_name}")
+            if carried is not None:
+                return _enrich_run(db.get_workflow_run(run_id))
             continue
 
         if result.action == "wait_user":
@@ -2172,6 +2343,7 @@ def execute_workflow_job(params, job_id=None, log_file=None):
                 },
             )
             _resume_if_already_answered(result.session_id, wait_payload.get("gate_id"))
+            _notify_settled(run_id)
             return _enrich_run(db.get_workflow_run(run_id))
 
         if result.action == "done":
@@ -2198,6 +2370,7 @@ def execute_workflow_job(params, job_id=None, log_file=None):
                     "content_ids": enriched["content_ids"],
                 },
             )
+            _notify_settled(run_id)
             return enriched
 
         if result.action == "fail":
@@ -2214,6 +2387,7 @@ def execute_workflow_job(params, job_id=None, log_file=None):
                     "error": err_msg,
                 },
             )
+            _notify_settled(run_id)
             return _enrich_run(db.get_workflow_run(run_id))
 
         raise ValueError(f"Unsupported StepResult action: {result.action}")

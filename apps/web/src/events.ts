@@ -19,6 +19,8 @@ export const STUDIO_EVENT_NAMES = [
   'workflow_waiting',
   'workflow_done',
   'workflow_failed',
+  'workflow_paused',
+  'workflow_resumed',
   'agent_step',
   'agent_waiting',
   'agent_done',
