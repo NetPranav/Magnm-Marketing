@@ -1057,6 +1057,22 @@ def complete_gemini(api_key, system_prompt, user_prompt, model="gemini-1.5-flash
     return res["candidates"][0]["content"]["parts"][0]["text"].strip()
 
 
+# Local AI often runs on the CPU, where reading a long system prompt takes minutes; models.json local.timeout_s
+# can change the wait (10 to 3600 seconds).
+OLLAMA_TIMEOUT_S = 300
+
+
+def ollama_timeout_s():
+    """Seconds to wait for one local Ollama answer."""
+    try:
+        value = (model_registry.load_models_config().get("local") or {}).get("timeout_s")
+    except Exception:
+        return OLLAMA_TIMEOUT_S
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 10 <= value <= 3600:
+        return OLLAMA_TIMEOUT_S
+    return int(value)
+
+
 def complete_ollama(base_url, system_prompt, user_prompt, model="llama3.2"):
     url = f"{base_url.rstrip('/')}/api/chat"
     headers = {"Content-Type": "application/json"}
@@ -1065,7 +1081,7 @@ def complete_ollama(base_url, system_prompt, user_prompt, model="llama3.2"):
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": user_prompt})
     payload = {"model": model, "messages": messages, "stream": False}
-    res = _http_post_json(url, payload, headers, timeout=20)
+    res = _http_post_json(url, payload, headers, timeout=ollama_timeout_s())
     if isinstance(res, dict) and res.get("error"):
         raise RuntimeError(str(res["error"]))
     return res.get("message", {}).get("content", "").strip()
@@ -1321,6 +1337,7 @@ def _complete_confidential_ollama(base_url, ollama_model, messages, tools=None):
             messages=messages,
             model=ollama_model,
             tools=tools,
+            timeout=ollama_timeout_s(),
         )
     except AINotConnected:
         raise
