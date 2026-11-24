@@ -45,6 +45,7 @@ import { PhonePanel } from './PhonePanel';
 import { PitchBasePricesPanel } from './PitchBasePricesPanel';
 import { SettingsIndex } from './SettingsIndex';
 import { PostingSettingsPanel } from './PostingSettingsPanel';
+import { VideoSettingsPanel } from './VideoSettingsPanel';
 import { SocialResearchSettingsPanel } from './SocialResearchSettingsPanel';
 import { UpdatesPanel } from './UpdatesPanel';
 import { TeamKnowledgePanel } from './TeamKnowledgePanel';
@@ -1188,6 +1189,8 @@ export function SettingsSection() {
         <SocialResearchSettingsPanel />
 
         <PostingSettingsPanel />
+
+        <VideoSettingsPanel />
 
         <PhonePanel />
       </div>

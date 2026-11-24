@@ -160,6 +160,22 @@ export function buildResearchInput(topic: string): ActionInput {
   return { kind: 'agent_task', target_id: 'researcher', payload: { message: `Research this and save the useful findings: ${topic.trim()}` }, label: 'Research a topic' };
 }
 
+/**
+ * Rendering a finished video needs the laptop (voice, browser and ffmpeg run there). The phone asks the video producer,
+ * which renders the saved script with its render_video tool when the laptop is back.
+ */
+export function buildRenderVideoInput(contentId: string, title?: string | null): ActionInput {
+  if (!getConfiguredAgent('video-producer')) throw new Error('The video producer is not on your team.');
+  const id = contentId.trim();
+  if (!/^[A-Za-z0-9_-]{1,100}$/.test(id)) throw new Error('This script cannot be rendered.');
+  return {
+    kind: 'agent_task',
+    target_id: 'video-producer',
+    payload: { message: `Render the finished video for the saved script ${id} with the render_video tool, with the voice-over on.` },
+    label: title && title.trim() ? `Render a video: ${title.trim().slice(0, 60)}` : 'Render a video',
+  };
+}
+
 /** The team's repositories for the picker: id and name of the ones that are not confidential. Read only. */
 export async function fetchTeamRepos(ownerUid: string, bridge: NativeBridge = getNativeBridge()): Promise<TeamRepo[]> {
   const uid = ownerUid.trim();

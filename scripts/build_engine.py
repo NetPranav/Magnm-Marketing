@@ -93,7 +93,39 @@ def stage_config(root, stage_dir):
     return stage_dir
 
 
-def build_pyinstaller_command(vpy, engine_dir, dist_dir, work_dir, pyi_root, data_specs):
+# The local voice (Kokoro). Their native libraries and data files must travel with the sidecar so the desktop app can speak.
+VOICE_PACKAGES = ("kokoro_onnx", "onnxruntime", "espeakng_loader", "phonemizer", "language_tags", "segments", "csvw")
+SFX_REL = ("video-skills", "magnm-video", "assets", "sfx", "impact", "impactSoft_heavy_003.ogg")
+
+
+def present_packages(vpy, names):
+    """The packages from `names` that the build interpreter can import. A failed probe means none."""
+    code = (
+        "import importlib.util, sys\n"
+        "for n in sys.argv[1:]:\n"
+        "    try:\n"
+        "        found = importlib.util.find_spec(n) is not None\n"
+        "    except Exception:\n"
+        "        found = False\n"
+        "    print(n) if found else None\n"
+    )
+    try:
+        res = subprocess.run([vpy, "-c", code, *names], capture_output=True, text=True, check=False)
+    except OSError:
+        return []
+    if res.returncode != 0:
+        return []
+    found = {line.strip() for line in res.stdout.splitlines()}
+    return [n for n in names if n in found]
+
+
+def video_data_specs(root):
+    """(source, destination) pairs for the video renderer's transition sound (CC0, Kenney)."""
+    sfx = os.path.join(root, *SFX_REL)
+    return [(sfx, os.path.join(*SFX_REL[:-1]))]
+
+
+def build_pyinstaller_command(vpy, engine_dir, dist_dir, work_dir, pyi_root, data_specs, collect_extra=None):
     """Build the PyInstaller CLI argument list including hidden imports and collected packages."""
     hidden_imports = _discover_hidden_imports(engine_dir)
     cmd = [
@@ -116,7 +148,7 @@ def build_pyinstaller_command(vpy, engine_dir, dist_dir, work_dir, pyi_root, dat
     ]
     for mod in hidden_imports:
         cmd.extend(["--hidden-import", mod])
-    for pkg in ("ddgs", "playwright", "keyring", "cryptography"):
+    for pkg in ("ddgs", "playwright", "keyring", "cryptography", *(collect_extra or ())):
         cmd.extend(["--collect-all", pkg])
     for src, dest in data_specs:
         cmd.extend(["--add-data", f"{src}{os.pathsep}{dest}"])
@@ -192,12 +224,17 @@ def main():
         (os.path.join(root, "packages", "magnm-design", "fonts.css"), "pitch-fonts"),
         (os.path.join(root, "packages", "magnm-design", "fonts"), os.path.join("pitch-fonts", "fonts")),
         (web_dist, "web"),
+        *video_data_specs(root),
     ]
     for src, _ in data_specs:
         if not os.path.exists(src):
             raise FileNotFoundError(f"Required bundle asset missing: {src}")
 
-    cmd = build_pyinstaller_command(vpy, engine_dir, dist_dir, work_dir, pyi_root, data_specs)
+    voice_pkgs = present_packages(vpy, VOICE_PACKAGES)
+    missing_pkgs = [n for n in VOICE_PACKAGES if n not in voice_pkgs]
+    if missing_pkgs:
+        print(f"Note: voice packages not installed in the build environment, not bundled: {', '.join(missing_pkgs)}")
+    cmd = build_pyinstaller_command(vpy, engine_dir, dist_dir, work_dir, pyi_root, data_specs, collect_extra=voice_pkgs)
 
     print("Running PyInstaller ...")
     subprocess.run(cmd, cwd=root, check=True)

@@ -99,6 +99,8 @@ export interface DraftsTabProps {
   onShareOut: (title: string, text: string) => Promise<boolean>;
   /** Get a file on the phone: the direct laptop path when reachable, else the cloud copy. */
   onGetOnPhone?: (contentId: string, filePath: string, title?: string) => Promise<boolean>;
+  /** Ask the laptop to render a script into a finished video (queued through the cloud when the laptop is away). */
+  onRenderVideo?: (contentId: string, title: string) => Promise<boolean>;
   onCreateOfflineItem: (input: {
     kind: QueueItemKind;
     title: string;
@@ -185,6 +187,7 @@ export function DraftsTab({
   onCopyText,
   onShareOut,
   onGetOnPhone,
+  onRenderVideo,
   onCreateOfflineItem,
 }: DraftsTabProps) {
   const [commentText, setCommentText] = useState('');
@@ -195,6 +198,7 @@ export function DraftsTab({
   const [newTitle, setNewTitle] = useState('');
   const [newBody, setNewBody] = useState('');
   const [composerError, setComposerError] = useState<string | null>(null);
+  const [renderQueued, setRenderQueued] = useState<string | null>(null);
 
   async function handleSaveNew() {
     if (!newTitle.trim()) return;
@@ -300,6 +304,38 @@ export function DraftsTab({
             </div>
           </div>
         </Card>
+
+        {selectedDraft.type === 'script' && onRenderVideo ? (
+          <Card>
+            <div className="mob-stack-sm">
+              <Label>Finished video</Label>
+              <p className="mob-body-text">
+                {fileRows.some((f) => f.kind === 'video')
+                  ? 'This script has a rendered video. Get it on your phone from Files below, or render it again on your laptop.'
+                  : 'Your laptop makes the video with a voice-over and captions. It starts when your laptop is back.'}
+              </p>
+              <div className="mob-actions">
+                <PillButton
+                  size="sm"
+                  disabled={!canQueue || busyAction === 'render-video' || renderQueued === selectedDraft.id}
+                  onClick={() => {
+                    void (async () => {
+                      const ok = await onRenderVideo(selectedDraft.id, selectedDraft.title || 'Video');
+                      if (ok) setRenderQueued(selectedDraft.id);
+                    })();
+                  }}
+                >
+                  {renderQueued === selectedDraft.id
+                    ? 'Queued for your laptop'
+                    : fileRows.some((f) => f.kind === 'video')
+                      ? 'Render again on laptop'
+                      : 'Render video on laptop'}
+                </PillButton>
+              </div>
+              {!canQueue ? <div className="mg-notice">Sign in to ask your laptop to render the video.</div> : null}
+            </div>
+          </Card>
+        ) : null}
 
         {fileRows.length > 0 ? (
           <Card>

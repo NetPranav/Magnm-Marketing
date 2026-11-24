@@ -81,6 +81,7 @@ export const LAPTOP_TOOL_INTENTS: Record<string, RegExp[]> = {
   // Images.
   generate_image: [/\b(?:images?|pictures?|photos?|illustrations?|graphics?|thumbnails?|logos?|banners?|posters?|infographics?|visuals?|mockups?)\b/i],
   render_card: [/\b(?:cards?|quote\s+cards?|banners?|thumbnails?|graphics?)\b/i],
+  render_video: [/\b(?:render|export|make|produce|finish)\b[^.\n]{0,40}\bvideos?\b/i, /\bfinished\s+video\b/i, /\bmp4\b/i, /\bvoice[-\s]?over\b/i],
   check_image: [/\b(?:images?|pictures?|photos?|screenshots?|thumbnails?|graphics?)\b/i],
   // Numbers.
   record_metrics: [/\b(?:record|log|save|store|enter|add)\b[^.\n]{0,40}\b(?:metrics?|numbers?|stats|impressions|likes|views|engagement|clicks)\b/i],

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Dialog, NumberedTabs, PillButton, StatusDot, Wordmark, type TabItem } from '@magnm/design/react';
 import { enqueueAction, loadActions, removeAction, type ActionInput } from './actions';
+import { buildRenderVideoInput } from './createPhone';
 import {
   ConfidentialRefusalError,
   cancelLaptopSocialRun,
@@ -1138,6 +1139,21 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
     );
   }
 
+  /** Rendering needs the laptop: the request goes through the cloud queue and is answered when the laptop is back. */
+  async function handleRenderVideo(contentId: string, title: string): Promise<boolean> {
+    setDraftsError(null);
+    let input: ActionInput;
+    try {
+      input = buildRenderVideoInput(contentId, title);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'This could not be queued.';
+      setDraftsError(msg);
+      showToast(msg);
+      return false;
+    }
+    return queueCloudAction(input, 'Video queued: your laptop renders it when it is back', setDraftsError);
+  }
+
   async function handleMarkReminderDone(id: string): Promise<void> {
     const activePairing = pairingRef.current;
     const gen = appGenRef.current;
@@ -2172,6 +2188,7 @@ export function App({ bridge: propBridge, initialTab = 'today' }: AppProps) {
             onCopyText={handleCopyText}
             onShareOut={handleShareOut}
             onGetOnPhone={handleGetOnPhone}
+            onRenderVideo={handleRenderVideo}
             phoneCopies={phoneCopies}
             ownerUid={session?.user_id ?? null}
             onCreateOfflineItem={handleSaveInboxOrQueue}

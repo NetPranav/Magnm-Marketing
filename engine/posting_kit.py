@@ -180,6 +180,21 @@ def build_posting_kit(content_ids, run_id=None):
                     lines.append(f"- {img_path} | alt text: MISSING")
         lines.append("")
 
+        # Rendered video, poster and retimed captions (only for items that have them)
+        video_entries = [
+            f for f in (item.get("files") or [])
+            if isinstance(f, dict) and f.get("kind") in ("video", "poster", "captions") and f.get("path")
+            and str(f.get("path")).replace("\\", "/").startswith("outputs/video/")
+        ]
+        if video_entries:
+            lines.append("### Video")
+            lines.append("")
+            for entry in video_entries:
+                label = {"video": f"video {entry.get('aspect') or ''}".strip(), "poster": "poster", "captions": "captions"}[entry["kind"]]
+                length = f" | {entry['duration_s']} s" if entry.get("duration_s") else ""
+                lines.append(f"- {entry['path']} | {label}{length}")
+            lines.append("")
+
         # Review verdicts & notes
         lines.append("### Reviews")
         lines.append("")

@@ -167,6 +167,9 @@ export interface ContentFileEntry {
   verdict?: string;
   review_id?: string;
   notes?: string;
+  /** Rendered videos: the picture size (9:16 or 16:9) and length in seconds. */
+  aspect?: string;
+  duration_s?: number;
 }
 
 export interface ReviewVersionSummary {

@@ -742,4 +742,48 @@ describe('ReviewSection', () => {
       expect(within(dialog).getByText(/Post status: unknown\./i)).toBeTruthy();
     });
   });
+  it('shows a script\'s rendered video with its poster and a Render again button, and no render panel for other items', async () => {
+    const script = makeReviewPayload({
+      item: {
+        ...makeReviewPayload().item,
+        id: 'cnt-vid-1',
+        type: 'script',
+        platform: 'instagram',
+        files: [
+          { kind: 'video', path: 'outputs/video/cnt-vid-1/video-9x16.mp4', aspect: '9:16' },
+          { kind: 'video', path: 'outputs/video/cnt-vid-1/video-16x9.mp4', aspect: '16:9' },
+          { kind: 'poster', path: 'outputs/video/cnt-vid-1/poster.jpg' },
+          { kind: 'captions', path: 'outputs/video/cnt-vid-1/captions.srt' },
+        ],
+      },
+      suggestions: [],
+      comments: [],
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/review/cnt-vid-1') return jsonResponse(script);
+      if (url === '/api/roster') return jsonResponse(MOCK_ROSTER);
+      if (url === '/api/video/render/cnt-vid-1') return jsonResponse({ content_id: 'cnt-vid-1', state: 'idle' });
+      return jsonResponse({});
+    });
+    render(<ReviewSection contentId="cnt-vid-1" onNavigate={vi.fn()} />);
+    await screen.findByRole('button', { name: 'Render again' });
+    const videos = Array.from(document.querySelectorAll('video'));
+    expect(videos).toHaveLength(2);
+    expect(videos[0].getAttribute('poster')).toContain('poster.jpg');
+    expect(videos[0].getAttribute('src')).toContain('video-9x16.mp4');
+    expect(screen.getAllByRole('button', { name: /^Comment at 0:00$/ })).toHaveLength(2);
+    cleanup();
+
+    const post = makeReviewPayload({ suggestions: [], comments: [] });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/review/cnt-rev-1') return jsonResponse(post);
+      if (url === '/api/roster') return jsonResponse(MOCK_ROSTER);
+      return jsonResponse({});
+    });
+    render(<ReviewSection contentId="cnt-rev-1" onNavigate={vi.fn()} />);
+    await screen.findByText('Cero v2.2 release');
+    expect(screen.queryByRole('button', { name: /Render video|Render again/ })).toBeNull();
+  });
 });

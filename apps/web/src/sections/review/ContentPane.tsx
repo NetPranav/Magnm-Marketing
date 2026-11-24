@@ -8,6 +8,7 @@ import type {
   ReviewSuggestion,
 } from '../../types';
 import { PlatformPreview } from './PlatformPreview';
+import { VideoRenderPanel } from './VideoRenderPanel';
 import {
   BLOG_AI_ACTIONS,
   TEXT_AI_MORE,
@@ -51,6 +52,8 @@ export interface ContentPaneProps {
   onFocusComment: (commentId: string) => void;
   videoSeekRequest: VideoSeekRequest | null;
   busyAction: string | null;
+  /** Called when a render finished so the files attached to the item are reloaded. */
+  onVideoChanged?: () => void;
 }
 
 function clamp01(val: number): number {
@@ -86,6 +89,7 @@ export function ContentPane({
   onFocusComment,
   videoSeekRequest,
   busyAction,
+  onVideoChanged,
 }: ContentPaneProps) {
   const [editing, setEditing] = useState(false);
   const [draftBody, setDraftBody] = useState(body);
@@ -131,6 +135,11 @@ export function ContentPane({
       (item.files || []).filter(
         (f) => f && Boolean(f.path) && isVideoFile(f.kind, f.path),
       ),
+    [item.files],
+  );
+
+  const posterFile = useMemo(
+    () => (item.files || []).find((f) => f && f.kind === 'poster' && Boolean(f.path)),
     [item.files],
   );
 
@@ -523,6 +532,10 @@ export function ContentPane({
             </section>
           ) : null}
 
+          {item.type === 'script' ? (
+            <VideoRenderPanel contentId={item.id} hasVideo={videoFiles.length > 0} onChanged={onVideoChanged} />
+          ) : null}
+
           {videoFiles.length > 0 ? (
             <section className="studio-stack-sm" aria-label="Attached videos">
               <h3 className="studio-section-title">Video</h3>
@@ -550,6 +563,7 @@ export function ContentPane({
                       }}
                       controls
                       preload="metadata"
+                      poster={posterFile ? contentFileUrl(item.id, posterFile.path) : undefined}
                       src={contentFileUrl(item.id, entry.path)}
                       className="studio-review-video"
                       onTimeUpdate={(e) => {

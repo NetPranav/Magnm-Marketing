@@ -687,6 +687,7 @@ NO_LOCAL_DATA = {
     "list_pitch_catalog": {},
     "draft_proposal": None,  # builds a proposal from the model's own text
     "render_card": None,  # renders the model's own headline
+    "render_video": None,  # renders a saved script on this computer and returns only file paths and counts
     "generate_image": None,  # sends the model's own prompt out, and is refused in a confidential session
     "web_search": None,  # outbound only
     "read_page": None,  # outbound only

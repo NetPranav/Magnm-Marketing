@@ -84,6 +84,9 @@ import team_repos
 import team_knowledge
 import team_room
 import web_ui
+import video_render
+import video_settings
+import voiceover
 import weekly_summary
 import workflows
 
@@ -1007,6 +1010,88 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, status=409)
         except LookupError as exc:
             self.send_json({"error": str(exc)}, status=404)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, status=400)
+
+    def _send_video_error(self, exc):
+        status = {"not_found": 404, "busy": 409}.get(getattr(exc, "code", ""), 409)
+        self.send_json({"error": exc.message, "code": exc.code}, status=status)
+
+    def _handle_video_get(self, url):
+        """Video: setup status, a render's state, and a short voice sample."""
+        path = url.path.rstrip("/")
+        qs = urllib.parse.parse_qs(url.query)
+        try:
+            if path == "/api/video/status":
+                self.send_json({
+                    "voice": voiceover.status(),
+                    "settings": video_settings.get_settings(),
+                    "ffmpeg": video_render.TOOLCHAIN.have_ffmpeg(),
+                    "browser": video_render.browser_available(),
+                    "rendering": video_render.active_renders(),
+                })
+            elif path.startswith("/api/video/render/"):
+                content_id = urllib.parse.unquote(path[len("/api/video/render/"):])
+                if not content_id or "/" in content_id or db.get_content_item(content_id) is None:
+                    self.send_json({"error": "That script was not found."}, status=404)
+                    return
+                self.send_json(video_render.render_status(content_id))
+            elif path == "/api/video/voice/sample":
+                sample = voiceover.sample(qs.get("voice", [None])[0], qs.get("speed", [None])[0])
+                self._serve_file_with_range(sample, "audio/wav")
+            else:
+                self.send_json({"error": "Not found"}, status=404)
+        except voiceover.VoiceError as exc:
+            self.send_json({"error": exc.message, "code": exc.code}, status=409 if exc.code in ("no_voice", "no_library") else 400)
+
+    def _handle_video_post(self, url, params):
+        """Video: settings, the voice download, and starting or cancelling a render (one runs at a time)."""
+        path = url.path.rstrip("/")
+        try:
+            if path == "/api/video/settings":
+                self.send_json({"settings": video_settings.update_settings(params)})
+            elif path == "/api/video/voice/download":
+                if not voiceover.missing_files():
+                    self.send_json({"success": True, "installed": True, "voice": voiceover.status()})
+                    return
+                job = jobs.enqueue("download_voice", actor=params.get("actor", "UI"), max_attempts=1)
+                jobs.start_worker()
+                self.send_json({"success": True, "installed": False, "job": job})
+            elif path == "/api/video/render":
+                content_id = str(params.get("content_id") or "").strip()
+                voice = params.get("voice", True)
+                aspects = params.get("aspects")
+                if not isinstance(voice, bool):
+                    self.send_json({"error": "voice must be true or false"}, status=400)
+                    return
+                if aspects is not None and not isinstance(aspects, list):
+                    self.send_json({"error": "aspects must be a list"}, status=400)
+                    return
+                video_render.preflight(content_id, voice=voice, aspects=aspects)
+                if content_id in video_render.active_renders():
+                    self.send_json({"error": "This video is already rendering.", "code": "busy"}, status=409)
+                    return
+                job = jobs.enqueue(
+                    "render_video", actor=params.get("actor", "UI"), max_attempts=1,
+                    params={"content_id": content_id, "aspects": aspects, "voice": voice},
+                )
+                video_render.note_queued(content_id, job["id"])
+                jobs.start_worker()
+                self.send_json({"success": True, "job": job, "status": video_render.render_status(content_id)})
+            elif path == "/api/video/render/cancel":
+                content_id = str(params.get("content_id") or "").strip()
+                state = video_render.render_status(content_id)
+                if not state.get("job_id") or state.get("state") not in ("queued", "running"):
+                    self.send_json({"error": "No render is running for this script.", "code": "idle"}, status=409)
+                    return
+                jobs.cancel(state["job_id"])
+                if state.get("state") == "queued":
+                    video_render.note_cancelled(content_id)
+                self.send_json({"success": True, "status": video_render.render_status(content_id)})
+            else:
+                self.send_json({"error": "Not found"}, status=404)
+        except video_render.RenderError as exc:
+            self._send_video_error(exc)
         except ValueError as exc:
             self.send_json({"error": str(exc)}, status=400)
 
@@ -2235,6 +2320,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         elif url.path == "/api/board":
             self._handle_board_get(url)
 
+        elif url.path.startswith("/api/video/"):
+            self._handle_video_get(url)
+
         elif url.path.startswith("/api/coding/"):
             self._handle_coding_get(url)
 
@@ -2345,6 +2433,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             or url.path.startswith("/api/phone/")
             or url.path.startswith("/api/automation/")
             or url.path.startswith("/api/board/")
+            or url.path.startswith("/api/video/")
         )
         max_len = MAX_REVIEW_BODY_BYTES if url.path.startswith("/api/review/") else MAX_POST_BYTES
         if content_len > max_len:
@@ -2425,6 +2514,10 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         if url.path.startswith("/api/board/"):
             self._handle_board_post(url, params)
+            return
+
+        if url.path.startswith("/api/video/"):
+            self._handle_video_post(url, params)
             return
 
         if url.path == "/api/shutdown":

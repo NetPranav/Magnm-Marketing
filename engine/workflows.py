@@ -1733,8 +1733,13 @@ def _extract_shotlist_and_srt(script_body, duration_s=30):
     return scenes, srt_text
 
 
+def _run_cancelled(run_id):
+    """A callable the renderer polls: True once the workflow run was cancelled."""
+    return lambda: (db.get_workflow_run(run_id) or {}).get("status") == "cancelled"
+
+
 class VideoScriptWorkflow(BaseWorkflow):
-    """Short-form video script workflow: video-producer -> reviewer -> captions.srt -> finalize."""
+    """Short-form video workflow: video-producer -> reviewer -> captions.srt -> voice-over -> rendered video -> finalize."""
 
     kind = "video_script"
 
@@ -1751,6 +1756,12 @@ class VideoScriptWorkflow(BaseWorkflow):
         if aspect not in ("9:16", "16:9"):
             aspect = "9:16"
         data["aspect"] = aspect
+        data["render"] = bool(data.get("render", True))
+        data["voice"] = bool(data.get("voice", True))
+        wanted = data.get("aspects")
+        if not isinstance(wanted, builtins.list) or not wanted or any(a not in ("9:16", "16:9") for a in wanted):
+            wanted = ["9:16", "16:9"]
+        data["aspects"] = builtins.list(dict.fromkeys(wanted))
         return _normalize_repo_input(data)
 
     @property
@@ -1759,6 +1770,8 @@ class VideoScriptWorkflow(BaseWorkflow):
             ("write_script", self.step_write_script),
             ("review_script", self.step_review_script),
             ("build_captions", self.step_build_captions),
+            ("voice_over", self.step_voice_over),
+            ("render_video", self.step_render_video),
             ("finalize", self.step_finalize),
         ]
 
@@ -1821,6 +1834,53 @@ class VideoScriptWorkflow(BaseWorkflow):
         state["captions_built"] = True
         return StepResult.next()
 
+    def step_voice_over(self, run, state):
+        """Speak every scene with the local voice. A missing voice is recorded in plain words, never a failed run."""
+        inputs = run["inputs"]
+        # Runs saved before video rendering existed have no 'render' input: they skip the new steps.
+        if not inputs.get("render") or not inputs.get("voice", True) or state.get("voice_done"):
+            return StepResult.next()
+        import video_render
+
+        try:
+            info = video_render.voice_over(
+                state.get("script_content_id"), duration_s=inputs.get("duration_s"), cancel=_run_cancelled(run["id"]),
+            )
+        except video_render.RenderCancelled:
+            return StepResult.next()
+        except video_render.RenderError as exc:
+            return StepResult.next(
+                voice_done=True, render_error={"message": exc.message, "code": exc.code, "step": "voice_over"},
+            )
+        return StepResult.next(voice_done=True, voice_info=info)
+
+    def step_render_video(self, run, state):
+        """Render the finished MP4s. A render problem is recorded for Review (Render again); the script is still kept."""
+        inputs = run["inputs"]
+        if not inputs.get("render") or state.get("rendered") or state.get("render_error"):
+            return StepResult.next()
+        import video_render
+
+        try:
+            res = video_render.render_video(
+                state.get("script_content_id"),
+                aspects=inputs.get("aspects"),
+                voice=bool(inputs.get("voice", True)),
+                duration_s=inputs.get("duration_s"),
+                repo_id=inputs.get("repo_id"),
+                cancel=_run_cancelled(run["id"]),
+            )
+        except video_render.RenderCancelled:
+            return StepResult.next()
+        except video_render.RenderError as exc:
+            return StepResult.next(render_error={"message": exc.message, "code": exc.code, "step": "render_video"})
+        return StepResult.next(
+            rendered={
+                "aspects": res["aspects"], "total_s": res["total_s"], "render_seconds": res["render_seconds"],
+                "files": [f["path"] for f in res["files"]],
+            },
+        )
+
     def step_finalize(self, run, state):
         script_id = state.get("script_content_id")
         item = db.get_content_item(script_id)
@@ -1856,7 +1916,9 @@ class VideoScriptWorkflow(BaseWorkflow):
         if item["status"] == "draft":
             db.mark_ready(script_id)
 
-        state["output_files"] = [rel_script, rel_captions, rel_shotlist]
+        state["output_files"] = [rel_script, rel_captions, rel_shotlist] + builtins.list(
+            (state.get("rendered") or {}).get("files") or []
+        )
         return StepResult.done()
 
 
