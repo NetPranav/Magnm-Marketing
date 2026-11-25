@@ -62,5 +62,35 @@ class CaptionTimingTests(unittest.TestCase):
         self.assertIn("HELLO", srt)
 
 
+class RealScriptSceneTests(unittest.TestCase):
+    """The structure a real video-producer run wrote (names invented): numbered headings without the word scene,
+    and bold labels with the colon inside the bold."""
+    SCRIPT = (
+        "# Quillby in 30 Seconds\n\n**Format:** 9:16 vertical video\n**Duration:** 30 seconds\n\n"
+        "## Opening hook\n\n**0-3 seconds:** Quillby is not finished.\n\n## Numbered scenes\n\n"
+        "### 1. 0-3s \u2014 The hook\n**Visual/footage:** Real capture of the repo page.\n"
+        "**On-screen:** `Quillby: work in progress`\n**VO:** Quillby is not a finished product.\n\n"
+        "### 2. 3-7s \u2014 What developers have today\n**Visual/footage:** Pan to the README.\n"
+        "**On-screen:** `Public repo | main branch`\n**VO:** It is a public codebase to inspect.\n\n"
+        "### 3. 7-12s \u2014 The latest change\n**Visual/footage:** Scroll to the link.\n"
+        "**On-screen:** `Latest change: README link`\n**VO**: The latest change adds a link to the README.\n\n"
+        "### 4. 12-30s \u2014 Follow along\n**On-screen text:** \"Follow the build\"\n"
+        "Voice-over: Watch the repo and follow the build.\n"
+    )
+
+    def test_every_numbered_heading_is_a_scene_with_its_own_lines(self):
+        import workflows
+        scenes, srt = workflows._extract_shotlist_and_srt(self.SCRIPT, duration_s=30)
+        self.assertEqual([(s["start_s"], s["end_s"]) for s in scenes], [(0, 3), (3, 7), (7, 12), (12, 30)])
+        self.assertEqual([s["on_screen"] for s in scenes],
+                         ["Quillby: work in progress", "Public repo | main branch", "Latest change: README link",
+                          "Follow the build"])
+        self.assertEqual(scenes[0]["voiceover"], "Quillby is not a finished product.")
+        self.assertEqual(scenes[2]["voiceover"], "The latest change adds a link to the README.")
+        self.assertEqual(scenes[1]["visual"], "Pan to the README.")
+        self.assertNotIn("*", srt)
+        self.assertNotIn("`", srt)
+
+
 if __name__ == "__main__":
     unittest.main()

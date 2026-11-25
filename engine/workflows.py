@@ -1602,18 +1602,26 @@ def _extract_shotlist_and_srt(script_body, duration_s=30):
             r"(?:^|[\s\[(])(\d+(?::\d+(?:\.\d+)?)?s?)\s*(?:-|–|—|to|->)\s*(\d+(?::\d+(?:\.\d+)?)?s?)",
             re.IGNORECASE,
         )
-        vo_re = re.compile(r"(?i)^\s*(?:[-*]\s*)?(?:\*\*)?(?:vo|voice[\s-]?over)(?:\*\*)?\s*:\s*(.+)$")
-        on_re = re.compile(r"(?i)^\s*(?:[-*]\s*)?(?:\*\*)?(?:on[\s-]?screen(?:\s*text)?)(?:\*\*)?\s*:\s*(.+)$")
-        vis_re = re.compile(r"(?i)^\s*(?:[-*]\s*)?(?:\*\*)?(?:visual|shot|footage)(?:\*\*)?\s*:\s*(.+)$")
+        # Labels are matched after bold marks are removed, so "**VO:**", "**VO**:" and "VO:" all work.
+        vo_re = re.compile(r"(?i)^\s*(?:[-*]\s*)?(?:vo|voice[\s-]?over)\s*:\s*(.+)$")
+        on_re = re.compile(r"(?i)^\s*(?:[-*]\s*)?(?:on[\s-]?screen(?:\s*text)?)\s*:\s*(.+)$")
+        vis_re = re.compile(
+            r"(?i)^\s*(?:[-*]\s*)?(?:visual|shot|footage)(?:\s*/\s*(?:visual|shot|footage))?(?:\s+notes)?\s*:\s*(.+)$"
+        )
 
         current = None
         for line in raw.splitlines():
-            stripped = line.strip()
+            stripped = re.sub(r"\*\*|__", "", line).strip()
             if not stripped:
                 continue
             tm = _best_time_range(time_range_re, stripped)
+            is_label = bool(vo_re.match(stripped) or on_re.match(stripped) or vis_re.match(stripped))
             is_scene_hdr = bool(re.match(r"^(?:#{1,4}\s*)?(?:scene|shot|hook)\b", stripped, re.IGNORECASE))
-            if (is_scene_hdr or (tm and ("scene" in stripped.lower() or "hook" in stripped.lower() or stripped.startswith("[")))) and tm:
+            # A heading, a numbered line or a bracketed line with a time range starts a scene ("### 2. 3-7s - Title").
+            looks_like_hdr = bool(re.match(r"^(?:#{1,6}\s|\d+[.)]\s|\[)", stripped)) or bool(
+                re.search(r"\b(?:scene|hook)\b", stripped, re.IGNORECASE)
+            )
+            if tm and not is_label and (is_scene_hdr or looks_like_hdr or re.match(r"^\d", stripped)):
                 if current:
                     scenes.append(current)
                 try:
@@ -1644,13 +1652,13 @@ def _extract_shotlist_and_srt(script_body, duration_s=30):
                         "voiceover": "",
                         "footage": "",
                     }
-                vo_text = vm.group(1).strip().strip('"')
+                vo_text = vm.group(1).strip().strip('"`“”').strip()
                 current["voiceover"] = (current["voiceover"] + " " + vo_text).strip()
                 continue
 
             om = on_re.match(stripped)
             if om and current is not None:
-                current["on_screen"] = om.group(1).strip().strip('"')
+                current["on_screen"] = om.group(1).strip().strip('"`“”').strip()
                 continue
 
             vism = vis_re.match(stripped)
