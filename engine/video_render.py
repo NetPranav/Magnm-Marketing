@@ -1077,9 +1077,11 @@ def _attach(content_id, aspects, out_dir, has_poster, total_s):
     """Attach the video, poster and captions to the content item, replacing earlier ones of this folder."""
     item = _item_or_error(content_id)
     prefix = _rel_dir(content_id) + "/"
+    # Earlier files of this folder go, and so do planned captions: the ones timed to the voice match the video.
     kept = [
         f for f in item.get("files") or []
-        if not (isinstance(f, dict) and str(f.get("path") or "").replace("\\", "/").startswith(prefix))
+        if not (isinstance(f, dict) and (str(f.get("path") or "").replace("\\", "/").startswith(prefix)
+                                         or f.get("kind") == "captions"))
     ]
     added = []
     for aspect in aspects:

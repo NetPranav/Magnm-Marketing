@@ -1913,9 +1913,13 @@ class VideoScriptWorkflow(BaseWorkflow):
         rel_captions = os.path.relpath(captions_path, paths.DATA_ROOT)
         rel_shotlist = os.path.relpath(shotlist_path, paths.DATA_ROOT)
 
-        existing_paths = {f.get("path") for f in (item.get("files") or []) if isinstance(f, dict)}
+        existing = [f for f in (item.get("files") or []) if isinstance(f, dict)]
+        existing_paths = {f.get("path") for f in existing}
+        rendered_captions = any(f.get("kind") == "captions" and f.get("retimed") for f in existing)
         to_add = []
         for kind, rp in (("script", rel_script), ("captions", rel_captions), ("shotlist", rel_shotlist)):
+            if kind == "captions" and rendered_captions:
+                continue  # the rendered video's captions, timed to the voice, are the ones to use
             if rp not in existing_paths:
                 to_add.append({"kind": kind, "path": rp})
         if to_add:

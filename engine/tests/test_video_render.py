@@ -336,6 +336,17 @@ class RenderFlowTests(VideoRenderBase):
         for entry in files:
             self.assertTrue(entry["path"].replace("\\", "/").startswith("outputs/video/cnt_vid_1/"))
 
+    def test_the_voice_timed_captions_replace_the_planned_ones(self):
+        self.make_item()
+        db.append_content_files("cnt_vid_1", [{"kind": "captions", "path": "outputs/content/cnt_vid_1/captions.srt"},
+                                              {"kind": "draft", "path": "outputs/content/cnt_vid_1/v1.md"}])
+        self.fake.expected_total = 3.0 + 7.0 + 5.0 + self.vr.END_CARD_S
+        self.render()
+        files = db.get_content_item("cnt_vid_1")["files"]
+        caps = [f["path"] for f in files if f["kind"] == "captions"]
+        self.assertEqual(caps, ["outputs/video/cnt_vid_1/captions.srt"])
+        self.assertIn("outputs/content/cnt_vid_1/v1.md", [f["path"] for f in files])
+
     def test_one_aspect_only(self):
         self.make_item()
         self.fake.expected_total = 3.0 + 7.0 + 5.0 + self.vr.END_CARD_S
