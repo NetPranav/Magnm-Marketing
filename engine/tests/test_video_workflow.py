@@ -141,7 +141,10 @@ class WorkflowRunTests(_Base):
         script_id = done["state"]["script_content_id"]
         files = db.get_content_item(script_id)["files"]
         kinds = sorted(f["kind"] for f in files if f["kind"] in ("video", "poster", "captions"))
-        self.assertEqual(kinds, ["captions", "captions", "poster", "video", "video"])  # the planned and the retimed captions
+        # One captions file: the one timed to the voice replaces the planned one, so it matches the video.
+        self.assertEqual(kinds, ["captions", "poster", "video", "video"])
+        caps = [f for f in files if f["kind"] == "captions"]
+        self.assertTrue(caps[0]["path"].replace("\\", "/").startswith("outputs/video/"), caps)
         self.assertTrue(os.path.isfile(paths.data("outputs", "video", script_id, "video-9x16.mp4")))
         self.assertEqual(done["state"]["rendered"]["aspects"], ["9:16", "16:9"])
         self.assertEqual(db.get_content_item(script_id)["status"], "ready")
